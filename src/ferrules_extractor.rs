@@ -153,3 +153,8 @@ pub async fn extract_to_matrix_sophisticated(
     // TODO: Implement proper sophisticated spatial layout when SpatialTextGrid is complete
     extract_to_matrix(pdf_path, page_num, width, height).await
 }
+
+pub async fn get_markdown_from_ferrules(pdf_path: &Path, page_num: usize) -> Result<String> {
+    // TODO: Call ferrules with markdown output format
+    Ok("# Placeholder Markdown\n\nExtracted content here".to_string())
+}
