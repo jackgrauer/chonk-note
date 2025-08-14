@@ -1,8 +1,8 @@
 use crossterm::{
-    cursor::{self, MoveTo},
+    cursor::MoveTo,
     execute,
-    style::{self, Color, Print, SetForegroundColor, SetBackgroundColor, ResetColor},
-    terminal::{self, Clear, ClearType},
+    style::{Color, Print, SetForegroundColor, SetBackgroundColor, ResetColor},
+    terminal,
 };
 use std::io::{self, Write};
 

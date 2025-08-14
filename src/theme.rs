@@ -16,6 +16,7 @@ impl ChonkerTheme {
     pub fn accent_pdf() -> Color { Color::Rgb { r: 129, g: 162, b: 190 } }   // #81A2BE - Soft blue
     pub fn accent_text() -> Color { Color::Rgb { r: 143, g: 161, b: 179 } }  // #8FA1B3 - Muted cyan
     pub fn accent_options() -> Color { Color::Rgb { r: 100, g: 149, b: 237 } } // #6495ED - Cornflower blue
+    pub fn accent_load_file() -> Color { Color::Rgb { r: 169, g: 133, b: 202 } } // #A985CA - Soft purple
     
     // Text colors for dark mode
     pub fn text_primary_dark() -> Color { Color::Rgb { r: 197, g: 200, b: 198 } }

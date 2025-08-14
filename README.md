@@ -74,12 +74,13 @@ chonker7 document.pdf -m split
 
 | Key | Action |
 |-----|--------|
-| `o` | Open new PDF (file dialog) |
-| `n` / `→` | Next page |
-| `p` / `←` | Previous page |
-| `m` | Toggle display mode |
+| `Ctrl+O` | Open new PDF (file dialog) |
+| `Ctrl+N` / `→` | Next page |
+| `Ctrl+P` / `←` | Previous page |
+| `Tab` | Toggle display mode (PDF + TEXT → PDF → TEXT → OPTIONS) |
+| `Ctrl+D` | Toggle dark/light mode |
 | `Ctrl+E` | Re-extract current page |
-| `q` | Quit |
+| `Ctrl+Q` | Quit |
 
 ## 🎯 Why Chonker7?
 

@@ -9,7 +9,7 @@ use anyhow::Result;
 use euclid::{Point2D, Rect, Size2D, Scale};
 use grid::Grid;
 use rstar::{RTree, RTreeObject, AABB};
-use std::cmp::{max, min};
+use std::cmp;
 
 // Define coordinate spaces for type safety
 pub struct PdfSpace;

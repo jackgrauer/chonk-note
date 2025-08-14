@@ -19,7 +19,6 @@ use image::DynamicImage;
 use clap::Parser;
 
 // Existing modules
-mod text_matrix;
 mod ferrules_extractor;
 mod renderer;
 mod pdf_renderer;
@@ -88,7 +87,6 @@ pub struct App {
     status_message: String,
     term_width: u16,
     term_height: u16,
-    image_protocol: terminal_image::ImageProtocol,
     options_cursor: usize, // Track which option is selected
     dark_mode: bool, // Dark mode toggle
 }
@@ -103,8 +101,6 @@ impl App {
             "text" => DisplayMode::TextMatrix,
             _ => DisplayMode::Split,
         };
-        
-        let protocol = terminal_image::detect_image_support();
         
         Ok(Self {
             pdf_path,
@@ -122,7 +118,6 @@ impl App {
             status_message: format!("Page {}/{}", starting_page, total_pages),
             term_width: width,
             term_height: height,
-            image_protocol: protocol,
             options_cursor: 0,
             dark_mode: true, // Default to dark mode
         })
@@ -273,10 +268,10 @@ impl App {
         // This prevents the flicker entirely
         
         self.display_mode = match self.display_mode {
+            DisplayMode::Split => DisplayMode::Image,
             DisplayMode::Image => DisplayMode::TextMatrix,
-            DisplayMode::TextMatrix => DisplayMode::Split,
-            DisplayMode::Split => DisplayMode::Options,
-            DisplayMode::Options => DisplayMode::Image,
+            DisplayMode::TextMatrix => DisplayMode::Options,
+            DisplayMode::Options => DisplayMode::Split,
         };
         
         // Keep the current_page_image loaded - no clearing, no reloading
@@ -302,7 +297,6 @@ struct Layout {
     main: Rect,
     left: Option<Rect>,
     right: Option<Rect>,
-    header: Rect,
     status: Rect,
 }
 
@@ -604,7 +598,6 @@ fn calculate_layout(width: u16, height: u16, mode: DisplayMode) -> Layout {
                 main: Rect::new(0, header_height, width, content_height),
                 left: Some(Rect::new(0, header_height, half_width, content_height)),
                 right: Some(Rect::new(half_width, header_height, half_width, content_height)),
-                header: Rect::new(0, 0, width, header_height),
                 status: Rect::new(0, height - status_height, width, status_height),
             }
         }
@@ -613,7 +606,6 @@ fn calculate_layout(width: u16, height: u16, mode: DisplayMode) -> Layout {
                 main: Rect::new(0, header_height, width, content_height),
                 left: None,
                 right: None,
-                header: Rect::new(0, 0, width, header_height),
                 status: Rect::new(0, height - status_height, width, status_height),
             }
         }
@@ -644,7 +636,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
             if let Some(left) = layout.left {
                 draw_header_section(
                     stdout,
-                    "PDF VIEW",
+                    "PDF + TEXT",
                     left.x,
                     0,
                     left.width,
@@ -655,7 +647,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
             if let Some(right) = layout.right {
                 draw_header_section(
                     stdout,
-                    "FERRULES AI TEXT",
+                    "TEXT",
                     right.x,
                     0,
                     right.width,
@@ -666,7 +658,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
         DisplayMode::TextMatrix => {
             draw_header_section(
                 stdout,
-                "TEXT MATRIX [hjkl to scroll]",
+                "TEXT",
                 0,
                 0,
                 layout.main.width,
@@ -676,7 +668,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
         DisplayMode::Image => {
             draw_header_section(
                 stdout,
-                "PDF IMAGE VIEW",
+                "PDF",
                 0,
                 0,
                 layout.main.width,
@@ -734,9 +726,8 @@ fn draw_header_section(
 /// Draw status bar
 fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
     let status = format!(
-        " {} | Mode: {:?} | [o]pen [n]ext [p]rev [m]ode [q]uit ",
-        app.status_message,
-        app.display_mode
+        " {} | [Ctrl+O]pen [Ctrl+N]ext [Ctrl+P]rev [Tab]ode [Ctrl+Q]uit ",
+        app.status_message
     );
     
     // Draw both lines of status bar to ensure full coverage
@@ -870,7 +861,7 @@ fn draw_options_panel(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<
     y_offset += 4;
     
     // Footer with controls - centered at bottom
-    let controls = "↑/↓ Navigate   Space Toggle   M Return";
+    let controls = "↑/↓ Navigate   Space Toggle   Tab Return";
     let controls_x = area.x + (area.width - controls.len() as u16) / 2;
     execute!(
         stdout,
@@ -886,33 +877,43 @@ fn draw_options_panel(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<
 /// Handle keyboard input
 fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runtime) -> Result<bool> {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Char('Q') => {
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
             return Ok(true);
         }
         
-        KeyCode::Char('n') | KeyCode::Right => {
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.next_page();
             runtime.block_on(app.load_pdf_page())?;
         }
         
-        KeyCode::Char('p') | KeyCode::Left => {
+        KeyCode::Right => {
+            app.next_page();
+            runtime.block_on(app.load_pdf_page())?;
+        }
+        
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.prev_page();
             runtime.block_on(app.load_pdf_page())?;
         }
         
-        KeyCode::Char('m') => {
+        KeyCode::Left => {
+            app.prev_page();
+            runtime.block_on(app.load_pdf_page())?;
+        }
+        
+        KeyCode::Tab => {
             app.toggle_mode();
             // DON'T reload PDF - this was causing the flicker!
             // The existing image will be displayed in the new mode automatically
         }
         
-        KeyCode::Char('d') | KeyCode::Char('D') => {
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.dark_mode = !app.dark_mode;
             app.status_message = format!("Mode: {}", if app.dark_mode { "Dark" } else { "Light" });
         }
         
-        KeyCode::Char('o') | KeyCode::Char('O') => {
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Open new file
             disable_raw_mode()?;
             println!("\r\n🐹 Opening file picker...\r");
@@ -963,21 +964,6 @@ fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runtime)
                 }
                 _ => {}
             }
-        }
-        
-        // Keep the old shortcuts for backward compatibility
-        KeyCode::Char('s') | KeyCode::Char('S') if app.display_mode == DisplayMode::Options => {
-            app.settings.use_sophisticated_extraction = !app.settings.use_sophisticated_extraction;
-            app.status_message = format!("Sophisticated extraction: {}",
-                if app.settings.use_sophisticated_extraction { "ON" } else { "OFF" });
-            runtime.block_on(app.extract_current_page())?;
-        }
-        
-        KeyCode::Char('v') | KeyCode::Char('V') if app.display_mode == DisplayMode::Options => {
-            app.settings.use_vision_model = !app.settings.use_vision_model;
-            app.status_message = format!("Vision model: {}",
-                if app.settings.use_vision_model { "ON" } else { "OFF" });
-            runtime.block_on(app.extract_current_page())?;
         }
         
         // Scrolling for text matrix (not in Options mode)
