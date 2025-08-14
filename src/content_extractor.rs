@@ -72,28 +72,40 @@ pub async fn extract_to_matrix(
                 continue;
             }
             
-            // Extract text based on block type
-            let text = match &block.kind {
-                BlockType::TextBlock(tb) => &tb.text,
-                BlockType::Title(t) => &t.text,
-                BlockType::Header(tb) => &tb.text,
-                BlockType::Footer(tb) => &tb.text,
+            // Extract text based on block type and add markdown syntax
+            match &block.kind {
+                BlockType::Title(t) => {
+                    // Add # for title (H1)
+                    let markdown_text = format!("# {}", t.text);
+                    place_text_on_grid_spatial(&mut grid, &markdown_text, grid_x, grid_y, width, height);
+                }
+                BlockType::Header(h) => {
+                    // Add ## for header (H2)
+                    let markdown_text = format!("## {}", h.text);
+                    place_text_on_grid_spatial(&mut grid, &markdown_text, grid_x, grid_y, width, height);
+                }
+                BlockType::TextBlock(tb) => {
+                    // Regular paragraph - no prefix
+                    place_text_on_grid_spatial(&mut grid, &tb.text, grid_x, grid_y, width, height);
+                }
                 BlockType::ListBlock(l) => {
-                    // Place list items spatially
+                    // Place list items with bullet points
                     let mut list_y = grid_y;
                     for item in &l.items {
                         if list_y < height {
-                            place_text_on_grid_spatial(&mut grid, item, grid_x + 2, list_y, width, height);
+                            let markdown_item = format!("- {}", item);
+                            place_text_on_grid_spatial(&mut grid, &markdown_item, grid_x, list_y, width, height);
                             list_y += 1;
                         }
                     }
-                    continue;
+                }
+                BlockType::Footer(f) => {
+                    // Add horizontal rule and italics for footer
+                    let markdown_text = format!("---\n*{}*", f.text);
+                    place_text_on_grid_spatial(&mut grid, &markdown_text, grid_x, grid_y, width, height);
                 }
                 _ => continue,
-            };
-            
-            // Place text on grid at the proper spatial position
-            place_text_on_grid_spatial(&mut grid, text, grid_x, grid_y, width, height);
+            }
         }
     }
     
@@ -148,7 +160,8 @@ pub async fn extract_to_matrix_sophisticated(
     height: usize,
     _use_vision: bool,
 ) -> Result<Vec<Vec<char>>> {
-    // Uses working simple extraction logic - SpatialTextGrid integration pending
+    // For now, uses the same extraction logic with markdown syntax
+    // Future: could add more sophisticated spatial layout analysis
     extract_to_matrix(pdf_path, page_num, width, height).await
 }
 
@@ -187,15 +200,28 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
             
             match &block.kind {
                 BlockType::Title(t) => {
+                    // Large title - will render differently in MARKDOWN mode
                     markdown.push_str(&format!("# {}\n\n", t.text));
                 }
                 BlockType::Header(h) => {
+                    // Section header - will be colored in MARKDOWN mode
                     markdown.push_str(&format!("## {}\n\n", h.text));
                 }
                 BlockType::TextBlock(tb) => {
-                    markdown.push_str(&format!("{}\n\n", tb.text));
+                    // Regular paragraph text
+                    // Could enhance by detecting code patterns and wrapping in backticks
+                    let text = &tb.text;
+                    // Simple heuristic: if line starts with spaces/tabs, might be code
+                    if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
+                        markdown.push_str("```\n");
+                        markdown.push_str(text);
+                        markdown.push_str("\n```\n\n");
+                    } else {
+                        markdown.push_str(&format!("{}\n\n", text));
+                    }
                 }
                 BlockType::ListBlock(l) => {
+                    // Bulleted list - will have colored bullets in MARKDOWN mode
                     for item in &l.items {
                         markdown.push_str(&format!("- {}\n", item));
                     }
@@ -204,7 +230,8 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                 // Note: TableBlock type not available in current ferrules version
                 // Could add table support when ferrules provides it
                 BlockType::Footer(f) => {
-                    markdown.push_str(&format!("---\n*{}*\n", f.text));
+                    // Footer with horizontal rule and italics
+                    markdown.push_str(&format!("---\n\n*{}*\n\n", f.text));
                 }
                 _ => {}
             }
