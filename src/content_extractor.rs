@@ -187,51 +187,86 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         None::<fn(usize)>,
     ).await?;
     
-    // Convert parsed document blocks to markdown
+    // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();
     
     if let Some(page) = parsed_doc.pages.first() {
         let page_id = page.id;
+        let page_height = page.height;
+        
+        // Collect blocks with their positions
+        let mut positioned_blocks: Vec<(&ferrules_core::blocks::Block, f32)> = Vec::new();
         
         for block in &parsed_doc.blocks {
-            if !block.pages_id.contains(&page_id) {
-                continue;
+            if block.pages_id.contains(&page_id) {
+                // Use y position for sorting (top to bottom)
+                positioned_blocks.push((block, block.bbox.y0));
             }
+        }
+        
+        // Sort by vertical position to preserve reading order
+        positioned_blocks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        
+        let mut last_y = 0.0;
+        
+        for (block, y_pos) in positioned_blocks {
+            // Add extra spacing if there's a significant vertical gap
+            if last_y > 0.0 && (y_pos - last_y) > page_height * 0.05 {
+                markdown.push_str("\n");
+            }
+            last_y = y_pos + (block.bbox.y1 - block.bbox.y0);
             
             match &block.kind {
                 BlockType::Title(t) => {
-                    // Large title - will render differently in MARKDOWN mode
-                    markdown.push_str(&format!("# {}\n\n", t.text));
+                    // Large title with emphasis
+                    markdown.push_str(&format!("# **{}**\n\n", t.text.trim()));
+                    markdown.push_str("---\n\n"); // Add separator after title
                 }
                 BlockType::Header(h) => {
-                    // Section header - will be colored in MARKDOWN mode
-                    markdown.push_str(&format!("## {}\n\n", h.text));
+                    // Section header with better formatting
+                    markdown.push_str(&format!("## {}\n\n", h.text.trim()));
                 }
                 BlockType::TextBlock(tb) => {
-                    // Regular paragraph text
-                    // Could enhance by detecting code patterns and wrapping in backticks
-                    let text = &tb.text;
-                    // Simple heuristic: if line starts with spaces/tabs, might be code
-                    if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
+                    let text = tb.text.trim();
+                    
+                    // Detect and format different text patterns
+                    if text.lines().count() == 1 && text.len() < 50 {
+                        // Short single lines might be subheadings
+                        if text.chars().all(|c| c.is_uppercase() || c.is_whitespace() || c.is_ascii_punctuation()) {
+                            markdown.push_str(&format!("### {}\n\n", text));
+                        } else {
+                            markdown.push_str(&format!("{}\n\n", text));
+                        }
+                    } else if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
+                        // Code block
                         markdown.push_str("```\n");
                         markdown.push_str(text);
                         markdown.push_str("\n```\n\n");
+                    } else if text.starts_with("Note:") || text.starts_with("NOTE:") {
+                        // Note blocks
+                        markdown.push_str(&format!("> **Note:** {}\n\n", &text[5..].trim()));
+                    } else if text.starts_with("Warning:") || text.starts_with("WARNING:") {
+                        // Warning blocks
+                        markdown.push_str(&format!("> ⚠️ **Warning:** {}\n\n", &text[8..].trim()));
                     } else {
+                        // Regular paragraph
                         markdown.push_str(&format!("{}\n\n", text));
                     }
                 }
                 BlockType::ListBlock(l) => {
-                    // Bulleted list - will have colored bullets in MARKDOWN mode
-                    for item in &l.items {
-                        markdown.push_str(&format!("- {}\n", item));
+                    // Enhanced list formatting
+                    markdown.push_str("\n");
+                    for (i, item) in l.items.iter().enumerate() {
+                        // Use different bullet styles for variety
+                        let bullet = if i % 3 == 0 { "•" } else if i % 3 == 1 { "▸" } else { "◦" };
+                        markdown.push_str(&format!("{} {}\n", bullet, item.trim()));
                     }
                     markdown.push_str("\n");
                 }
-                // Note: TableBlock type not available in current ferrules version
-                // Could add table support when ferrules provides it
                 BlockType::Footer(f) => {
-                    // Footer with horizontal rule and italics
-                    markdown.push_str(&format!("---\n\n*{}*\n\n", f.text));
+                    // Footer with better formatting
+                    markdown.push_str("\n---\n\n");
+                    markdown.push_str(&format!("_{}_\n\n", f.text.trim()));
                 }
                 _ => {}
             }
@@ -239,7 +274,7 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
     }
     
     if markdown.is_empty() {
-        markdown = "# No Content\n\nNo text content found on this page.".to_string();
+        markdown = "# 📄 No Content Found\n\n> No text content could be extracted from this page.\n\n**Try:**\n• Checking if the PDF contains text (not just images)\n• Using a different page\n• Enabling OCR if the PDF is scanned".to_string();
     }
     
     Ok(markdown)

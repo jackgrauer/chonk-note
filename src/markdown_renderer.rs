@@ -13,14 +13,38 @@ impl MarkdownRenderer {
     pub fn new() -> Self {
         let mut skin = MadSkin::default();
         
-        // Configure skin colors for dark mode using termimad's crossterm
-        skin.set_headers_fg(Color::Cyan);
-        skin.bold.set_fg(Color::Yellow);
-        skin.italic.set_fg(Color::Magenta);
-        skin.inline_code.set_fg(Color::Green);
-        skin.code_block.set_bg(Color::Rgb { r: 40, g: 40, b: 40 });
-        skin.quote_mark.set_fg(Color::DarkGrey);
-        skin.bullet.set_fg(Color::Yellow);
+        // Modern, beautiful styling for markdown
+        
+        // Headers - gradient from bright to medium blue
+        skin.set_headers_fg(Color::Rgb { r: 100, g: 200, b: 255 }); // Bright blue
+        skin.headers[0].set_fg(Color::Rgb { r: 120, g: 220, b: 255 }); // H1 - Brightest
+        skin.headers[0].set_bg(Color::Rgb { r: 20, g: 30, b: 50 });   // Subtle bg
+        skin.headers[1].set_fg(Color::Rgb { r: 100, g: 180, b: 240 }); // H2
+        skin.headers[2].set_fg(Color::Rgb { r: 80, g: 160, b: 220 });  // H3
+        
+        // Text styling - clean and modern
+        skin.bold.set_fg(Color::Rgb { r: 255, g: 200, b: 100 }); // Warm gold
+        skin.italic.set_fg(Color::Rgb { r: 200, g: 150, b: 255 }); // Soft purple
+        
+        // Code - modern IDE style
+        skin.inline_code.set_fg(Color::Rgb { r: 150, g: 255, b: 150 }); // Bright green
+        skin.inline_code.set_bg(Color::Rgb { r: 30, g: 35, b: 40 }); // Dark background
+        skin.code_block.set_fg(Color::Rgb { r: 200, g: 200, b: 200 }); // Light gray text
+        skin.code_block.set_bg(Color::Rgb { r: 25, g: 30, b: 35 }); // Very dark bg
+        
+        // Lists and quotes - elegant
+        skin.bullet.set_fg(Color::Rgb { r: 255, g: 150, b: 100 }); // Coral/orange
+        skin.quote_mark.set_fg(Color::Rgb { r: 100, g: 100, b: 150 }); // Muted purple
+        
+        // Tables - clean borders
+        skin.table.set_fg(Color::Rgb { r: 150, g: 150, b: 180 }); // Soft borders
+        
+        // Strikeout (termimad uses strikeout not strikethrough)
+        skin.strikeout.set_fg(Color::Rgb { r: 120, g: 120, b: 120 });
+        skin.strikeout.add_attr(termimad::crossterm::style::Attribute::CrossedOut);
+        
+        // Paragraph text - clean and readable
+        skin.paragraph.set_fg(Color::Rgb { r: 220, g: 220, b: 230 }); // Soft white
         
         Self {
             skin,
