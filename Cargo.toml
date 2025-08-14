@@ -19,8 +19,9 @@ crossterm = "0.28"
 pdfium-render = { version = "0.8", features = ["thread_safe"] }
 image = "0.25"
 
-# Kitty image protocol
-base64 = "0.22"
+# Image display  
+viuer = { version = "0.7.1", default-features = false, features = [] }  # Cross-terminal image display
+image_0_24 = { package = "image", version = "0.24" }  # For viuer compatibility
 
 # File watching
 notify = "6.1"

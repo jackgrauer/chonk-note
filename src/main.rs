@@ -31,8 +31,9 @@ mod pdf_renderer;
 mod pdf_to_grid;
 mod file_picker;
 mod theme;
-mod kitty_graphics;
+mod viuer_display;
 mod markdown_renderer;
+mod keyboard;
 
 use renderer::EditPanelRenderer;
 use theme::ChonkerTheme;
@@ -77,30 +78,30 @@ enum DisplayMode {
 
 #[derive(Clone, Debug)]
 pub struct AppSettings {
-    spatial_recognition_enabled: bool,
+    pub spatial_recognition_enabled: bool,
 }
 
 pub struct App {
-    pdf_path: PathBuf,
-    current_page: usize,
-    total_pages: usize,
-    display_mode: DisplayMode,
-    edit_data: Option<Vec<Vec<char>>>,
-    edit_display: Option<EditPanelRenderer>,
-    current_page_image: Option<DynamicImage>,
-    markdown_data: Option<String>,
-    markdown_renderer: Option<MarkdownRenderer>,
-    settings: AppSettings,
-    exit_requested: bool,
-    status_message: String,
-    term_width: u16,
-    term_height: u16,
-    dark_mode: bool, // Dark mode toggle
+    pub pdf_path: PathBuf,
+    pub current_page: usize,
+    pub total_pages: usize,
+    pub display_mode: DisplayMode,
+    pub edit_data: Option<Vec<Vec<char>>>,
+    pub edit_display: Option<EditPanelRenderer>,
+    pub current_page_image: Option<DynamicImage>,
+    pub markdown_data: Option<String>,
+    pub markdown_renderer: Option<MarkdownRenderer>,
+    pub settings: AppSettings,
+    pub exit_requested: bool,
+    pub status_message: String,
+    pub term_width: u16,
+    pub term_height: u16,
+    pub dark_mode: bool, // Dark mode toggle
     // EDIT mode cursor and selection
-    cursor: (usize, usize),  // (x, y) in grid
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
-    is_selecting: bool,
+    pub cursor: (usize, usize),  // (x, y) in grid
+    pub selection_start: Option<(usize, usize)>,
+    pub selection_end: Option<(usize, usize)>,
+    pub is_selecting: bool,
 }
 
 impl App {
@@ -161,32 +162,49 @@ impl App {
     pub async fn load_pdf_page(&mut self) -> Result<()> {
         self.status_message = "Loading PDF...".to_string();
         
-        // Calculate PDF size based on display mode - much larger for better readability
+        // Calculate PDF size based on display mode
         let (image_width, image_height) = match self.display_mode {
             DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
-                // For split modes, use almost full half screen
+                // For split modes - use actual panel size
                 let width = ((self.term_width / 2) - 4).max(40) as u32;
                 let height = (self.term_height - 4).max(20) as u32;
-                // Scale up for better quality (will be downscaled by terminal)
-                (width * 10, height * 20)
+                // Lower resolution for stability - will be upscaled by display_image
+                (width * 3, height * 3)
             }
             _ => {
                 // Default for other modes
                 let width = ((self.term_width / 2) - 4).max(40) as u32;
                 let height = (self.term_height - 4).max(20) as u32;
-                (width * 10, height * 20)
+                (width * 3, height * 3)
             }
         };
         
         match pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, image_width, image_height) {
             Ok(image) => {
                 self.current_page_image = Some(image);
-                self.status_message = format!("Page {}/{} - Press Ctrl+E to extract to EDIT panel", self.current_page + 1, self.total_pages);
+                self.status_message = format!("Page {}/{} - Ctrl+E: Extract text", self.current_page + 1, self.total_pages);
+                
+                #[cfg(debug_assertions)]
+                {
+                    let protocol = viuer_display::get_protocol_info();
+                    self.status_message = format!("Page {}/{} [{}]", self.current_page + 1, self.total_pages, protocol);
+                }
             }
             Err(e) => {
+                // Log error for debugging but show user-friendly message
+                #[cfg(debug_assertions)]
                 eprintln!("Failed to render PDF page: {}", e);
+                
                 self.current_page_image = None;
-                self.status_message = format!("Failed to load page {}", self.current_page + 1);
+                self.status_message = format!("Failed to load page {} - {}", 
+                    self.current_page + 1, 
+                    match e.to_string().as_str() {
+                        s if s.contains("not found") => "File not found",
+                        s if s.contains("permission") => "Permission denied",
+                        s if s.contains("memory") => "Out of memory",
+                        _ => "Unable to render page"
+                    }
+                );
             }
         }
         
@@ -276,7 +294,7 @@ impl App {
     
     pub fn next_page(&mut self) {
         if self.current_page < self.total_pages - 1 {
-            let _ = kitty_graphics::clear_graphics();
+            let _ = viuer_display::clear_graphics();
             self.current_page += 1;
             self.edit_data = None;
             self.current_page_image = None;
@@ -289,7 +307,7 @@ impl App {
     
     pub fn prev_page(&mut self) {
         if self.current_page > 0 {
-            let _ = kitty_graphics::clear_graphics();
+            let _ = viuer_display::clear_graphics();
             self.current_page -= 1;
             self.edit_data = None;
             self.current_page_image = None;
@@ -323,158 +341,6 @@ struct Layout {
     left: Option<Rect>,
     right: Option<Rect>,
     status: Rect,
-}
-
-/// Extract selected text from the edit buffer
-fn extract_selection_text(app: &App) -> Option<String> {
-    if let (Some(start), Some(end), Some(data)) = 
-        (&app.selection_start, &app.selection_end, &app.edit_data) {
-        
-        let (start_row, start_col) = *start;
-        let (end_row, end_col) = *end;
-        
-        // Normalize selection (ensure start comes before end)
-        let ((start_row, start_col), (end_row, end_col)) = 
-            if start_row < end_row || (start_row == end_row && start_col < end_col) {
-                ((start_row, start_col), (end_row, end_col))
-            } else {
-                ((end_row, end_col), (start_row, start_col))
-            };
-        
-        let mut selected_text = String::new();
-        
-        if start_row == end_row {
-            // Single line selection
-            if let Some(row) = data.get(start_row) {
-                let start_idx = start_col.min(row.len());
-                let end_idx = end_col.min(row.len());
-                for i in start_idx..end_idx {
-                    if let Some(&ch) = row.get(i) {
-                        selected_text.push(ch);
-                    }
-                }
-            }
-        } else {
-            // Multi-line selection
-            for row_idx in start_row..=end_row {
-                if let Some(row) = data.get(row_idx) {
-                    if row_idx == start_row {
-                        // First line: from start_col to end of line
-                        for i in start_col..row.len() {
-                            selected_text.push(row[i]);
-                        }
-                    } else if row_idx == end_row {
-                        // Last line: from start of line to end_col
-                        for i in 0..end_col.min(row.len()) {
-                            selected_text.push(row[i]);
-                        }
-                    } else {
-                        // Middle lines: entire line
-                        for &ch in row {
-                            selected_text.push(ch);
-                        }
-                    }
-                    
-                    // Add newline except for last row
-                    if row_idx < end_row {
-                        selected_text.push('\n');
-                    }
-                }
-            }
-        }
-        
-        if selected_text.is_empty() {
-            None
-        } else {
-            Some(selected_text)
-        }
-    } else {
-        None
-    }
-}
-
-/// Paste text at cursor position
-fn paste_at_cursor(app: &mut App, text: &str) {
-    if let Some(data) = &mut app.edit_data {
-        // Ensure we have a row to paste into
-        while data.len() <= app.cursor.1 {
-            data.push(vec![]);
-        }
-        
-        let lines: Vec<&str> = text.lines().collect();
-        
-        if lines.is_empty() {
-            return;
-        }
-        
-        if lines.len() == 1 {
-            // Single line paste
-            let row = &mut data[app.cursor.1];
-            let insert_pos = app.cursor.0.min(row.len());
-            
-            for (i, ch) in lines[0].chars().enumerate() {
-                row.insert(insert_pos + i, ch);
-            }
-            app.cursor.0 += lines[0].len();
-        } else {
-            // Multi-line paste
-            let current_row = &mut data[app.cursor.1];
-            let insert_pos = app.cursor.0.min(current_row.len());
-            
-            // Split current line at cursor
-            let remaining_chars: Vec<char> = current_row.drain(insert_pos..).collect();
-            
-            // Insert first line
-            for ch in lines[0].chars() {
-                current_row.push(ch);
-            }
-            
-            // Insert middle lines
-            for line in &lines[1..lines.len()-1] {
-                let new_line: Vec<char> = line.chars().collect();
-                data.insert(app.cursor.1 + 1, new_line);
-                app.cursor.1 += 1;
-            }
-            
-            // Insert last line and remaining chars
-            if lines.len() > 1 {
-                let mut last_line: Vec<char> = lines[lines.len()-1].chars().collect();
-                app.cursor.0 = last_line.len();
-                last_line.extend(remaining_chars);
-                data.insert(app.cursor.1 + 1, last_line);
-                app.cursor.1 += 1;
-            }
-        }
-        
-        // Update renderer
-        if let Some(renderer) = &mut app.edit_display {
-            renderer.update_buffer(data);
-        }
-    }
-}
-
-/// Copy text to clipboard
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    use cli_clipboard::{ClipboardContext, ClipboardProvider};
-    
-    let mut ctx: ClipboardContext = ClipboardProvider::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create clipboard context: {}", e))?;
-    
-    ctx.set_contents(text.to_owned())
-        .map_err(|e| anyhow::anyhow!("Failed to set clipboard contents: {}", e))?;
-    
-    Ok(())
-}
-
-/// Paste text from clipboard
-fn paste_from_clipboard() -> Result<String> {
-    use cli_clipboard::{ClipboardContext, ClipboardProvider};
-    
-    let mut ctx: ClipboardContext = ClipboardProvider::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create clipboard context: {}", e))?;
-    
-    ctx.get_contents()
-        .map_err(|e| anyhow::anyhow!("Failed to get clipboard contents: {}", e))
 }
 
 /// Main entry point
@@ -541,7 +407,7 @@ fn setup_terminal() -> Result<()> {
 /// Restore terminal to normal mode
 fn restore_terminal() -> Result<()> {
     // Clear any remaining graphics
-    let _ = kitty_graphics::clear_graphics();
+    let _ = viuer_display::clear_graphics();
     
     // Clear the screen before leaving
     execute!(
@@ -667,13 +533,20 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
             DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
                 if let Some(left) = layout.left {
                     if let Some(ref image) = app.current_page_image {
-                        // Use full left panel for PDF
-                        let _ = kitty_graphics::display_image(
+                        // Use full left panel for PDF with proper padding
+                        // Add padding to avoid overlapping with borders
+                        let padding = 1;
+                        let display_x = left.x + padding;
+                        let display_y = left.y + padding;
+                        let display_width = left.width.saturating_sub(padding * 2);
+                        let display_height = left.height.saturating_sub(padding * 2);
+                        
+                        let _ = viuer_display::display_pdf_image(
                             image,
-                            left.x,
-                            left.y,
-                            left.width,
-                            left.height,
+                            display_x,
+                            display_y,
+                            display_width,
+                            display_height,
                         );
                     }
                 }
@@ -695,10 +568,11 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
-                    if handle_input(app, key, runtime)? {
+                    // Use the keyboard module to handle input
+                    if keyboard::handle_input(app, key, runtime)? {
                         if app.exit_requested {
                             // Clear graphics before quitting
-                            let _ = kitty_graphics::clear_graphics();
+                            let _ = viuer_display::clear_graphics();
                             break;
                         }
                     } else {
@@ -839,7 +713,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
 /// Draw status bar
 fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
     let status = format!(
-        " {} | [Ctrl+O]pen [Ctrl+N]ext [Ctrl+P]rev [Ctrl+E]xtract [Tab]Mode [Ctrl+Q]uit ",
+        " {} | [Ctrl+O]pen [Ctrl+E]xtract [Tab]Mode [Ctrl+Q]uit ",
         app.status_message
     );
     
@@ -870,58 +744,148 @@ fn draw_options_panel(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<
     let bg = if app.dark_mode { ChonkerTheme::bg_secondary() } else { ChonkerTheme::bg_secondary_light() };
     draw_panel_background(stdout, area, bg)?;
     
-    // Center content horizontally
-    let content_width = 50.min(area.width - 4); // Max width of 50 chars
-    let start_x = area.x + (area.width - content_width) / 2;
+    // Start near top for more content
+    let mut y = area.y + 2;
     
-    // Start content vertically centered
-    let total_lines = 10; // Reduced for single option
-    let start_y = area.y + (area.height - total_lines) / 2;
-    
-    let mut y_offset = 3;
-    
-    // Single toggle option
-    let (cursor_char, highlight_color) = (">", ChonkerTheme::accent_text());
-    
-    let status = if app.settings.spatial_recognition_enabled { "ON" } else { "OFF" };
-    let status_color = if app.settings.spatial_recognition_enabled { 
-        ChonkerTheme::success() 
-    } else { 
-        ChonkerTheme::error() 
-    };
-    
+    // Title
     execute!(
         stdout,
-        MoveTo(start_x, start_y + y_offset),
-        SetForegroundColor(highlight_color),
-        Print(format!("{} ENABLE SPATIAL RECOGNITION WITH MARKDOWN", cursor_char)),
-        ResetColor,
-        MoveTo(start_x + 45, start_y + y_offset),
-        SetForegroundColor(status_color),
-        Print(status),
+        MoveTo(area.x + 2, y),
+        SetForegroundColor(ChonkerTheme::accent_text()),
+        SetAttribute(Attribute::Bold),
+        Print("OPTIONS & HELP"),
+        SetAttribute(Attribute::Reset),
         ResetColor
     )?;
-    y_offset += 4;
+    y += 2;
     
-    // Footer with controls - centered at bottom
-    let controls = "Space Toggle   Tab Return";
-    let controls_x = area.x + (area.width - controls.len() as u16) / 2;
+    // Keyboard shortcuts section
     execute!(
         stdout,
-        MoveTo(controls_x, start_y + y_offset + 2),
+        MoveTo(area.x + 2, y),
+        SetForegroundColor(ChonkerTheme::accent_text()),
+        SetAttribute(Attribute::Bold),
+        Print("KEYBOARD SHORTCUTS"),
+        SetAttribute(Attribute::Reset),
+        ResetColor
+    )?;
+    y += 2;
+    
+    // List shortcuts
+    let shortcuts = [
+        ("Ctrl+O", "Open PDF file"),
+        ("Ctrl+E", "Extract text from current page"),
+        ("Ctrl+D", "Toggle dark/light mode"),
+        ("Ctrl+Q", "Quit application"),
+        ("Tab", "Switch between PDF/EDIT/MARKDOWN/OPTIONS"),
+        ("", ""),
+        ("EDIT Mode:", ""),
+        ("↑↓←→", "Scroll text"),
+        ("Type", "Edit text"),
+        ("Backspace", "Delete before cursor"),
+        ("Delete", "Delete at cursor"),
+        ("Enter", "New line"),
+        ("Cmd+C", "Copy selection"),
+        ("Cmd+V", "Paste"),
+        ("", ""),
+        ("MARKDOWN Mode:", ""),
+        ("↑↓", "Scroll content"),
+    ];
+    
+    for (key, desc) in shortcuts {
+        if key.is_empty() && desc.is_empty() {
+            y += 1;
+            continue;
+        }
+        
+        if desc.is_empty() {
+            // Section header
+            execute!(
+                stdout,
+                MoveTo(area.x + 2, y),
+                SetForegroundColor(ChonkerTheme::accent_text()),
+                Print(key),
+                ResetColor
+            )?;
+        } else if key.is_empty() {
+            // Description only
+            execute!(
+                stdout,
+                MoveTo(area.x + 4, y),
+                SetForegroundColor(ChonkerTheme::text_dim()),
+                Print(desc),
+                ResetColor
+            )?;
+        } else {
+            // Key + description
+            execute!(
+                stdout,
+                MoveTo(area.x + 4, y),
+                SetForegroundColor(ChonkerTheme::text_primary()),
+                Print(format!("{:12}", key)),
+                SetForegroundColor(ChonkerTheme::text_secondary()),
+                Print(desc),
+                ResetColor
+            )?;
+        }
+        y += 1;
+        
+        // Stop if we're running out of space
+        if y >= area.y + area.height - 2 {
+            break;
+        }
+    }
+    
+    // Footer
+    let footer = "Tab to return";
+    execute!(
+        stdout,
+        MoveTo(area.x + (area.width - footer.len() as u16) / 2, area.y + area.height - 2),
         SetForegroundColor(ChonkerTheme::text_dim()),
-        Print(controls),
+        Print(footer),
         ResetColor
     )?;
     
     Ok(())
 }
 
-/// Handle mouse input for EDIT mode
+/// Handle mouse input for EDIT and MARKDOWN modes
 fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Result<()> {
     use crossterm::event::{MouseEventKind, MouseButton};
     
-    // Only handle mouse events in EDIT mode and when we have content
+    // Handle MARKDOWN mode scrolling
+    if app.display_mode == DisplayMode::PdfMarkdown && app.markdown_data.is_some() {
+        if let Some(right) = layout.right {
+            let panel_x = right.x + 1;
+            let panel_y = right.y;
+            let panel_width = right.width - 2;
+            let panel_height = right.height;
+            
+            // Check if mouse is within the MARKDOWN panel
+            if mouse.column >= panel_x && 
+               mouse.column < panel_x + panel_width && 
+               mouse.row >= panel_y && 
+               mouse.row < panel_y + panel_height {
+                
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        if let Some(renderer) = &mut app.markdown_renderer {
+                            renderer.scroll_down(3);
+                        }
+                    }
+                    MouseEventKind::ScrollUp => {
+                        if let Some(renderer) = &mut app.markdown_renderer {
+                            renderer.scroll_up(3);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        return Ok(());
+    }
+    
+    // Handle EDIT mode
     if app.display_mode != DisplayMode::PdfEdit || app.edit_data.is_none() {
         return Ok(());
     }
@@ -990,6 +954,30 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
                         }
                     }
                 }
+                MouseEventKind::ScrollDown => {
+                    // Scroll down with mouse wheel/trackpad
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_down(3); // Scroll 3 lines at a time
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    // Scroll up with mouse wheel/trackpad
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_up(3); // Scroll 3 lines at a time
+                    }
+                }
+                MouseEventKind::ScrollLeft => {
+                    // Horizontal scroll left
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_left(3);
+                    }
+                }
+                MouseEventKind::ScrollRight => {
+                    // Horizontal scroll right
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_right(3);
+                    }
+                }
                 _ => {}
             }
         }
@@ -998,328 +986,4 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
     Ok(())
 }
 
-/// Handle keyboard input
-fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runtime) -> Result<bool> {
-    match key.code {
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.exit_requested = true;
-            return Ok(true);
-        }
-        
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.next_page();
-            runtime.block_on(app.load_pdf_page())?;
-        }
-        
-        KeyCode::Right => {
-            app.next_page();
-            runtime.block_on(app.load_pdf_page())?;
-        }
-        
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.prev_page();
-            runtime.block_on(app.load_pdf_page())?;
-        }
-        
-        KeyCode::Left => {
-            app.prev_page();
-            runtime.block_on(app.load_pdf_page())?;
-        }
-        
-        KeyCode::Tab => {
-            app.toggle_mode();
-            // DON'T reload PDF - this was causing the flicker!
-            // The existing image will be displayed in the new mode automatically
-        }
-        
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.dark_mode = !app.dark_mode;
-            app.status_message = format!("Mode: {}", if app.dark_mode { "Dark" } else { "Light" });
-        }
-        
-        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Open new file
-            disable_raw_mode()?;
-            println!("\r\n🐹 Opening file picker...\r");
-            
-            let new_file = file_picker::pick_pdf_file()?;
-            
-            enable_raw_mode()?;
-            
-            if let Some(new_file) = new_file {
-                if let Ok(new_app) = App::new(new_file.clone(), 1, "edit") {
-                    *app = new_app;
-                    app.status_message = format!("Loaded: {}", new_file.display());
-                    runtime.block_on(app.load_pdf_page())?;
-                }
-            }
-        }
-        
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            runtime.block_on(app.extract_current_page())?;
-        }
-        
-        // EDIT mode keyboard handlers - only active when in EDIT mode with content
-        _ if app.display_mode == DisplayMode::PdfEdit && app.edit_data.is_some() => {
-            match key.code {
-                // Copy selection
-                KeyCode::Char('c') if key.modifiers.contains(MOD_KEY) => {
-                    if let Some(text) = extract_selection_text(app) {
-                        if let Err(e) = copy_to_clipboard(&text) {
-                            app.status_message = format!("Copy failed: {}", e);
-                        } else {
-                            app.status_message = "Text copied to clipboard".to_string();
-                        }
-                    }
-                }
-                
-                // Paste at cursor
-                KeyCode::Char('v') if key.modifiers.contains(MOD_KEY) => {
-                    match paste_from_clipboard() {
-                        Ok(text) => {
-                            paste_at_cursor(app, &text);
-                            app.status_message = "Text pasted".to_string();
-                        }
-                        Err(e) => {
-                            app.status_message = format!("Paste failed: {}", e);
-                        }
-                    }
-                }
-                
-                // Arrow key navigation (move cursor)
-                KeyCode::Up => {
-                    if app.cursor.1 > 0 {
-                        app.cursor.1 -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if let Some(data) = &app.edit_data {
-                        if app.cursor.1 < data.len().saturating_sub(1) {
-                            app.cursor.1 += 1;
-                        }
-                    }
-                }
-                KeyCode::Left => {
-                    if app.cursor.0 > 0 {
-                        app.cursor.0 -= 1;
-                    }
-                }
-                KeyCode::Right => {
-                    if let Some(data) = &app.edit_data {
-                        if app.cursor.1 < data.len() {
-                            if let Some(row) = data.get(app.cursor.1) {
-                                if app.cursor.0 < row.len().saturating_sub(1) {
-                                    app.cursor.0 += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Backspace - delete character before cursor
-                KeyCode::Backspace => {
-                    if let Some(data) = &mut app.edit_data {
-                        if app.cursor.0 > 0 {
-                            // Delete character in current row
-                            if app.cursor.1 < data.len() {
-                                if app.cursor.0 <= data[app.cursor.1].len() {
-                                    data[app.cursor.1].remove(app.cursor.0 - 1);
-                                    app.cursor.0 -= 1;
-                                    
-                                    // Update renderer
-                                    if let Some(renderer) = &mut app.edit_display {
-                                        renderer.update_buffer(data);
-                                    }
-                                }
-                            }
-                        } else if app.cursor.1 > 0 {
-                            // Join current line with previous line
-                            let current_line = if app.cursor.1 < data.len() {
-                                data.remove(app.cursor.1)
-                            } else {
-                                vec![]
-                            };
-                            
-                            if app.cursor.1 > 0 {
-                                app.cursor.0 = data[app.cursor.1 - 1].len();
-                                data[app.cursor.1 - 1].extend(current_line);
-                                app.cursor.1 -= 1;
-                                
-                                // Update renderer
-                                if let Some(renderer) = &mut app.edit_display {
-                                    renderer.update_buffer(data);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Delete - delete character at cursor
-                KeyCode::Delete => {
-                    if let Some(data) = &mut app.edit_data {
-                        if app.cursor.1 < data.len() {
-                            let row_len = data[app.cursor.1].len();
-                            if app.cursor.0 < row_len {
-                                // Delete character at cursor position
-                                data[app.cursor.1].remove(app.cursor.0);
-                                
-                                // Update renderer
-                                if let Some(renderer) = &mut app.edit_display {
-                                    renderer.update_buffer(data);
-                                }
-                            } else if app.cursor.1 + 1 < data.len() {
-                                // Join next line with current line
-                                let next_line = data.remove(app.cursor.1 + 1);
-                                data[app.cursor.1].extend(next_line);
-                                
-                                // Update renderer
-                                if let Some(renderer) = &mut app.edit_display {
-                                    renderer.update_buffer(data);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Enter - insert new line
-                KeyCode::Enter => {
-                    if let Some(data) = &mut app.edit_data {
-                        if app.cursor.1 < data.len() {
-                            // Split current line at cursor position
-                            let current_row = &mut data[app.cursor.1];
-                            let split_point = app.cursor.0.min(current_row.len());
-                            let new_line: Vec<char> = current_row.drain(split_point..).collect();
-                            
-                            // Insert new line
-                            data.insert(app.cursor.1 + 1, new_line);
-                            app.cursor.1 += 1;
-                            app.cursor.0 = 0;
-                            
-                            // Update renderer
-                            if let Some(renderer) = &mut app.edit_display {
-                                renderer.update_buffer(data);
-                            }
-                        }
-                    }
-                }
-                
-                // Regular character input
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
-                    if let Some(data) = &mut app.edit_data {
-                        // Ensure we have a row to insert into
-                        while data.len() <= app.cursor.1 {
-                            data.push(vec![]);
-                        }
-                        
-                        // Insert character at cursor position
-                        let row = &mut data[app.cursor.1];
-                        let insert_pos = app.cursor.0.min(row.len());
-                        row.insert(insert_pos, c);
-                        app.cursor.0 += 1;
-                        
-                        // Update renderer
-                        if let Some(renderer) = &mut app.edit_display {
-                            renderer.update_buffer(data);
-                        }
-                        
-                        // Clear any selection when typing
-                        app.selection_start = None;
-                        app.selection_end = None;
-                        app.is_selecting = false;
-                    }
-                }
-                
-                _ => {}
-            }
-        }
-        
-        KeyCode::Char(' ') | KeyCode::Enter if app.display_mode == DisplayMode::Options => {
-            app.settings.spatial_recognition_enabled = !app.settings.spatial_recognition_enabled;
-            app.status_message = format!("Spatial recognition with MARKDOWN: {}",
-                if app.settings.spatial_recognition_enabled { "ON" } else { "OFF" });
-            runtime.block_on(app.extract_current_page())?;
-        }
-        
-        // Scrolling for EDIT panel and MARKDOWN panel (not in OPTIONS mode)
-        KeyCode::Char('j') => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_down(1);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_down(1);
-                }
-            }
-        }
-        KeyCode::Down if app.display_mode != DisplayMode::Options => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_down(1);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_down(1);
-                }
-            }
-        }
-        KeyCode::Char('k') => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_up(1);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_up(1);
-                }
-            }
-        }
-        KeyCode::Up if app.display_mode != DisplayMode::Options => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_up(1);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_up(1);
-                }
-            }
-        }
-        KeyCode::Char('h') => {
-            if let Some(renderer) = &mut app.edit_display {
-                renderer.scroll_left(1);
-            }
-        }
-        KeyCode::Char('l') => {
-            if let Some(renderer) = &mut app.edit_display {
-                renderer.scroll_right(1);
-            }
-        }
-        KeyCode::PageDown => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_down(10);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_down(10);
-                }
-            }
-        }
-        KeyCode::PageUp => {
-            if app.display_mode == DisplayMode::PdfEdit {
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_up(10);
-                }
-            } else if app.display_mode == DisplayMode::PdfMarkdown {
-                if let Some(renderer) = &mut app.markdown_renderer {
-                    renderer.scroll_up(10);
-                }
-            }
-        }
-        
-        _ => {}
-    }
-    
-    Ok(true)
-}
+// Keyboard handling moved to keyboard.rs module

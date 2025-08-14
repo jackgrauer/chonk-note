@@ -60,20 +60,28 @@ pub async fn extract_to_matrix(
                 positioned_blocks.push(block);
             }
         }
-        positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap());
+        positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap_or(std::cmp::Ordering::Equal));
         
         for block in positioned_blocks {
             // Get bounding box coordinates
             let bbox = &block.bbox;
             
             // Map PDF coordinates to character grid coordinates
-            // PDF coordinates: x0, y0 (top-left), x1, y1 (bottom-right)
-            // Grid coordinates: 0,0 is top-left
-            let grid_x = ((bbox.x0 / page_width) * width as f32) as usize;
+            // For X: Use a small left margin instead of exact PDF position to prevent excessive indentation
+            // Most text should start near the left edge for readability
+            let grid_x = if bbox.x0 < page_width * 0.2 {
+                2  // Small left margin for normal text
+            } else if bbox.x0 > page_width * 0.5 {
+                10 // Slightly more indent for clearly indented content
+            } else {
+                5  // Medium indent for somewhat indented content
+            };
+            
+            // For Y: Map proportionally
             let grid_y = ((bbox.y0 / page_height) * height as f32) as usize;
             
             // Skip if position is out of bounds
-            if grid_x >= width || grid_y >= height {
+            if grid_y >= height {
                 continue;
             }
             
@@ -128,6 +136,14 @@ fn place_text_on_grid_spatial(
     let mut x = x_start;
     let mut y = y_start;
     
+    // Define a reasonable right margin to prevent text running off screen
+    let right_margin = 2;
+    let effective_max_width = if max_width > right_margin { 
+        max_width - right_margin 
+    } else { 
+        max_width 
+    };
+    
     for ch in text.chars() {
         // Handle newlines - move to next line
         if ch == '\n' {
@@ -139,18 +155,41 @@ fn place_text_on_grid_spatial(
             continue;
         }
         
-        // Skip if we're out of bounds
-        if x >= max_width || y >= max_height {
-            // If we hit the right edge, try wrapping to next line
-            if x >= max_width && y + 1 < max_height {
-                y += 1;
-                x = x_start;
-            } else {
+        // Check if we need to wrap to next line
+        if x >= effective_max_width {
+            // Don't break in the middle of a word if possible
+            // Look back to find the last space for word wrapping
+            let mut wrap_pos = x;
+            let mut found_space = false;
+            
+            // Search backwards from current position for a space
+            for back_x in (x_start..x).rev() {
+                if back_x < grid[y].len() && grid[y][back_x] == ' ' {
+                    wrap_pos = back_x + 1;
+                    found_space = true;
+                    break;
+                }
+            }
+            
+            // Move to next line
+            y += 1;
+            if y >= max_height {
                 break;
             }
+            
+            // If we found a word boundary, clear the wrapped portion on the previous line
+            if found_space && y > 0 {
+                for clear_x in wrap_pos..x.min(max_width) {
+                    if clear_x < grid[y-1].len() {
+                        grid[y-1][clear_x] = ' ';
+                    }
+                }
+            }
+            
+            x = x_start;
         }
         
-        // Place character on grid
+        // Place character on grid if within bounds
         if x < max_width && y < max_height {
             grid[y][x] = ch;
             x += 1;
@@ -210,7 +249,7 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         }
         
         // Sort by vertical position to preserve reading order
-        positioned_blocks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        positioned_blocks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         
         let mut last_y = 0.0;
         

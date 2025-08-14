@@ -162,6 +162,10 @@ impl EditPanelRenderer {
         (self.scroll_x, self.scroll_y)
     }
     
+    pub fn get_viewport_size(&self) -> (u16, u16) {
+        (self.viewport_width, self.viewport_height)
+    }
+    
     /// Render with cursor and selection highlighting
     pub fn render_with_cursor_and_selection(
         &self,
