@@ -223,9 +223,8 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
             
             match &block.kind {
                 BlockType::Title(t) => {
-                    // Large title with emphasis
-                    markdown.push_str(&format!("# **{}**\n\n", t.text.trim()));
-                    markdown.push_str("---\n\n"); // Add separator after title
+                    // Title without excessive formatting
+                    markdown.push_str(&format!("# {}\n\n", t.text.trim()));
                 }
                 BlockType::Header(h) => {
                     // Section header with better formatting
@@ -235,14 +234,7 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                     let text = tb.text.trim();
                     
                     // Detect and format different text patterns
-                    if text.lines().count() == 1 && text.len() < 50 {
-                        // Short single lines might be subheadings
-                        if text.chars().all(|c| c.is_uppercase() || c.is_whitespace() || c.is_ascii_punctuation()) {
-                            markdown.push_str(&format!("### {}\n\n", text));
-                        } else {
-                            markdown.push_str(&format!("{}\n\n", text));
-                        }
-                    } else if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
+                    if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
                         // Code block
                         markdown.push_str("```\n");
                         markdown.push_str(text);
