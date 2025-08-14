@@ -1,0 +1,38 @@
+[package]
+name = "chonker7"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.38", features = ["full"] }
+
+# Ferrules for PDF extraction (local with patches)
+ferrules-core = { path = "ferrules/ferrules-core" }
+
+# Terminal UI - Pure crossterm, no ratatui!
+crossterm = "0.28"
+
+# PDF rendering
+pdfium-render = { version = "0.8", features = ["thread_safe"] }
+image = "0.25"
+
+# Kitty image protocol
+base64 = "0.22"
+
+# File watching
+notify = "6.1"
+
+# Fuzzy file finder (from Helix editor)
+nucleo = "0.5"
+
+# Sophisticated spatial text layout
+rstar = "0.12"
+euclid = "0.22"
+grid = "0.14"
+
+[features]
+default = ["kitty-images"]
+kitty-images = []
