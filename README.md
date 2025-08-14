@@ -6,9 +6,9 @@ A terminal PDF viewer that combines **fancy-cat** inspired terminal display with
 
 - 🤖 **AI-Powered Text Extraction** - Uses Ferrules for intelligent document parsing
 - 📊 **Text Matrix Display** - Preserves spatial layout of extracted text
-- 🖼️ **Split View** - Side-by-side PDF image and text matrix
+- 🖼️ **Split View** - Side-by-side PDF image and EDIT panel
 - ⚡ **Fast Navigation** - Quick page switching with keyboard shortcuts
-- 🔄 **Multiple Display Modes** - Image-only, text-only, or split view
+- 🔄 **Multiple Display Modes** - PDF+EDIT, PDF+MARKDOWN, or OPTIONS
 - 🚀 **Global Command** - Run from anywhere with `chonker7`
 
 ## Concept
@@ -26,8 +26,8 @@ Chonker7 bridges the gap between visual PDF display and intelligent text extract
 ├─────────────────────────────────────┤
 │                                     │
 │  ┌─────────────┐  ┌──────────────┐ │
-│  │   PDF View  │  │  Text Matrix │ │
-│  │  (Image)    │  │   (Ferrules) │ │
+│  │   PDF View  │  │   EDIT Panel │ │
+│  │  (Image)    │  │  (Gridlike)  │ │
 │  └─────────────┘  └──────────────┘ │
 │                                     │
 │  ┌─────────────────────────────────┐│
@@ -60,14 +60,14 @@ chonker7 document.pdf
 # Start at specific page
 chonker7 document.pdf -p 5
 
-# Text-only mode
-chonker7 document.pdf -m text
+# OPTIONS mode
+chonker7 document.pdf -m options
 
-# Image-only mode  
-chonker7 document.pdf -m image
+# MARKDOWN view  
+chonker7 document.pdf -m markdown
 
-# Split view (default)
-chonker7 document.pdf -m split
+# EDIT view (default)
+chonker7 document.pdf -m edit
 ```
 
 ## ⌨️ Keyboard Shortcuts
@@ -77,7 +77,7 @@ chonker7 document.pdf -m split
 | `Ctrl+O` | Open new PDF (file dialog) |
 | `Ctrl+N` / `→` | Next page |
 | `Ctrl+P` / `←` | Previous page |
-| `Tab` | Toggle display mode (PDF + TEXT → PDF → TEXT → OPTIONS) |
+| `Tab` | Toggle display mode (PDF+EDIT → PDF+MARKDOWN → OPTIONS) |
 | `Ctrl+D` | Toggle dark/light mode |
 | `Ctrl+E` | Re-extract current page |
 | `Ctrl+Q` | Quit |

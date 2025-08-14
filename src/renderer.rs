@@ -6,7 +6,7 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
-pub struct TextRenderer {
+pub struct EditPanelRenderer {
     buffer: Vec<Vec<char>>,
     viewport_width: u16,
     viewport_height: u16,
@@ -14,7 +14,7 @@ pub struct TextRenderer {
     scroll_y: u16,
 }
 
-impl TextRenderer {
+impl EditPanelRenderer {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
             buffer: vec![vec![' '; width as usize]; height as usize],
@@ -155,5 +155,145 @@ impl TextRenderer {
     pub fn resize(&mut self, width: u16, height: u16) {
         self.viewport_width = width;
         self.viewport_height = height;
+    }
+    
+    /// Get current scroll position for cursor/selection calculations
+    pub fn get_scroll(&self) -> (u16, u16) {
+        (self.scroll_x, self.scroll_y)
+    }
+    
+    /// Render with cursor and selection highlighting
+    pub fn render_with_cursor_and_selection(
+        &self,
+        start_x: u16,
+        start_y: u16,
+        max_width: u16,
+        max_height: u16,
+        cursor: (usize, usize),
+        selection_start: Option<(usize, usize)>,
+        selection_end: Option<(usize, usize)>,
+    ) -> io::Result<()> {
+        let mut stdout = io::stdout();
+        use crate::theme::ChonkerTheme;
+        
+        // Clamp rendering to the specified bounds
+        let render_width = self.viewport_width.min(max_width);
+        let render_height = self.viewport_height.min(max_height);
+        
+        // Calculate selection bounds if we have both start and end
+        let selection_bounds = if let (Some(start), Some(end)) = (selection_start, selection_end) {
+            let (start_row, start_col) = start;
+            let (end_row, end_col) = end;
+            
+            // Normalize selection (ensure start comes before end)
+            if start_row < end_row || (start_row == end_row && start_col < end_col) {
+                Some(((start_row, start_col), (end_row, end_col)))
+            } else {
+                Some(((end_row, end_col), (start_row, start_col)))
+            }
+        } else {
+            None
+        };
+        
+        for y in 0..render_height {
+            let buffer_y = (self.scroll_y + y) as usize;
+            
+            // Move cursor to start of line
+            execute!(stdout, MoveTo(start_x, start_y + y))?;
+            
+            if buffer_y < self.buffer.len() {
+                let row = &self.buffer[buffer_y];
+                let start_col = self.scroll_x as usize;
+                let end_col = (start_col + render_width as usize).min(row.len());
+                
+                for x in start_col..end_col {
+                    let screen_x = x - start_col;
+                    let is_cursor = cursor == (x, buffer_y);
+                    
+                    // Check if position is in selection
+                    let is_selected = if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_bounds {
+                        (buffer_y > sel_start_row || (buffer_y == sel_start_row && x >= sel_start_col)) &&
+                        (buffer_y < sel_end_row || (buffer_y == sel_end_row && x <= sel_end_col))
+                    } else {
+                        false
+                    };
+                    
+                    let ch = row.get(x).copied().unwrap_or(' ');
+                    
+                    if is_cursor {
+                        // Cursor - bright background
+                        execute!(
+                            stdout,
+                            SetBackgroundColor(ChonkerTheme::accent_text()),
+                            SetForegroundColor(Color::Black),
+                            Print(ch),
+                            ResetColor
+                        )?;
+                    } else if is_selected {
+                        // Selection - dimmer background
+                        execute!(
+                            stdout,
+                            SetBackgroundColor(Color::DarkBlue),
+                            SetForegroundColor(Color::White),
+                            Print(ch),
+                            ResetColor
+                        )?;
+                    } else {
+                        // Normal character
+                        write!(stdout, "{}", ch)?;
+                    }
+                }
+                
+                // Clear rest of line if needed
+                let chars_written = end_col - start_col;
+                if chars_written < render_width as usize {
+                    // Check if cursor is at end of line
+                    let is_cursor_at_eol = cursor == (row.len(), buffer_y) && 
+                                         row.len() >= start_col && row.len() < end_col;
+                    
+                    if is_cursor_at_eol {
+                        // Show cursor at end of line
+                        execute!(
+                            stdout,
+                            SetBackgroundColor(ChonkerTheme::accent_text()),
+                            Print(" "),
+                            ResetColor
+                        )?;
+                        
+                        // Fill remaining space
+                        if chars_written + 1 < render_width as usize {
+                            write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written - 1))?;
+                        }
+                    } else {
+                        // Fill with spaces
+                        write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written))?;
+                    }
+                }
+            } else {
+                // Empty line - check if cursor is here
+                let is_cursor_at_empty_line = cursor == (0, buffer_y);
+                
+                if is_cursor_at_empty_line {
+                    // Show cursor on empty line
+                    execute!(
+                        stdout,
+                        SetBackgroundColor(ChonkerTheme::accent_text()),
+                        Print(" "),
+                        ResetColor
+                    )?;
+                    
+                    // Fill remaining space
+                    if render_width > 1 {
+                        write!(stdout, "{:width$}", "", width = (render_width as usize - 1))?;
+                    }
+                } else {
+                    // Fill entire line with spaces
+                    write!(stdout, "{:width$}", "", width = render_width as usize)?;
+                }
+            }
+        }
+        
+        stdout.flush()?;
+        Ok(())
     }
 }

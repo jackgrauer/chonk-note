@@ -28,6 +28,12 @@ notify = "6.1"
 # Fuzzy file finder (from Helix editor)
 nucleo = "0.5"
 
+# Clipboard support for EDIT mode
+cli-clipboard = "0.4"
+
+# Markdown rendering for MARKDOWN mode
+termimad = "0.28"
+
 # Sophisticated spatial text layout
 rstar = "0.12"
 euclid = "0.22"

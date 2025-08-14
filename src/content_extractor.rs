@@ -148,13 +148,72 @@ pub async fn extract_to_matrix_sophisticated(
     height: usize,
     _use_vision: bool,
 ) -> Result<Vec<Vec<char>>> {
-    // For now, use the same working logic as simple extraction
-    // The sophisticated SpatialTextGrid implementation is incomplete
-    // TODO: Implement proper sophisticated spatial layout when SpatialTextGrid is complete
+    // Uses working simple extraction logic - SpatialTextGrid integration pending
     extract_to_matrix(pdf_path, page_num, width, height).await
 }
 
-pub async fn get_markdown_from_ferrules(pdf_path: &Path, page_num: usize) -> Result<String> {
-    // TODO: Call ferrules with markdown output format
-    Ok("# Placeholder Markdown\n\nExtracted content here".to_string())
+pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<String> {
+    let ort_config = ORTConfig::default();
+    let parser = FerrulesParser::new(ort_config);
+    
+    let parse_config = FerrulesParseConfig {
+        password: None,
+        flatten_pdf: true,
+        page_range: Some(page_num..page_num + 1),
+        debug_dir: None,
+    };
+    
+    let pdf_bytes = tokio::fs::read(pdf_path).await?;
+    let parsed_doc = parser.parse_document(
+        &pdf_bytes,
+        pdf_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document.pdf")
+            .to_string(),
+        parse_config,
+        None::<fn(usize)>,
+    ).await?;
+    
+    // Convert parsed document blocks to markdown
+    let mut markdown = String::new();
+    
+    if let Some(page) = parsed_doc.pages.first() {
+        let page_id = page.id;
+        
+        for block in &parsed_doc.blocks {
+            if !block.pages_id.contains(&page_id) {
+                continue;
+            }
+            
+            match &block.kind {
+                BlockType::Title(t) => {
+                    markdown.push_str(&format!("# {}\n\n", t.text));
+                }
+                BlockType::Header(h) => {
+                    markdown.push_str(&format!("## {}\n\n", h.text));
+                }
+                BlockType::TextBlock(tb) => {
+                    markdown.push_str(&format!("{}\n\n", tb.text));
+                }
+                BlockType::ListBlock(l) => {
+                    for item in &l.items {
+                        markdown.push_str(&format!("- {}\n", item));
+                    }
+                    markdown.push_str("\n");
+                }
+                // Note: TableBlock type not available in current ferrules version
+                // Could add table support when ferrules provides it
+                BlockType::Footer(f) => {
+                    markdown.push_str(&format!("---\n*{}*\n", f.text));
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    if markdown.is_empty() {
+        markdown = "# No Content\n\nNo text content found on this page.".to_string();
+    }
+    
+    Ok(markdown)
 }
