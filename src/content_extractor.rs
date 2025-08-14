@@ -53,11 +53,16 @@ pub async fn extract_to_matrix(
         let page_width = page.width;
         let page_height = page.height;
         
+        // Collect and sort blocks by vertical position for consistent reading order
+        let mut positioned_blocks: Vec<&ferrules_core::blocks::Block> = Vec::new();
         for block in &parsed_doc.blocks {
-            if !block.pages_id.contains(&page_id) {
-                continue;
+            if block.pages_id.contains(&page_id) {
+                positioned_blocks.push(block);
             }
-            
+        }
+        positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap());
+        
+        for block in positioned_blocks {
             // Get bounding box coordinates
             let bbox = &block.bbox;
             
