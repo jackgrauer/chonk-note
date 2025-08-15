@@ -226,9 +226,9 @@ impl App {
         
         // Extract text
         self.status_message = if self.settings.spatial_recognition_enabled {
-            "Extracting content with spatial recognition...".to_string()
+            "Extracting content with spatial recognition [v4]...".to_string()
         } else {
-            "Extracting content...".to_string()
+            "Extracting content [v4]...".to_string()
         };
         
         let matrix = if self.settings.spatial_recognition_enabled {
@@ -290,7 +290,7 @@ impl App {
             self.markdown_data = Some(markdown);
         }
         
-        self.status_message = format!("Page {}/{} - Content extracted to EDIT panel", self.current_page + 1, self.total_pages);
+        self.status_message = format!("Page {}/{} - Content extracted [v4]", self.current_page + 1, self.total_pages);
         Ok(())
     }
     
@@ -465,7 +465,12 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
             DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
                 // PDF panel - where the pdf image displays
                 if let Some(left) = layout.left {
-                    let bg = if app.dark_mode { ChonkerTheme::bg_secondary() } else { ChonkerTheme::bg_secondary_light() };
+                    // Use a dark gray for PDF panel in dark mode for better contrast with black PDFs
+                    let bg = if app.dark_mode { 
+                        Color::Rgb { r: 30, g: 30, b: 30 }  // Dark gray instead of pure black
+                    } else { 
+                        ChonkerTheme::bg_secondary_light() 
+                    };
                     draw_panel_background(&mut stdout, left, bg)?;
                     
                     if app.current_page_image.is_none() {
@@ -549,6 +554,7 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
                             display_y,
                             display_width,
                             display_height,
+                            app.dark_mode,
                         );
                     }
                 }
@@ -693,7 +699,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
                 draw_header_section(stdout, "PDF", left.x, 0, left.width, ChonkerTheme::accent_pdf())?;
             }
             if let Some(right) = layout.right {
-                draw_header_section(stdout, "EDIT", right.x, 0, right.width, ChonkerTheme::accent_text())?;
+                draw_header_section(stdout, "EDIT [v4]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
             }
         }
         DisplayMode::PdfMarkdown => {
@@ -777,7 +783,7 @@ fn draw_options_panel(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<
     let shortcuts = [
         ("Ctrl+O", "Open PDF file"),
         ("Ctrl+E", "Extract text from current page"),
-        ("Ctrl+D", "Toggle dark/light mode"),
+        ("Ctrl+D", "Toggle dark/light mode (PDF background)"),
         ("Ctrl+Q", "Quit application"),
         ("Tab", "Switch between PDF/EDIT/MARKDOWN/OPTIONS"),
         ("", ""),

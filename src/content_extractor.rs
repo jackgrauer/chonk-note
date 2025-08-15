@@ -53,6 +53,9 @@ pub async fn extract_to_matrix(
         let page_width = page.width;
         let page_height = page.height;
         
+        #[cfg(debug_assertions)]
+        eprintln!("PDF Page dimensions: {}x{}", page_width, page_height);
+        
         // Collect and sort blocks by vertical position for consistent reading order
         let mut positioned_blocks: Vec<&ferrules_core::blocks::Block> = Vec::new();
         for block in &parsed_doc.blocks {
@@ -61,6 +64,17 @@ pub async fn extract_to_matrix(
             }
         }
         positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // First pass: find min and max Y coordinates to understand the range
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        for block in &positioned_blocks {
+            min_y = min_y.min(block.bbox.y0);
+            max_y = max_y.max(block.bbox.y1);
+        }
+        
+        #[cfg(debug_assertions)]
+        eprintln!("Y coordinate range: {} to {} (page height: {})", min_y, max_y, page_height);
         
         for block in positioned_blocks {
             // Get bounding box coordinates
@@ -78,18 +92,37 @@ pub async fn extract_to_matrix(
             };
             
             // For Y: Map proportionally with padding to avoid cutting off top/bottom
-            // Add 2-line padding at top and bottom for headers/footers
-            let padding_top = 2;
-            let padding_bottom = 2;
+            // Reserve space at top and bottom for headers/footers
+            let padding_top = 1;  // Reduced to 1 line
+            let padding_bottom = 1;  // Reduced to 1 line
             let usable_height = height.saturating_sub(padding_top + padding_bottom);
             
-            // Map to usable area, then add top padding
-            let normalized_y = bbox.y0 / page_height;
+            // Normalize Y based on actual content range, not page height
+            // This ensures we use the full available space
+            let y_range = max_y - min_y;
+            let normalized_y = if y_range > 0.0 {
+                (bbox.y0 - min_y) / y_range
+            } else {
+                0.0
+            };
             let grid_y = padding_top + ((normalized_y * usable_height as f32) as usize);
             
             // Skip if position is out of bounds
             if grid_y >= height.saturating_sub(padding_bottom) {
+                #[cfg(debug_assertions)]
+                eprintln!("Skipping block at y={} (exceeds height {})", grid_y, height.saturating_sub(padding_bottom));
                 continue;
+            }
+            
+            #[cfg(debug_assertions)]
+            {
+                let preview = match &block.kind {
+                    BlockType::Title(t) => format!("Title: {}", &t.text[..t.text.len().min(50)]),
+                    BlockType::Header(h) => format!("Header: {}", &h.text[..h.text.len().min(50)]),
+                    BlockType::TextBlock(tb) => format!("Text: {}", &tb.text[..tb.text.len().min(50)]),
+                    _ => "Other".to_string(),
+                };
+                eprintln!("Placing at grid y={}: {}", grid_y, preview);
             }
             
             // Extract text based on block type and add markdown syntax

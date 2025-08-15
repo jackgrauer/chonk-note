@@ -2,7 +2,7 @@ use anyhow::Result;
 use viuer::{Config, print, KittySupport};
 use std::io::{self, Write};
 
-/// Display a PDF page image using viuer
+/// Display a PDF page image using viuer with optional dark mode
 /// 
 /// This replaces the custom kitty_graphics implementation with viuer,
 /// providing better cross-terminal compatibility.
@@ -12,6 +12,7 @@ pub fn display_pdf_image(
     y: u16,
     max_width: u16,
     max_height: u16,
+    dark_mode: bool,
 ) -> Result<()> {
     // Save cursor position for split view consistency
     print!("\x1b[s");
@@ -48,8 +49,20 @@ pub fn display_pdf_image(
     
     // Convert from image 0.25 to image 0.24 for viuer
     // This is a bit hacky but necessary due to version mismatch
-    let rgba = image.to_rgba8();
+    let mut rgba = image.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
+    
+    // Apply dark mode filter if enabled
+    if dark_mode {
+        // Invert colors for dark mode
+        for pixel in rgba.pixels_mut() {
+            // Invert RGB but preserve alpha
+            pixel[0] = 255 - pixel[0]; // R
+            pixel[1] = 255 - pixel[1]; // G
+            pixel[2] = 255 - pixel[2]; // B
+            // pixel[3] stays the same (alpha)
+        }
+    }
     
     // Create an image 0.24 DynamicImage from raw bytes
     let raw_buffer = rgba.into_raw();
