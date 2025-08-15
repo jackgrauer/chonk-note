@@ -226,9 +226,9 @@ impl App {
         
         // Extract text
         self.status_message = if self.settings.spatial_recognition_enabled {
-            "Extracting content with spatial recognition [v4]...".to_string()
+            "Extracting content with spatial recognition [v5]...".to_string()
         } else {
-            "Extracting content [v4]...".to_string()
+            "Extracting content [v5]...".to_string()
         };
         
         let matrix = if self.settings.spatial_recognition_enabled {
@@ -290,7 +290,7 @@ impl App {
             self.markdown_data = Some(markdown);
         }
         
-        self.status_message = format!("Page {}/{} - Content extracted [v4]", self.current_page + 1, self.total_pages);
+        self.status_message = format!("Page {}/{} - Content extracted [v5 - table detection]", self.current_page + 1, self.total_pages);
         Ok(())
     }
     
@@ -699,7 +699,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
                 draw_header_section(stdout, "PDF", left.x, 0, left.width, ChonkerTheme::accent_pdf())?;
             }
             if let Some(right) = layout.right {
-                draw_header_section(stdout, "EDIT [v4]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
+                draw_header_section(stdout, "EDIT [v5]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
             }
         }
         DisplayMode::PdfMarkdown => {

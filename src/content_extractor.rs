@@ -61,6 +61,21 @@ pub async fn extract_to_matrix(
         for block in &parsed_doc.blocks {
             if block.pages_id.contains(&page_id) {
                 positioned_blocks.push(block);
+                
+                // Debug: Show what types of blocks ferrules is finding
+                #[cfg(debug_assertions)]
+                {
+                    let block_type = match &block.kind {
+                        BlockType::Title(_) => "Title",
+                        BlockType::Header(_) => "Header",
+                        BlockType::TextBlock(_) => "TextBlock",
+                        BlockType::ListBlock(_) => "ListBlock",
+                        BlockType::Table => "TABLE FOUND!",
+                        BlockType::Footer(_) => "Footer",
+                        BlockType::Image(_) => "Image",
+                    };
+                    eprintln!("Found block type: {} at y={}", block_type, block.bbox.y0);
+                }
             }
         }
         positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap_or(std::cmp::Ordering::Equal));
@@ -120,6 +135,7 @@ pub async fn extract_to_matrix(
                     BlockType::Title(t) => format!("Title: {}", &t.text[..t.text.len().min(50)]),
                     BlockType::Header(h) => format!("Header: {}", &h.text[..h.text.len().min(50)]),
                     BlockType::TextBlock(tb) => format!("Text: {}", &tb.text[..tb.text.len().min(50)]),
+                    BlockType::Table => "Table: [TABLE DATA]".to_string(),
                     _ => "Other".to_string(),
                 };
                 eprintln!("Placing at grid y={}: {}", grid_y, preview);
@@ -138,8 +154,20 @@ pub async fn extract_to_matrix(
                     place_text_on_grid_spatial(&mut grid, &markdown_text, grid_x, grid_y, width, height);
                 }
                 BlockType::TextBlock(tb) => {
-                    // Regular paragraph - no prefix
-                    place_text_on_grid_spatial(&mut grid, &tb.text, grid_x, grid_y, width, height);
+                    // Check if this looks like table data (has multiple numbers/dollar signs)
+                    let text = &tb.text;
+                    let has_dollars = text.matches('$').count() > 2;
+                    let has_many_numbers = text.chars().filter(|c| c.is_numeric()).count() > 10;
+                    let looks_like_table = has_dollars || has_many_numbers;
+                    
+                    if looks_like_table {
+                        // Try to format as table-like content
+                        let formatted = format!("[TABLE DATA]: {}", text);
+                        place_text_on_grid_spatial(&mut grid, &formatted, grid_x, grid_y, width, height);
+                    } else {
+                        // Regular paragraph - no prefix
+                        place_text_on_grid_spatial(&mut grid, text, grid_x, grid_y, width, height);
+                    }
                 }
                 BlockType::ListBlock(l) => {
                     // Place list items with bullet points
@@ -151,6 +179,12 @@ pub async fn extract_to_matrix(
                             list_y += 1;
                         }
                     }
+                }
+                BlockType::Table => {
+                    // For now, just indicate a table was found
+                    // Ferrules doesn't provide table data structure yet
+                    let table_marker = "[TABLE: Financial data table detected but not extracted - ferrules Table support pending]";
+                    place_text_on_grid_spatial(&mut grid, table_marker, grid_x, grid_y, width, height);
                 }
                 BlockType::Footer(f) => {
                     // Add horizontal rule and italics for footer
@@ -308,6 +342,11 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                 BlockType::Header(h) => {
                     // Section header with better formatting
                     markdown.push_str(&format!("## {}\n\n", h.text.trim()));
+                }
+                BlockType::Table => {
+                    // Table placeholder until ferrules provides table data
+                    markdown.push_str("\n```\n[TABLE: Financial/data table detected]\n");
+                    markdown.push_str("[Note: Table extraction not yet supported by ferrules]\n```\n\n");
                 }
                 BlockType::TextBlock(tb) => {
                     let text = tb.text.trim();
