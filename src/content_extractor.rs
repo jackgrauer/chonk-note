@@ -49,13 +49,8 @@ pub async fn extract_to_matrix(
         None::<fn(usize)>,
     ).await?;
     
-    // Use fast table extraction (v2)
-    let tables = table_extractor_v2::extract_tables_from_page_fast(pdf_path, page_num)
-        .unwrap_or_else(|e| {
-            #[cfg(debug_assertions)]
-            eprintln!("Failed to extract tables: {}", e);
-            Vec::new()
-        });
+    // Table extraction disabled - was causing crashes
+    let tables: Vec<crate::table_extractor_v2::Table> = Vec::new();
     
     // Extract text from blocks and place in grid using spatial coordinates
     if let Some(page) = parsed_doc.pages.first() {
@@ -341,13 +336,8 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         None::<fn(usize)>,
     ).await?;
     
-    // Use fast table extraction (v2) 
-    let tables = table_extractor_v2::extract_tables_from_page_fast(pdf_path, page_num)
-        .unwrap_or_else(|e| {
-            #[cfg(debug_assertions)]
-            eprintln!("Failed to extract tables for markdown: {}", e);
-            Vec::new()
-        });
+    // Table extraction disabled - was causing crashes
+    let tables: Vec<crate::table_extractor_v2::Table> = Vec::new();
     
     // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();
