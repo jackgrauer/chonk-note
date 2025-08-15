@@ -1,6 +1,8 @@
 use anyhow::Result;
 use pdfium_render::prelude::*;
 use std::path::Path;
+use std::collections::HashMap;
+use ordered_float::OrderedFloat;
 
 /// Character data extracted from PDFium with full spatial information
 #[derive(Debug, Clone)]
@@ -14,12 +16,106 @@ struct CharacterData {
     baseline_y: f32,  // Text baseline for alignment
 }
 
+/// Represents a text line with grouped characters
+#[derive(Debug, Clone)]
+struct TextLine {
+    baseline: f32,
+    chars: Vec<CharacterData>,
+    x_start: f32,
+    x_end: f32,
+}
+
 /// Represents a detected table structure
 #[derive(Debug)]
 struct TableStructure {
     rows: Vec<f32>,     // Y coordinates of row boundaries
     columns: Vec<f32>,  // X coordinates of column boundaries
     cells: Vec<Vec<String>>, // Cell contents
+}
+
+/// Column-aware grid mapper for preserving table structure
+struct ColumnAwareGridMapper {
+    columns: Vec<f32>,      // X positions of column boundaries
+    col_widths: Vec<usize>, // Grid cells per column
+}
+
+impl ColumnAwareGridMapper {
+    fn new(columns: Vec<f32>, total_width: usize) -> Self {
+        // Calculate grid width for each column
+        let num_cols = columns.len() + 1;
+        let base_width = total_width / num_cols;
+        let col_widths = vec![base_width; num_cols];
+        
+        Self {
+            columns,
+            col_widths,
+        }
+    }
+    
+    fn map_to_grid(&self, lines: &[TextLine], width: usize, height: usize) -> Vec<Vec<char>> {
+        let mut grid = vec![vec![' '; width]; height];
+        
+        for (y, line) in lines.iter().enumerate() {
+            if y >= height { break; }
+            
+            // Split line into columns
+            let cells = self.split_line_by_columns(line);
+            
+            let mut grid_x = 0;
+            for (col_idx, cell_text) in cells.iter().enumerate() {
+                let col_width = self.col_widths.get(col_idx).copied().unwrap_or(10);
+                
+                // Detect if content is numeric (for right-alignment)
+                let is_numeric = cell_text.chars().any(|c| c == '$' || c.is_ascii_digit()) &&
+                                !cell_text.chars().any(|c| c.is_alphabetic() && c != 'N' && c != 'A');
+                
+                if is_numeric && cell_text.len() > 0 {
+                    // Right align numbers
+                    let start = grid_x + col_width.saturating_sub(cell_text.len()).saturating_sub(1);
+                    for (i, ch) in cell_text.chars().enumerate() {
+                        if start + i < width {
+                            grid[y][start + i] = ch;
+                        }
+                    }
+                } else {
+                    // Left align text
+                    for (i, ch) in cell_text.chars().take(col_width).enumerate() {
+                        if grid_x + i < width {
+                            grid[y][grid_x + i] = ch;
+                        }
+                    }
+                }
+                
+                grid_x += col_width;
+                if grid_x < width && col_idx < cells.len() - 1 {
+                    grid[y][grid_x] = '|'; // Column separator
+                    grid_x += 2; // Space after separator
+                }
+            }
+        }
+        
+        grid
+    }
+    
+    fn split_line_by_columns(&self, line: &TextLine) -> Vec<String> {
+        let mut cells = vec![String::new(); self.columns.len() + 1];
+        
+        for ch in &line.chars {
+            // Find which column this character belongs to
+            let col_idx = self.columns.iter()
+                .position(|&col_x| ch.x < col_x)
+                .unwrap_or(self.columns.len());
+            
+            cells[col_idx].push(ch.unicode);
+        }
+        
+        // Trim whitespace from cells
+        cells.iter_mut().for_each(|cell| {
+            *cell = cell.trim().to_string();
+        });
+        
+        cells
+    }
 }
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
@@ -30,6 +126,12 @@ pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
 // Safety bounds to prevent resource exhaustion
 const MAX_CHARS_PER_PAGE: usize = 50_000;
 const MAX_GRID_SIZE: usize = 1_000_000; // max width * height
+
+// Table detection constants
+const COLUMN_GAP_THRESHOLD: f32 = 0.5;  // * font_size
+const ROW_MERGE_TOLERANCE: f32 = 2.0;   // pixels
+const MIN_TABLE_ROWS: usize = 2;
+const MIN_TABLE_COLS: usize = 2;
 
 pub async fn extract_to_matrix(
     pdf_path: &Path,
@@ -62,15 +164,24 @@ pub async fn extract_to_matrix(
         return Ok(simple_text_fallback(&characters, width, height));
     }
     
-    // Detect tables using coordinate alignment
-    let tables = detect_tables_by_alignment(&characters);
+    // Build text lines with proper baseline grouping
+    let text_lines = build_text_lines(&characters);
     
-    // Cluster characters into words and lines
-    let word_clusters = cluster_into_words(&characters);
-    let line_clusters = cluster_into_lines(&word_clusters);
+    // Detect column boundaries for table preservation
+    let columns = detect_column_boundaries(&text_lines);
     
-    // Map everything to the grid with proper spacing
-    map_to_grid_with_tables(&mut grid, &line_clusters, &tables, width, height);
+    // Check if this is a financial table
+    let _table_structure = detect_financial_table(&text_lines, &columns);
+    
+    // Use column-aware mapping for proper table rendering
+    if !columns.is_empty() && columns.len() >= 2 {
+        // We have columns - use column-aware mapper
+        let mapper = ColumnAwareGridMapper::new(columns, width);
+        grid = mapper.map_to_grid(&text_lines, width, height);
+    } else {
+        // No columns detected - use simple line-based mapping
+        map_lines_to_grid(&mut grid, &text_lines, width, height);
+    }
     
     Ok(grid)
 }
@@ -144,7 +255,46 @@ fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
     Ok(characters)
 }
 
-/// Group characters by baseline with tolerance
+/// Build text lines with proper baseline grouping
+fn build_text_lines(chars: &[CharacterData]) -> Vec<TextLine> {
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    
+    // Group by baseline with tolerance
+    let mut lines_map: HashMap<OrderedFloat<f32>, Vec<CharacterData>> = HashMap::new();
+    
+    for ch in chars {
+        // Round baseline to nearest 2 pixels for grouping
+        let baseline_key = OrderedFloat((ch.baseline_y / ROW_MERGE_TOLERANCE).round() * ROW_MERGE_TOLERANCE);
+        lines_map.entry(baseline_key).or_default().push(ch.clone());
+    }
+    
+    // Convert to TextLine structures
+    let mut lines: Vec<TextLine> = lines_map.into_iter()
+        .map(|(baseline, mut chars)| {
+            // Sort chars within each line by X position
+            chars.sort_by_key(|c| OrderedFloat(c.x));
+            
+            let x_start = chars.first().map(|c| c.x).unwrap_or(0.0);
+            let x_end = chars.last().map(|c| c.x + c.width).unwrap_or(0.0);
+            
+            TextLine {
+                baseline: baseline.0,
+                chars,
+                x_start,
+                x_end,
+            }
+        })
+        .collect();
+    
+    // Sort lines by baseline (top to bottom)
+    lines.sort_by_key(|l| OrderedFloat(l.baseline));
+    
+    lines
+}
+
+/// Group characters by baseline with tolerance (legacy function for compatibility)
 fn group_by_baseline(characters: &[CharacterData]) -> Vec<Vec<CharacterData>> {
     if characters.is_empty() {
         return Vec::new();
@@ -267,6 +417,85 @@ fn cluster_into_lines(word_clusters: &[Vec<CharacterData>]) -> Vec<Vec<Vec<Chara
     lines
 }
 
+/// Detect column boundaries based on consistent gaps across lines
+fn detect_column_boundaries(lines: &[TextLine]) -> Vec<f32> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    
+    // Find vertical gaps that persist across multiple lines
+    let mut gap_positions: HashMap<i32, usize> = HashMap::new();
+    
+    for line in lines {
+        if line.chars.len() < 2 {
+            continue;
+        }
+        
+        // Look for gaps between characters
+        for window in line.chars.windows(2) {
+            let gap_start = window[0].x + window[0].width;
+            let gap_end = window[1].x;
+            let gap_size = gap_end - gap_start;
+            
+            // Significant gap that could be a column boundary
+            if gap_size > window[0].font_size * COLUMN_GAP_THRESHOLD {
+                // Bucket the position for fuzzy matching
+                let bucket = (gap_start / 5.0) as i32;
+                *gap_positions.entry(bucket).or_default() += 1;
+            }
+        }
+    }
+    
+    // Return positions that appear in >60% of lines
+    let min_frequency = (lines.len() as f32 * 0.6) as usize;
+    let mut columns: Vec<f32> = gap_positions.into_iter()
+        .filter(|(_, count)| *count >= min_frequency)
+        .map(|(bucket, _)| bucket as f32 * 5.0)
+        .collect();
+    
+    columns.sort_by_key(|x| OrderedFloat(*x));
+    
+    // Debug output
+    if !columns.is_empty() {
+        eprintln!("Detected {} columns at positions: {:?}", columns.len(), columns);
+    }
+    
+    columns
+}
+
+/// Detect financial tables specifically
+fn detect_financial_table(lines: &[TextLine], columns: &[f32]) -> Option<TableStructure> {
+    // Look for lines with dollar signs or numeric patterns
+    let dollar_lines: Vec<&TextLine> = lines.iter()
+        .filter(|line| {
+            let text: String = line.chars.iter().map(|c| c.unicode).collect();
+            text.contains('$') || text.chars().filter(|c| c.is_ascii_digit()).count() >= 3
+        })
+        .collect();
+    
+    if dollar_lines.len() < MIN_TABLE_ROWS {
+        return None;
+    }
+    
+    // Look for year headers (2011-2015 pattern)
+    let has_year_headers = lines.iter().any(|line| {
+        let text: String = line.chars.iter().map(|c| c.unicode).collect();
+        text.contains("2011") || text.contains("2012") || text.contains("2013")
+    });
+    
+    if !has_year_headers && columns.len() < MIN_TABLE_COLS {
+        return None;
+    }
+    
+    eprintln!("Found financial table with {} rows and {} columns", dollar_lines.len(), columns.len());
+    
+    Some(TableStructure {
+        columns: columns.to_vec(),
+        rows: dollar_lines.iter().map(|l| l.baseline).collect(),
+        cells: Vec::new(), // Will be populated by grid mapper
+    })
+}
+
 /// Detect tables by finding aligned columns and rows (simplified for safety)
 fn detect_tables_by_alignment(characters: &[CharacterData]) -> Vec<TableStructure> {
     // P1 SAFETY: Simplified table detection without complex clustering
@@ -317,7 +546,34 @@ fn detect_tables_by_alignment(characters: &[CharacterData]) -> Vec<TableStructur
     tables
 }
 
-/// Map lines and tables to the character grid
+/// Map lines to grid without column awareness (for simple text)
+fn map_lines_to_grid(
+    grid: &mut Vec<Vec<char>>,
+    lines: &[TextLine],
+    width: usize,
+    height: usize,
+) {
+    for (y, line) in lines.iter().enumerate() {
+        if y >= height {
+            break;
+        }
+        
+        let mut x = 0;
+        for ch in &line.chars {
+            if x < width {
+                grid[y][x] = ch.unicode;
+                x += 1;
+            }
+            
+            // Add space after each character if not at end
+            if x < width && ch.unicode != ' ' {
+                x += 1; // Leave space for readability
+            }
+        }
+    }
+}
+
+/// Map lines and tables to the character grid (legacy function)
 fn map_to_grid_with_tables(
     grid: &mut Vec<Vec<char>>,
     lines: &[Vec<Vec<CharacterData>>],

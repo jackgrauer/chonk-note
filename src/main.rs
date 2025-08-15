@@ -639,8 +639,8 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
     // Get terminal width for centering
     let (term_width, _) = terminal::size()?;
     
-    // Draw centered title "Chonker 7.27" at the top
-    let title = "🐹 Chonker 7.27";
+    // Draw centered title "Chonker 7.28" at the top
+    let title = "🐹 Chonker 7.28";
     let title_x = (term_width - title.len() as u16) / 2;
     execute!(
         stdout,
