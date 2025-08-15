@@ -168,14 +168,16 @@ impl App {
                 // For split modes - use actual panel size
                 let width = ((self.term_width / 2) - 4).max(40) as u32;
                 let height = (self.term_height - 4).max(20) as u32;
-                // Lower resolution for stability - will be upscaled by display_image
-                (width * 3, height * 3)
+                // Ultra-high resolution with aspect ratio correction
+                // Terminal cells are ~2:1 (height:width), so we scale height by 1.8x
+                (width * 14, (height * 14 * 18) / 10)  // 1.8x height for better aspect ratio
             }
             _ => {
                 // Default for other modes
                 let width = ((self.term_width / 2) - 4).max(40) as u32;
                 let height = (self.term_height - 4).max(20) as u32;
-                (width * 3, height * 3)
+                // Same aspect ratio correction
+                (width * 14, (height * 14 * 18) / 10)  // 1.8x height for better aspect ratio
             }
         };
         

@@ -136,9 +136,9 @@ pub fn check_terminal_capabilities() -> String {
 /// Get optimal render size based on detected terminal protocol
 pub fn get_optimal_render_size(terminal_width: u16, terminal_height: u16) -> (u32, u32) {
     let multiplier = match get_protocol_info().as_str() {
-        "Kitty (local)" | "Kitty (remote)" => 3,  // Kitty handles high-res well
-        "iTerm2" => 2,                            // iTerm2 also handles high-res
-        _ => 1,                                    // Blocks mode - keep it smaller
+        "Kitty (local)" | "Kitty (remote)" => 14,  // High res with headroom
+        "iTerm2" => 12,                            // Slightly lower for iTerm2
+        _ => 3,                                     // Blocks mode - keep it reasonable
     };
     
     (terminal_width as u32 * multiplier, terminal_height as u32 * multiplier)
