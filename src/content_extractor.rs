@@ -5,6 +5,7 @@ use ferrules_core::{
     layout::model::ORTConfig,
 };
 use std::path::Path;
+use crate::table_extractor;
 // SpatialTextGrid removed - implementation incomplete
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
@@ -46,6 +47,14 @@ pub async fn extract_to_matrix(
         parse_config,
         None::<fn(usize)>,
     ).await?;
+    
+    // Also extract tables using PDFium
+    let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
+        .unwrap_or_else(|e| {
+            #[cfg(debug_assertions)]
+            eprintln!("Failed to extract tables: {}", e);
+            Vec::new()
+        });
     
     // Extract text from blocks and place in grid using spatial coordinates
     if let Some(page) = parsed_doc.pages.first() {
@@ -181,10 +190,36 @@ pub async fn extract_to_matrix(
                     }
                 }
                 BlockType::Table => {
-                    // For now, just indicate a table was found
-                    // Ferrules doesn't provide table data structure yet
-                    let table_marker = "[TABLE: Financial data table detected but not extracted - ferrules Table support pending]";
-                    place_text_on_grid_spatial(&mut grid, table_marker, grid_x, grid_y, width, height);
+                    // Check if we have a matching table from PDFium extraction
+                    let mut table_found = false;
+                    
+                    // Find table that matches this position
+                    for table in &tables {
+                        // Check if table position roughly matches block position
+                        let y_match = (table.y - bbox.y0).abs() < 20.0;
+                        let x_match = (table.x - bbox.x0).abs() < 50.0;
+                        
+                        if y_match && x_match {
+                            // Format table for grid display
+                            let table_lines = table_extractor::table_to_grid(table, width - grid_x - 2);
+                            
+                            let mut current_y = grid_y;
+                            for line in &table_lines {
+                                if current_y < height {
+                                    place_text_on_grid_spatial(&mut grid, line, grid_x, current_y, width, height);
+                                    current_y += 1;
+                                }
+                            }
+                            table_found = true;
+                            break;
+                        }
+                    }
+                    
+                    if !table_found {
+                        // No matching table found, use placeholder
+                        let table_marker = "[TABLE DETECTED - extraction in progress]";
+                        place_text_on_grid_spatial(&mut grid, table_marker, grid_x, grid_y, width, height);
+                    }
                 }
                 BlockType::Footer(f) => {
                     // Add horizontal rule and italics for footer
@@ -305,6 +340,14 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         None::<fn(usize)>,
     ).await?;
     
+    // Also extract tables using PDFium
+    let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
+        .unwrap_or_else(|e| {
+            #[cfg(debug_assertions)]
+            eprintln!("Failed to extract tables for markdown: {}", e);
+            Vec::new()
+        });
+    
     // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();
     
@@ -344,9 +387,30 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                     markdown.push_str(&format!("## {}\n\n", h.text.trim()));
                 }
                 BlockType::Table => {
-                    // Table placeholder until ferrules provides table data
-                    markdown.push_str("\n```\n[TABLE: Financial/data table detected]\n");
-                    markdown.push_str("[Note: Table extraction not yet supported by ferrules]\n```\n\n");
+                    // Look for matching table from PDFium extraction
+                    let mut table_found = false;
+                    
+                    for table in &tables {
+                        // Check if table position roughly matches block position
+                        let y_match = (table.y - block.bbox.y0).abs() < 20.0;
+                        let x_match = (table.x - block.bbox.x0).abs() < 50.0;
+                        
+                        if y_match && x_match {
+                            // Convert table to markdown format
+                            let table_md = table_extractor::table_to_markdown(table);
+                            markdown.push_str("\n");
+                            markdown.push_str(&table_md);
+                            markdown.push_str("\n");
+                            table_found = true;
+                            break;
+                        }
+                    }
+                    
+                    if !table_found {
+                        // No matching table, use placeholder
+                        markdown.push_str("\n```\n[TABLE: Data table detected]\n");
+                        markdown.push_str("[Extracting table structure...]\n```\n\n");
+                    }
                 }
                 BlockType::TextBlock(tb) => {
                     let text = tb.text.trim();
