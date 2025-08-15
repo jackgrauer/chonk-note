@@ -24,6 +24,9 @@ pub struct Table {
 
 /// Extract tables from a PDF page using PDFium's text extraction
 pub fn extract_tables_from_page(pdf_path: &Path, page_num: usize) -> Result<Vec<Table>> {
+    #[cfg(debug_assertions)]
+    eprintln!("Starting table extraction for page {}", page_num);
+    
     // Create PDFium instance
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(
@@ -46,6 +49,15 @@ pub fn extract_tables_from_page(pdf_path: &Path, page_num: usize) -> Result<Vec<
     
     // PDFium provides character-level access, so we need to group into words/segments
     let char_count = text_page.chars().len();
+    
+    #[cfg(debug_assertions)]
+    eprintln!("Processing {} characters", char_count);
+    
+    // TEMPORARY: Skip if too many characters to prevent freezing
+    if char_count > 10000 {
+        eprintln!("WARNING: Skipping table extraction - too many characters ({})", char_count);
+        return Ok(Vec::new());
+    }
     let mut current_word = String::new();
     let mut word_start_x = 0.0;
     let mut word_start_y = 0.0;

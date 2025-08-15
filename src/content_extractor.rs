@@ -48,13 +48,15 @@ pub async fn extract_to_matrix(
         None::<fn(usize)>,
     ).await?;
     
-    // Also extract tables using PDFium
-    let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
-        .unwrap_or_else(|e| {
-            #[cfg(debug_assertions)]
-            eprintln!("Failed to extract tables: {}", e);
-            Vec::new()
-        });
+    // TEMPORARILY DISABLED: Table extraction is too slow and causes freezing
+    // TODO: Optimize table extraction or run it asynchronously
+    let tables: Vec<crate::table_extractor::Table> = Vec::new();
+    // let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
+    //     .unwrap_or_else(|e| {
+    //         #[cfg(debug_assertions)]
+    //         eprintln!("Failed to extract tables: {}", e);
+    //         Vec::new()
+    //     });
     
     // Extract text from blocks and place in grid using spatial coordinates
     if let Some(page) = parsed_doc.pages.first() {
@@ -340,13 +342,15 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         None::<fn(usize)>,
     ).await?;
     
-    // Also extract tables using PDFium
-    let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
-        .unwrap_or_else(|e| {
-            #[cfg(debug_assertions)]
-            eprintln!("Failed to extract tables for markdown: {}", e);
-            Vec::new()
-        });
+    // TEMPORARILY DISABLED: Table extraction is too slow and causes freezing
+    // TODO: Optimize table extraction or run it asynchronously
+    let tables: Vec<crate::table_extractor::Table> = Vec::new();
+    // let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
+    //     .unwrap_or_else(|e| {
+    //         #[cfg(debug_assertions)]
+    //         eprintln!("Failed to extract tables for markdown: {}", e);
+    //         Vec::new()
+    //     });
     
     // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();

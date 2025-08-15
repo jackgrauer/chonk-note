@@ -700,7 +700,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
                 draw_header_section(stdout, "PDF", left.x, 0, left.width, ChonkerTheme::accent_pdf())?;
             }
             if let Some(right) = layout.right {
-                draw_header_section(stdout, "EDIT [v6]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
+                draw_header_section(stdout, "EDIT [v6.1]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
             }
         }
         DisplayMode::PdfMarkdown => {
