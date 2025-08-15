@@ -77,11 +77,18 @@ pub async fn extract_to_matrix(
                 5  // Medium indent for somewhat indented content
             };
             
-            // For Y: Map proportionally
-            let grid_y = ((bbox.y0 / page_height) * height as f32) as usize;
+            // For Y: Map proportionally with padding to avoid cutting off top/bottom
+            // Add 2-line padding at top and bottom for headers/footers
+            let padding_top = 2;
+            let padding_bottom = 2;
+            let usable_height = height.saturating_sub(padding_top + padding_bottom);
+            
+            // Map to usable area, then add top padding
+            let normalized_y = bbox.y0 / page_height;
+            let grid_y = padding_top + ((normalized_y * usable_height as f32) as usize);
             
             // Skip if position is out of bounds
-            if grid_y >= height {
+            if grid_y >= height.saturating_sub(padding_bottom) {
                 continue;
             }
             
