@@ -1,5 +1,5 @@
 use anyhow::Result;
-use viuer::{Config, print, KittySupport};
+use viuer::{Config, print};
 use std::io::{self, Write};
 
 /// Display a PDF page image using viuer with optional dark mode

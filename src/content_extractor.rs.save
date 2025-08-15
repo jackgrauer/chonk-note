@@ -1,5 +1,6 @@
 use anyhow::Result;
 use pdfium_render::prelude::*;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Character data extracted from PDFium with full spatial information
@@ -27,24 +28,12 @@ pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
     crate::pdf_renderer::get_pdf_page_count(pdf_path)
 }
 
-// Safety bounds to prevent resource exhaustion
-const MAX_CHARS_PER_PAGE: usize = 50_000;
-const MAX_GRID_SIZE: usize = 1_000_000; // max width * height
-
 pub async fn extract_to_matrix(
     pdf_path: &Path,
     page_num: usize,
     width: usize,
     height: usize,
 ) -> Result<Vec<Vec<char>>> {
-    // Safety check: Prevent excessive memory allocation
-    if width * height > MAX_GRID_SIZE {
-        return Err(anyhow::anyhow!(
-            "Grid size {}x{} exceeds maximum allowed size",
-            width, height
-        ));
-    }
-    
     // Initialize grid
     let mut grid = vec![vec![' '; width]; height];
     
@@ -55,12 +44,6 @@ pub async fn extract_to_matrix(
     
     // Extract characters with spatial data
     let characters = extract_characters_from_page(&page)?;
-    
-    // Safety check: Prevent processing too many characters
-    if characters.len() > MAX_CHARS_PER_PAGE {
-        // Fall back to simple extraction for complex pages
-        return Ok(simple_text_fallback(&characters, width, height));
-    }
     
     // Detect tables using coordinate alignment
     let tables = detect_tables_by_alignment(&characters);
@@ -75,30 +58,6 @@ pub async fn extract_to_matrix(
     Ok(grid)
 }
 
-/// Simple fallback for complex pages - just dump text without fancy layout
-fn simple_text_fallback(characters: &[CharacterData], width: usize, height: usize) -> Vec<Vec<char>> {
-    let mut grid = vec![vec![' '; width]; height];
-    
-    // Just place characters in simple top-to-bottom, left-to-right order
-    let mut row = 0;
-    let mut col = 0;
-    
-    for ch in characters {
-        if col >= width {
-            col = 0;
-            row += 1;
-        }
-        if row >= height {
-            break;
-        }
-        
-        grid[row][col] = ch.unicode;
-        col += 1;
-    }
-    
-    grid
-}
-
 /// Extract individual characters from a PDF page with spatial data
 fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
     let mut characters = Vec::new();
@@ -109,13 +68,7 @@ fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
     
     // Extract characters using the chars() method which returns a collection
     for char in text_page.chars().iter() {
-        // P0.1 FIX: PDFium can return multi-char strings (ligatures, etc)
-        // Use unicode_string() instead of unicode_char() to handle all cases
-        let unicode_string = match char.unicode_string() {
-            Some(s) => s,
-            None => continue, // Skip if no unicode string
-        };
-        let unicode = match unicode_string.chars().next() {
+        let unicode = match char.unicode_char() {
             Some(c) => c,
             None => continue, // Skip if no unicode character
         };
@@ -144,90 +97,40 @@ fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
     Ok(characters)
 }
 
-/// Group characters by baseline with tolerance
-fn group_by_baseline(characters: &[CharacterData]) -> Vec<Vec<CharacterData>> {
-    if characters.is_empty() {
-        return Vec::new();
-    }
-    
-    let mut lines: Vec<Vec<CharacterData>> = Vec::new();
-    let mut sorted_chars = characters.to_vec();
-    
-    // P0.2 FIX: Group by baseline first to preserve columns
-    // Safe sort that won't panic on NaN
-    sorted_chars.sort_by(|a, b| {
-        use std::cmp::Ordering;
-        a.baseline_y.partial_cmp(&b.baseline_y).unwrap_or(Ordering::Equal)
-    });
-    
-    let mut current_line = Vec::new();
-    let mut current_baseline = sorted_chars[0].baseline_y;
-    
-    for char in sorted_chars {
-        // Use font-size based tolerance for baseline grouping
-        let tolerance = char.font_size * 0.3;
-        
-        if (char.baseline_y - current_baseline).abs() > tolerance {
-            // New line detected
-            if !current_line.is_empty() {
-                // Sort characters within the line by x position
-                current_line.sort_by(|a: &CharacterData, b: &CharacterData| {
-                    a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                lines.push(current_line);
-                current_line = Vec::new();
-            }
-            current_baseline = char.baseline_y;
-        }
-        
-        current_line.push(char);
-    }
-    
-    // Don't forget the last line
-    if !current_line.is_empty() {
-        current_line.sort_by(|a: &CharacterData, b: &CharacterData| {
-            a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        lines.push(current_line);
-    }
-    
-    lines
-}
-
 /// Cluster characters into words based on spatial proximity
 fn cluster_into_words(characters: &[CharacterData]) -> Vec<Vec<CharacterData>> {
     let mut words = Vec::new();
+    let mut current_word = Vec::new();
+    let mut last_char: Option<&CharacterData> = None;
     
-    // P0.2 FIX: Group by baseline first to preserve column structure
-    let lines = group_by_baseline(characters);
+    // Sort characters by Y position first, then X position for reading order
+    let mut sorted_chars = characters.to_vec();
+    sorted_chars.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y).unwrap()
+            .then(a.x.partial_cmp(&b.x).unwrap())
+    });
     
-    // Process each line to extract words
-    for line in lines {
-        let mut current_word = Vec::new();
-        let mut last_char: Option<&CharacterData> = None;
-        
-        for char_data in &line {
-            if let Some(last) = last_char {
-                // Check if this character is part of the same word
-                let horizontal_gap = char_data.x - (last.x + last.width);
-                
-                // Start new word if gap is too large
-                if horizontal_gap > last.font_size * 0.3 {
-                    if !current_word.is_empty() {
-                        words.push(current_word.clone());
-                        current_word.clear();
-                    }
+    for char_data in &sorted_chars {
+        if let Some(last) = last_char {
+            // Check if this character is part of the same word
+            let horizontal_gap = char_data.x - (last.x + last.width);
+            let vertical_diff = (char_data.baseline_y - last.baseline_y).abs();
+            
+            // Start new word if gap is too large or on different line
+            if horizontal_gap > last.font_size * 0.3 || vertical_diff > last.font_size * 0.5 {
+                if !current_word.is_empty() {
+                    words.push(current_word.clone());
+                    current_word.clear();
                 }
             }
-            
-            current_word.push(char_data.clone());
-            last_char = Some(char_data);
         }
         
-        // Add the last word of the line
-        if !current_word.is_empty() {
-            words.push(current_word);
-        }
+        current_word.push(char_data.clone());
+        last_char = Some(char_data);
+    }
+    
+    if !current_word.is_empty() {
+        words.push(current_word);
     }
     
     words
@@ -267,50 +170,49 @@ fn cluster_into_lines(word_clusters: &[Vec<CharacterData>]) -> Vec<Vec<Vec<Chara
     lines
 }
 
-/// Detect tables by finding aligned columns and rows (simplified for safety)
+/// Detect tables by finding aligned columns and rows
 fn detect_tables_by_alignment(characters: &[CharacterData]) -> Vec<TableStructure> {
-    // P1 SAFETY: Simplified table detection without complex clustering
-    // This is a placeholder that avoids the expensive operations
-    // that were causing the hang in EDIT tab
-    
-    // Quick check: if too many characters, skip table detection
-    if characters.len() > 10_000 {
-        return Vec::new(); // Too complex, skip table detection
-    }
-    
     let mut tables = Vec::new();
     
-    // Simple heuristic: look for regular spacing patterns
-    // Group characters by approximate X position (columns)
-    let mut x_positions: Vec<f32> = Vec::new();
-    for char in characters {
-        // Round to nearest 5 pixels for grouping
-        let rounded_x = (char.x / 5.0).round() * 5.0;
-        if !x_positions.iter().any(|&x| (x - rounded_x).abs() < 2.0) {
-            x_positions.push(rounded_x);
-        }
-    }
-    x_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Group characters by similar X coordinates (potential columns)
+    let mut x_groups: HashMap<i32, Vec<&CharacterData>> = HashMap::new();
+    let x_tolerance = 3.0; // Tolerance for column alignment
     
-    // Group characters by approximate Y position (rows)  
-    let mut y_positions: Vec<f32> = Vec::new();
-    for char in characters {
-        // Round to nearest 3 pixels for grouping
-        let rounded_y = (char.baseline_y / 3.0).round() * 3.0;
-        if !y_positions.iter().any(|&y| (y - rounded_y).abs() < 2.0) {
-            y_positions.push(rounded_y);
-        }
+    for char_data in characters {
+        let bucket = (char_data.x / x_tolerance) as i32;
+        x_groups.entry(bucket).or_default().push(char_data);
     }
-    y_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     
-    // Only consider it a table if we have a reasonable grid
-    if x_positions.len() >= 3 && x_positions.len() <= 20 &&
-       y_positions.len() >= 3 && y_positions.len() <= 100 {
-        // Create a simple table structure
+    // Group characters by similar Y coordinates (potential rows)
+    let mut y_groups: HashMap<i32, Vec<&CharacterData>> = HashMap::new();
+    let y_tolerance = 2.0; // Tolerance for row alignment
+    
+    for char_data in characters {
+        let bucket = (char_data.baseline_y / y_tolerance) as i32;
+        y_groups.entry(bucket).or_default().push(char_data);
+    }
+    
+    // Find potential table regions (areas with multiple aligned columns and rows)
+    let column_positions: Vec<f32> = x_groups.iter()
+        .filter(|(_, chars)| chars.len() > 3) // At least 3 characters in column
+        .map(|(bucket, _)| *bucket as f32 * x_tolerance)
+        .collect();
+    
+    let row_positions: Vec<f32> = y_groups.iter()
+        .filter(|(_, chars)| chars.len() > 2) // At least 2 characters in row
+        .map(|(bucket, _)| *bucket as f32 * y_tolerance)
+        .collect();
+    
+    // If we have at least 3 columns and 3 rows, consider it a potential table
+    if column_positions.len() >= 3 && row_positions.len() >= 3 {
+        // For now, create a simple table structure
+        // TODO: Implement more sophisticated table detection
+        let num_cols = column_positions.len();
+        let num_rows = row_positions.len();
         tables.push(TableStructure {
-            columns: x_positions,
-            rows: y_positions,
-            cells: vec![vec![String::new(); 0]; 0], // Empty cells for now
+            columns: column_positions,
+            rows: row_positions,
+            cells: vec![vec![String::new(); num_cols]; num_rows],
         });
     }
     
@@ -471,3 +373,4 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
     
     Ok(markdown)
 }
+
