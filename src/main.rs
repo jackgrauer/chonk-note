@@ -202,13 +202,9 @@ impl App {
     pub async fn extract_current_page(&mut self) -> Result<()> {
         self.status_message = "Extracting content...".to_string();
         
-        // Calculate dimensions - increase width to prevent cutoff
-        let matrix_width = if matches!(self.display_mode, DisplayMode::PdfText | DisplayMode::PdfReader) {
-            ((self.term_width / 2) - 2).min(150) as usize  // Increased from 100 to 150
-        } else {
-            (self.term_width - 4).min(250) as usize  // Increased from 200 to 250
-        };
-        let matrix_height = (self.term_height - 6).min(120) as usize;  // Increased from 100 to 120
+        // Much larger dimensions to capture full table width
+        let matrix_width = 400;  // Wide enough for tables
+        let matrix_height = 200; // Tall enough for full content
         
         // Extract text
         self.status_message = if self.settings.spatial_recognition_enabled {
@@ -639,8 +635,8 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
     // Get terminal width for centering
     let (term_width, _) = terminal::size()?;
     
-    // Draw centered title "Chonker 7.28" at the top
-    let title = "🐹 Chonker 7.28";
+    // Draw centered title "Chonker 7.33" at the top
+    let title = "🐹 Chonker 7.33";
     let title_x = (term_width - title.len() as u16) / 2;
     execute!(
         stdout,

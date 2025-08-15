@@ -88,7 +88,11 @@ impl ColumnAwareGridMapper {
                 
                 grid_x += col_width;
                 if grid_x < width && col_idx < cells.len() - 1 {
-                    grid[y][grid_x] = '|'; // Column separator
+                    // Add a small gap between columns
+                    grid_x += 1; // Space before separator
+                    if grid_x < width {
+                        grid[y][grid_x] = '|'; // Column separator
+                    }
                     grid_x += 2; // Space after separator
                 }
             }
@@ -109,10 +113,14 @@ impl ColumnAwareGridMapper {
             cells[col_idx].push(ch.unicode);
         }
         
-        // Trim whitespace from cells
-        cells.iter_mut().for_each(|cell| {
+        // Trim whitespace from cells and ensure spacing
+        for cell in cells.iter_mut() {
             *cell = cell.trim().to_string();
-        });
+            // Add a space at the end to prevent column merging
+            if !cell.is_empty() {
+                cell.push(' ');
+            }
+        }
         
         cells
     }
@@ -563,11 +571,6 @@ fn map_lines_to_grid(
             if x < width {
                 grid[y][x] = ch.unicode;
                 x += 1;
-            }
-            
-            // Add space after each character if not at end
-            if x < width && ch.unicode != ' ' {
-                x += 1; // Leave space for readability
             }
         }
     }
