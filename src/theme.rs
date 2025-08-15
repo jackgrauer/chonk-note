@@ -10,7 +10,6 @@ impl ChonkerTheme {
     
     // Light mode backgrounds
     pub fn bg_secondary_light() -> Color { Color::Rgb { r: 250, g: 250, b: 250 } }
-    pub fn bg_status_light() -> Color { Color::Rgb { r: 240, g: 240, b: 240 } }
     
     // Accent colors (same for both modes)
     pub fn accent_pdf() -> Color { Color::Rgb { r: 129, g: 162, b: 190 } }   // #81A2BE - Soft blue
@@ -24,15 +23,8 @@ impl ChonkerTheme {
     pub fn text_dim_dark() -> Color { Color::Rgb { r: 96, g: 99, b: 102 } }
     pub fn text_header_dark() -> Color { Color::Rgb { r: 255, g: 255, b: 255 } }
     
-    // Text colors for light mode
-    pub fn text_primary_light() -> Color { Color::Rgb { r: 40, g: 40, b: 40 } }
-    pub fn text_secondary_light() -> Color { Color::Rgb { r: 80, g: 80, b: 80 } }
-    pub fn text_dim_light() -> Color { Color::Rgb { r: 120, g: 120, b: 120 } }
-    pub fn text_header_light() -> Color { Color::Rgb { r: 0, g: 0, b: 0 } }
-    
     // Functional colors (same for both modes)
     pub fn success() -> Color { Color::Rgb { r: 181, g: 189, b: 104 } }      // #B5BD68 - Green
-    pub fn error() -> Color { Color::Rgb { r: 204, g: 102, b: 102 } }        // #CC6666 - Red
     
     // For backwards compatibility - default to dark mode
     pub fn bg_secondary() -> Color { Self::bg_secondary_dark() }

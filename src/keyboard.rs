@@ -1,7 +1,6 @@
 use crate::{App, DisplayMode, MOD_KEY};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::io;
 
 /// Handle all keyboard input for the application
 pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runtime) -> Result<bool> {
@@ -46,18 +45,18 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
             runtime.block_on(app.extract_current_page())?;
         }
         
-        // EDIT mode keyboard handlers - only active when in EDIT mode with content
-        _ if app.display_mode == DisplayMode::PdfEdit && app.edit_data.is_some() => {
-            handle_edit_mode_keys(app, key)?;
+        // TEXT mode keyboard handlers - only active when in TEXT mode with content
+        _ if app.display_mode == DisplayMode::PdfText && app.edit_data.is_some() => {
+            handle_text_mode_keys(app, key)?;
         }
         
-        // MARKDOWN mode keyboard handlers - only active when in MARKDOWN mode with content
-        _ if app.display_mode == DisplayMode::PdfMarkdown && app.markdown_data.is_some() => {
-            handle_markdown_mode_keys(app, key)?;
+        // READER mode keyboard handlers - only active when in READER mode with content
+        _ if app.display_mode == DisplayMode::PdfReader && app.markdown_data.is_some() => {
+            handle_reader_mode_keys(app, key)?;
         }
         
         
-        // Note: Arrow keys and PageUp/PageDown are handled in EDIT and MARKDOWN mode blocks above
+        // Note: Arrow keys are handled in TEXT and READER mode blocks above
         
         _ => {}
     }
@@ -65,8 +64,8 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
     Ok(true)
 }
 
-/// Handle EDIT mode specific keyboard input
-fn handle_edit_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+/// Handle TEXT mode specific keyboard input
+fn handle_text_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Copy selection
         KeyCode::Char('c') if key.modifiers.contains(MOD_KEY) => {
@@ -303,8 +302,8 @@ fn handle_edit_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Handle MARKDOWN mode specific keyboard input
-fn handle_markdown_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+/// Handle READER mode specific keyboard input
+fn handle_reader_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Arrow key navigation for scrolling
         KeyCode::Up => {

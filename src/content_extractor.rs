@@ -5,9 +5,6 @@ use ferrules_core::{
     layout::model::ORTConfig,
 };
 use std::path::Path;
-use crate::table_extractor;
-use crate::table_extractor_v2;
-// SpatialTextGrid removed - implementation incomplete
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
     // Use our pdf_renderer module which already has PDFium integration
@@ -50,37 +47,17 @@ pub async fn extract_to_matrix(
     ).await?;
     
     // Table extraction disabled - was causing crashes
-    let tables: Vec<crate::table_extractor_v2::Table> = Vec::new();
     
     // Extract text from blocks and place in grid using spatial coordinates
     if let Some(page) = parsed_doc.pages.first() {
         let page_id = page.id;
         let page_width = page.width;
-        let page_height = page.height;
-        
-        #[cfg(debug_assertions)]
-        eprintln!("PDF Page dimensions: {}x{}", page_width, page_height);
         
         // Collect and sort blocks by vertical position for consistent reading order
         let mut positioned_blocks: Vec<&ferrules_core::blocks::Block> = Vec::new();
         for block in &parsed_doc.blocks {
             if block.pages_id.contains(&page_id) {
                 positioned_blocks.push(block);
-                
-                // Debug: Show what types of blocks ferrules is finding
-                #[cfg(debug_assertions)]
-                {
-                    let block_type = match &block.kind {
-                        BlockType::Title(_) => "Title",
-                        BlockType::Header(_) => "Header",
-                        BlockType::TextBlock(_) => "TextBlock",
-                        BlockType::ListBlock(_) => "ListBlock",
-                        BlockType::Table => "TABLE FOUND!",
-                        BlockType::Footer(_) => "Footer",
-                        BlockType::Image(_) => "Image",
-                    };
-                    eprintln!("Found block type: {} at y={}", block_type, block.bbox.y0);
-                }
             }
         }
         positioned_blocks.sort_by(|a, b| a.bbox.y0.partial_cmp(&b.bbox.y0).unwrap_or(std::cmp::Ordering::Equal));
@@ -93,22 +70,19 @@ pub async fn extract_to_matrix(
             max_y = max_y.max(block.bbox.y1);
         }
         
-        #[cfg(debug_assertions)]
-        eprintln!("Y coordinate range: {} to {} (page height: {})", min_y, max_y, page_height);
-        
         for block in positioned_blocks {
             // Get bounding box coordinates
             let bbox = &block.bbox;
             
             // Map PDF coordinates to character grid coordinates
-            // For X: Use a small left margin instead of exact PDF position to prevent excessive indentation
-            // Most text should start near the left edge for readability
-            let grid_x = if bbox.x0 < page_width * 0.2 {
-                2  // Small left margin for normal text
-            } else if bbox.x0 > page_width * 0.5 {
-                10 // Slightly more indent for clearly indented content
+            // For X: Start most text at the left edge with minimal margin
+            // This prevents text from being cut off at the edges
+            let grid_x = if bbox.x0 < page_width * 0.15 {
+                0  // No margin for left-aligned text to prevent cutoff
+            } else if bbox.x0 > page_width * 0.6 {
+                8  // Some indent for clearly indented content
             } else {
-                5  // Medium indent for somewhat indented content
+                3  // Small indent for somewhat indented content
             };
             
             // For Y: Map proportionally with padding to avoid cutting off top/bottom
@@ -129,21 +103,7 @@ pub async fn extract_to_matrix(
             
             // Skip if position is out of bounds
             if grid_y >= height.saturating_sub(padding_bottom) {
-                #[cfg(debug_assertions)]
-                eprintln!("Skipping block at y={} (exceeds height {})", grid_y, height.saturating_sub(padding_bottom));
                 continue;
-            }
-            
-            #[cfg(debug_assertions)]
-            {
-                let preview = match &block.kind {
-                    BlockType::Title(t) => format!("Title: {}", &t.text[..t.text.len().min(50)]),
-                    BlockType::Header(h) => format!("Header: {}", &h.text[..h.text.len().min(50)]),
-                    BlockType::TextBlock(tb) => format!("Text: {}", &tb.text[..tb.text.len().min(50)]),
-                    BlockType::Table => "Table: [TABLE DATA]".to_string(),
-                    _ => "Other".to_string(),
-                };
-                eprintln!("Placing at grid y={}: {}", grid_y, preview);
             }
             
             // Extract text based on block type and add markdown syntax
@@ -159,20 +119,8 @@ pub async fn extract_to_matrix(
                     place_text_on_grid_spatial(&mut grid, &markdown_text, grid_x, grid_y, width, height);
                 }
                 BlockType::TextBlock(tb) => {
-                    // Check if this looks like table data (has multiple numbers/dollar signs)
-                    let text = &tb.text;
-                    let has_dollars = text.matches('$').count() > 2;
-                    let has_many_numbers = text.chars().filter(|c| c.is_numeric()).count() > 10;
-                    let looks_like_table = has_dollars || has_many_numbers;
-                    
-                    if looks_like_table {
-                        // Try to format as table-like content
-                        let formatted = format!("[TABLE DATA]: {}", text);
-                        place_text_on_grid_spatial(&mut grid, &formatted, grid_x, grid_y, width, height);
-                    } else {
-                        // Regular paragraph - no prefix
-                        place_text_on_grid_spatial(&mut grid, text, grid_x, grid_y, width, height);
-                    }
+                    // Just show the text as-is, no table detection since it's not working
+                    place_text_on_grid_spatial(&mut grid, &tb.text, grid_x, grid_y, width, height);
                 }
                 BlockType::ListBlock(l) => {
                     // Place list items with bullet points
@@ -186,36 +134,9 @@ pub async fn extract_to_matrix(
                     }
                 }
                 BlockType::Table => {
-                    // Check if we have a matching table from PDFium extraction
-                    let mut table_found = false;
-                    
-                    // Find table that matches this position
-                    for table in &tables {
-                        // Check if table position roughly matches block position
-                        let y_match = (table.y - bbox.y0).abs() < 20.0;
-                        let x_match = (table.x - bbox.x0).abs() < 50.0;
-                        
-                        if y_match && x_match {
-                            // Format table for grid display
-                            let table_lines = table_extractor_v2::table_to_grid(table, width - grid_x - 2);
-                            
-                            let mut current_y = grid_y;
-                            for line in &table_lines {
-                                if current_y < height {
-                                    place_text_on_grid_spatial(&mut grid, line, grid_x, current_y, width, height);
-                                    current_y += 1;
-                                }
-                            }
-                            table_found = true;
-                            break;
-                        }
-                    }
-                    
-                    if !table_found {
-                        // No matching table found, use placeholder
-                        let table_marker = "[TABLE DETECTED - extraction in progress]";
-                        place_text_on_grid_spatial(&mut grid, table_marker, grid_x, grid_y, width, height);
-                    }
+                    // Ferrules says there's a table here but doesn't give us the data
+                    // Just put a simple marker
+                    place_text_on_grid_spatial(&mut grid, "[Table content not extracted]", grid_x, grid_y, width, height);
                 }
                 BlockType::Footer(f) => {
                     // Add horizontal rule and italics for footer
@@ -241,19 +162,11 @@ fn place_text_on_grid_spatial(
     let mut x = x_start;
     let mut y = y_start;
     
-    // Define a reasonable right margin to prevent text running off screen
-    let right_margin = 2;
-    let effective_max_width = if max_width > right_margin { 
-        max_width - right_margin 
-    } else { 
-        max_width 
-    };
-    
     for ch in text.chars() {
-        // Handle newlines - move to next line
+        // Handle newlines explicitly - preserve line breaks from source
         if ch == '\n' {
             y += 1;
-            x = x_start;
+            x = 0;  // Start new lines at the left edge
             if y >= max_height {
                 break;
             }
@@ -261,37 +174,13 @@ fn place_text_on_grid_spatial(
         }
         
         // Check if we need to wrap to next line
-        if x >= effective_max_width {
-            // Don't break in the middle of a word if possible
-            // Look back to find the last space for word wrapping
-            let mut wrap_pos = x;
-            let mut found_space = false;
-            
-            // Search backwards from current position for a space
-            for back_x in (x_start..x).rev() {
-                if back_x < grid[y].len() && grid[y][back_x] == ' ' {
-                    wrap_pos = back_x + 1;
-                    found_space = true;
-                    break;
-                }
-            }
-            
-            // Move to next line
+        if x >= max_width {
+            // Simple wrapping - just move to next line
             y += 1;
             if y >= max_height {
                 break;
             }
-            
-            // If we found a word boundary, clear the wrapped portion on the previous line
-            if found_space && y > 0 {
-                for clear_x in wrap_pos..x.min(max_width) {
-                    if clear_x < grid[y-1].len() {
-                        grid[y-1][clear_x] = ' ';
-                    }
-                }
-            }
-            
-            x = x_start;
+            x = 0;  // Start at left edge
         }
         
         // Place character on grid if within bounds
@@ -302,17 +191,6 @@ fn place_text_on_grid_spatial(
     }
 }
 
-pub async fn extract_to_matrix_sophisticated(
-    pdf_path: &Path,
-    page_num: usize,
-    width: usize,
-    height: usize,
-    _use_vision: bool,
-) -> Result<Vec<Vec<char>>> {
-    // For now, uses the same extraction logic with markdown syntax
-    // Future: could add more sophisticated spatial layout analysis
-    extract_to_matrix(pdf_path, page_num, width, height).await
-}
 
 pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<String> {
     let ort_config = ORTConfig::default();
@@ -337,7 +215,6 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
     ).await?;
     
     // Table extraction disabled - was causing crashes
-    let tables: Vec<crate::table_extractor_v2::Table> = Vec::new();
     
     // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();
@@ -378,35 +255,13 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                     markdown.push_str(&format!("## {}\n\n", h.text.trim()));
                 }
                 BlockType::Table => {
-                    // Look for matching table from PDFium extraction
-                    let mut table_found = false;
-                    
-                    for table in &tables {
-                        // Check if table position roughly matches block position
-                        let y_match = (table.y - block.bbox.y0).abs() < 20.0;
-                        let x_match = (table.x - block.bbox.x0).abs() < 50.0;
-                        
-                        if y_match && x_match {
-                            // Convert table to markdown format
-                            let table_md = table_extractor_v2::table_to_markdown(table);
-                            markdown.push_str("\n");
-                            markdown.push_str(&table_md);
-                            markdown.push_str("\n");
-                            table_found = true;
-                            break;
-                        }
-                    }
-                    
-                    if !table_found {
-                        // No matching table, use placeholder
-                        markdown.push_str("\n```\n[TABLE: Data table detected]\n");
-                        markdown.push_str("[Extracting table structure...]\n```\n\n");
-                    }
+                    // Ferrules says there's a table but doesn't extract it
+                    markdown.push_str("[Table content not extracted]\n\n");
                 }
                 BlockType::TextBlock(tb) => {
                     let text = tb.text.trim();
                     
-                    // Detect and format different text patterns
+                    // Just handle special markdown formatting, no table detection
                     if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
                         // Code block
                         markdown.push_str("```\n");

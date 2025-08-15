@@ -2,7 +2,7 @@
 use anyhow::Result;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, EnableMouseCapture, DisableMouseCapture},
+    event::{self, Event, KeyModifiers, MouseEvent, EnableMouseCapture, DisableMouseCapture},
     execute,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor, Attribute, SetAttribute},
     terminal::{
@@ -18,7 +18,7 @@ use std::{
 use image::DynamicImage;
 use clap::Parser;
 
-// Cross-platform modifier key constant for EDIT mode
+// Cross-platform modifier key constant for TEXT mode
 #[cfg(target_os = "macos")]
 const MOD_KEY: KeyModifiers = KeyModifiers::SUPER; // Cmd key on macOS
 #[cfg(not(target_os = "macos"))]
@@ -26,18 +26,15 @@ const MOD_KEY: KeyModifiers = KeyModifiers::CONTROL; // Ctrl key elsewhere
 
 // Existing modules
 mod content_extractor;
-mod renderer;
+mod edit_renderer;
 mod pdf_renderer;
-mod pdf_to_grid;
 mod file_picker;
 mod theme;
 mod viuer_display;
 mod markdown_renderer;
 mod keyboard;
-mod table_extractor;
-mod table_extractor_v2;
 
-use renderer::EditPanelRenderer;
+use edit_renderer::EditPanelRenderer;
 use theme::ChonkerTheme;
 use markdown_renderer::MarkdownRenderer;
 
@@ -51,7 +48,7 @@ struct Args {
     #[arg(short, long, default_value_t = 1)]
     page: usize,
     
-    /// Display mode: edit, markdown, or options
+    /// Display mode: edit or markdown
     #[arg(short, long, default_value = "edit")]
     mode: String,
 }
@@ -73,9 +70,8 @@ impl Rect {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum DisplayMode {
-    PdfEdit,
-    PdfMarkdown,
-    Options,
+    PdfText,     // Raw text extraction mode (editable)
+    PdfReader,   // Formatted reader mode (markdown)
 }
 
 #[derive(Clone, Debug)]
@@ -99,7 +95,7 @@ pub struct App {
     pub term_width: u16,
     pub term_height: u16,
     pub dark_mode: bool, // Dark mode toggle
-    // EDIT mode cursor and selection
+    // TEXT mode cursor and selection
     pub cursor: (usize, usize),  // (x, y) in grid
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
@@ -112,10 +108,8 @@ impl App {
         let total_pages = content_extractor::get_page_count(&pdf_path)?;
         
         let display_mode = match mode {
-            "edit" => DisplayMode::PdfEdit,
-            "markdown" => DisplayMode::PdfMarkdown,
-            "options" => DisplayMode::Options,
-            _ => DisplayMode::PdfEdit,
+            "markdown" | "reader" => DisplayMode::PdfReader,
+            _ => DisplayMode::PdfText,
         };
         
         Ok(Self {
@@ -150,7 +144,7 @@ impl App {
         
         // Update renderer size if it exists
         if let Some(renderer) = &mut self.edit_display {
-            let renderer_width = if matches!(self.display_mode, DisplayMode::PdfEdit | DisplayMode::PdfMarkdown) {
+            let renderer_width = if matches!(self.display_mode, DisplayMode::PdfText | DisplayMode::PdfReader) {
                 width / 2 - 2
             } else {
                 width - 2
@@ -166,7 +160,7 @@ impl App {
         
         // Calculate PDF size based on display mode
         let (image_width, image_height) = match self.display_mode {
-            DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
+            DisplayMode::PdfText | DisplayMode::PdfReader => {
                 // For split modes - use actual panel size
                 let width = ((self.term_width / 2) - 4).max(40) as u32;
                 let height = (self.term_height - 4).max(20) as u32;
@@ -187,18 +181,8 @@ impl App {
             Ok(image) => {
                 self.current_page_image = Some(image);
                 self.status_message = format!("Page {}/{} - Ctrl+E: Extract text", self.current_page + 1, self.total_pages);
-                
-                #[cfg(debug_assertions)]
-                {
-                    let protocol = viuer_display::get_protocol_info();
-                    self.status_message = format!("Page {}/{} [{}]", self.current_page + 1, self.total_pages, protocol);
-                }
             }
             Err(e) => {
-                // Log error for debugging but show user-friendly message
-                #[cfg(debug_assertions)]
-                eprintln!("Failed to render PDF page: {}", e);
-                
                 self.current_page_image = None;
                 self.status_message = format!("Failed to load page {} - {}", 
                     self.current_page + 1, 
@@ -218,40 +202,30 @@ impl App {
     pub async fn extract_current_page(&mut self) -> Result<()> {
         self.status_message = "Extracting content...".to_string();
         
-        // Calculate dimensions
-        let matrix_width = if matches!(self.display_mode, DisplayMode::PdfEdit | DisplayMode::PdfMarkdown) {
-            ((self.term_width / 2) - 2).min(100) as usize
+        // Calculate dimensions - increase width to prevent cutoff
+        let matrix_width = if matches!(self.display_mode, DisplayMode::PdfText | DisplayMode::PdfReader) {
+            ((self.term_width / 2) - 2).min(150) as usize  // Increased from 100 to 150
         } else {
-            (self.term_width - 4).min(200) as usize
+            (self.term_width - 4).min(250) as usize  // Increased from 200 to 250
         };
-        let matrix_height = (self.term_height - 6).min(100) as usize;
+        let matrix_height = (self.term_height - 6).min(120) as usize;  // Increased from 100 to 120
         
         // Extract text
         self.status_message = if self.settings.spatial_recognition_enabled {
-            "Extracting content with spatial recognition [v8]...".to_string()
+            "Extracting content with spatial recognition...".to_string()
         } else {
-            "Extracting content [v8]...".to_string()
+            "Extracting content...".to_string()
         };
         
-        let matrix = if self.settings.spatial_recognition_enabled {
-            content_extractor::extract_to_matrix_sophisticated(
-                &self.pdf_path,
-                self.current_page,
-                matrix_width,
-                matrix_height,
-                true,
-            ).await?
-        } else {
-            content_extractor::extract_to_matrix(
-                &self.pdf_path,
-                self.current_page,
-                matrix_width,
-                matrix_height,
-            ).await?
-        };
+        let matrix = content_extractor::extract_to_matrix(
+            &self.pdf_path,
+            self.current_page,
+            matrix_width,
+            matrix_height,
+        ).await?;
         
         // Create or update renderer
-        let renderer_width = if matches!(self.display_mode, DisplayMode::PdfEdit | DisplayMode::PdfMarkdown) {
+        let renderer_width = if matches!(self.display_mode, DisplayMode::PdfText | DisplayMode::PdfReader) {
             self.term_width / 2 - 2
         } else {
             self.term_width - 2
@@ -292,7 +266,7 @@ impl App {
             self.markdown_data = Some(markdown);
         }
         
-        self.status_message = format!("Page {}/{} - Content extracted [v8]", self.current_page + 1, self.total_pages);
+        self.status_message = format!("Page {}/{} - Content extracted", self.current_page + 1, self.total_pages);
         Ok(())
     }
     
@@ -302,10 +276,10 @@ impl App {
             self.current_page += 1;
             self.edit_data = None;
             self.current_page_image = None;
-            self.edit_display = None; // Clear EDIT renderer
-            self.markdown_renderer = None; // Clear MARKDOWN renderer
+            self.edit_display = None; // Clear TEXT renderer
+            self.markdown_renderer = None; // Clear READER renderer
             self.markdown_data = None;
-            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract to EDIT panel", self.current_page + 1, self.total_pages);
+            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract text", self.current_page + 1, self.total_pages);
         }
     }
     
@@ -315,24 +289,23 @@ impl App {
             self.current_page -= 1;
             self.edit_data = None;
             self.current_page_image = None;
-            self.edit_display = None; // Clear EDIT renderer
-            self.markdown_renderer = None; // Clear MARKDOWN renderer
+            self.edit_display = None; // Clear TEXT renderer
+            self.markdown_renderer = None; // Clear READER renderer
             self.markdown_data = None;
-            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract to EDIT panel", self.current_page + 1, self.total_pages);
+            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract text", self.current_page + 1, self.total_pages);
         }
     }
     
     pub fn toggle_mode(&mut self) {
         self.display_mode = match self.display_mode {
-            DisplayMode::PdfEdit => {
+            DisplayMode::PdfText => {
                 if self.settings.spatial_recognition_enabled && self.markdown_data.is_some() {
-                    DisplayMode::PdfMarkdown
+                    DisplayMode::PdfReader
                 } else {
-                    DisplayMode::Options
+                    DisplayMode::PdfText  // Stay in text mode if no markdown
                 }
             }
-            DisplayMode::PdfMarkdown => DisplayMode::Options,
-            DisplayMode::Options => DisplayMode::PdfEdit,
+            DisplayMode::PdfReader => DisplayMode::PdfText,
         };
         
         self.status_message = format!("Mode: {:?}", self.display_mode);
@@ -463,68 +436,61 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
         draw_status_bar(&mut stdout, app, layout.status)?;
         
         // Draw main content based on mode
-        match app.display_mode {
-            DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
-                // PDF panel - where the pdf image displays
-                if let Some(left) = layout.left {
-                    // Use a dark gray for PDF panel in dark mode for better contrast with black PDFs
-                    let bg = if app.dark_mode { 
-                        Color::Rgb { r: 30, g: 30, b: 30 }  // Dark gray instead of pure black
-                    } else { 
-                        ChonkerTheme::bg_secondary_light() 
-                    };
-                    draw_panel_background(&mut stdout, left, bg)?;
-                    
-                    if app.current_page_image.is_none() {
-                        // Centered loading message
-                        let msg = "Loading PDF...";
-                        let msg_x = left.x + (left.width - msg.len() as u16) / 2;
-                        let msg_y = left.y + left.height / 2;
-                        execute!(
-                            stdout,
-                            MoveTo(msg_x, msg_y),
-                            SetForegroundColor(ChonkerTheme::accent_pdf()),
-                            Print(msg),
-                            ResetColor
-                        )?;
-                    }
-                }
-                
-                // Right panel - EDIT or MARKDOWN
-                if let Some(right) = layout.right {
-                    if app.display_mode == DisplayMode::PdfEdit {
-                        // Show EDIT panel - unformatted gridlike layout
-                        if let Some(renderer) = &app.edit_display {
-                            renderer.render_with_cursor_and_selection(
-                                right.x + 1,
-                                right.y,
-                                right.width - 2,
-                                right.height,
-                                app.cursor,
-                                app.selection_start,
-                                app.selection_end,
-                            )?;
-                        } else {
-                            // Centered message
-                            let msg = "Press Ctrl+E to extract to EDIT";
-                            let msg_x = right.x + (right.width - msg.len() as u16) / 2;
-                            let msg_y = right.y + right.height / 2;
-                            execute!(
-                                stdout,
-                                MoveTo(msg_x, msg_y),
-                                SetForegroundColor(ChonkerTheme::text_dim()),
-                                Print(msg),
-                                ResetColor
-                            )?;
-                        }
-                    } else {
-                        // Show MARKDOWN panel - nicely formatted, non-editable
-                        render_markdown(&mut stdout, &app.markdown_renderer, right)?;
-                    }
-                }
+        // PDF panel - where the pdf image displays
+        if let Some(left) = layout.left {
+            // Use a dark gray for PDF panel in dark mode for better contrast with black PDFs
+            let bg = if app.dark_mode { 
+                Color::Rgb { r: 30, g: 30, b: 30 }  // Dark gray instead of pure black
+            } else { 
+                ChonkerTheme::bg_secondary_light() 
+            };
+            draw_panel_background(&mut stdout, left, bg)?;
+            
+            if app.current_page_image.is_none() {
+                // Centered loading message
+                let msg = "Loading PDF...";
+                let msg_x = left.x + (left.width - msg.len() as u16) / 2;
+                let msg_y = left.y + left.height / 2;
+                execute!(
+                    stdout,
+                    MoveTo(msg_x, msg_y),
+                    SetForegroundColor(ChonkerTheme::accent_pdf()),
+                    Print(msg),
+                    ResetColor
+                )?;
             }
-            DisplayMode::Options => {
-                draw_options_panel(&mut stdout, app, layout.main)?;
+        }
+        
+        // Right panel - TEXT or READER
+        if let Some(right) = layout.right {
+            if app.display_mode == DisplayMode::PdfText {
+                // Show TEXT panel - unformatted gridlike layout
+                if let Some(renderer) = &app.edit_display {
+                    renderer.render_with_cursor_and_selection(
+                        right.x + 1,
+                        right.y,
+                        right.width - 2,
+                        right.height,
+                        app.cursor,
+                        app.selection_start,
+                        app.selection_end,
+                    )?;
+                } else {
+                    // Centered message
+                    let msg = "Press Ctrl+E to extract text";
+                    let msg_x = right.x + (right.width - msg.len() as u16) / 2;
+                    let msg_y = right.y + right.height / 2;
+                    execute!(
+                        stdout,
+                        MoveTo(msg_x, msg_y),
+                        SetForegroundColor(ChonkerTheme::text_dim()),
+                        Print(msg),
+                        ResetColor
+                    )?;
+                }
+            } else {
+                // Show READER panel - nicely formatted, non-editable
+                render_markdown(&mut stdout, &app.markdown_renderer, right)?;
             }
         }
         
@@ -538,30 +504,25 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
         // ██ DO NOT MOVE THIS CODE OUTSIDE THE SYNC BLOCK!                  ██
         // ████████████████████████████████████████████████████████████████████████
         
-        match app.display_mode {
-            DisplayMode::PdfEdit | DisplayMode::PdfMarkdown => {
-                if let Some(left) = layout.left {
-                    if let Some(ref image) = app.current_page_image {
-                        // Use full left panel for PDF with proper padding
-                        // Add padding to avoid overlapping with borders
-                        let padding = 1;
-                        let display_x = left.x + padding;
-                        let display_y = left.y + padding;
-                        let display_width = left.width.saturating_sub(padding * 2);
-                        let display_height = left.height.saturating_sub(padding * 2);
-                        
-                        let _ = viuer_display::display_pdf_image(
-                            image,
-                            display_x,
-                            display_y,
-                            display_width,
-                            display_height,
-                            app.dark_mode,
-                        );
-                    }
-                }
+        if let Some(left) = layout.left {
+            if let Some(ref image) = app.current_page_image {
+                // Use full left panel for PDF with proper padding
+                // Add padding to avoid overlapping with borders
+                let padding = 1;
+                let display_x = left.x + padding;
+                let display_y = left.y + padding;
+                let display_width = left.width.saturating_sub(padding * 2);
+                let display_height = left.height.saturating_sub(padding * 2);
+                
+                let _ = viuer_display::display_pdf_image(
+                    image,
+                    display_x,
+                    display_y,
+                    display_width,
+                    display_height,
+                    app.dark_mode,
+                );
             }
-            _ => {}
         }
         
         // ████████████████████████████████████████████████████████████████████████
@@ -601,25 +562,14 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
 }
 
 /// Calculate layout based on terminal size and display mode
-fn calculate_layout(width: u16, height: u16, mode: DisplayMode) -> Layout {
-    match mode {
-        DisplayMode::Options => {
-            Layout {
-                main: Rect::new(0, 2, width, height - 4),
-                left: None,
-                right: None,
-                status: Rect::new(0, height - 2, width, 2),
-            }
-        }
-        _ => {
-            // Always return split layout for PdfEdit and PdfMarkdown
-            Layout {
-                main: Rect::new(0, 2, width, height - 4),
-                left: Some(Rect::new(0, 2, width/2, height - 4)),
-                right: Some(Rect::new(width/2, 2, width/2, height - 4)),
-                status: Rect::new(0, height - 2, width, 2),
-            }
-        }
+fn calculate_layout(width: u16, height: u16, _mode: DisplayMode) -> Layout {
+    // Always return split layout for PdfText and PdfReader
+    // Now accounts for title bar on line 0, headers on line 1, content starts at line 2
+    Layout {
+        main: Rect::new(0, 2, width, height - 4),
+        left: Some(Rect::new(0, 2, width/2, height - 4)),
+        right: Some(Rect::new(width/2, 2, width/2, height - 4)),
+        status: Rect::new(0, height - 2, width, 2),
     }
 }
 
@@ -649,7 +599,7 @@ fn draw_header_section(
     width: u16,
     bg_color: Color,
 ) -> Result<()> {
-    // Draw first header line
+    // Draw header line (only one line now since title is separate)
     execute!(
         stdout,
         MoveTo(x, y),
@@ -659,15 +609,6 @@ fn draw_header_section(
         Print(format!("  {:<width$}", title, width = (width - 2) as usize)),
         ResetColor,
         SetAttribute(Attribute::Reset)
-    )?;
-    
-    // Draw second header line to ensure full header coverage
-    execute!(
-        stdout,
-        MoveTo(x, y + 1),
-        SetBackgroundColor(bg_color),
-        Print(" ".repeat(width as usize)),
-        ResetColor
     )?;
     
     Ok(())
@@ -695,25 +636,39 @@ fn render_markdown(stdout: &mut io::Stdout, renderer: &Option<MarkdownRenderer>,
 
 /// Draw headers with new mode names
 fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> Result<()> {
+    // Get terminal width for centering
+    let (term_width, _) = terminal::size()?;
+    
+    // Draw centered title "Chonker 7.11" at the top
+    let title = "🐹 Chonker 7.11";
+    let title_x = (term_width - title.len() as u16) / 2;
+    execute!(
+        stdout,
+        MoveTo(title_x, 0),
+        SetForegroundColor(ChonkerTheme::text_header()),
+        SetAttribute(Attribute::Bold),
+        Print(title),
+        SetAttribute(Attribute::Reset),
+        ResetColor
+    )?;
+    
+    // Draw panel headers on line 1
     match mode {
-        DisplayMode::PdfEdit => {
+        DisplayMode::PdfText => {
             if let Some(left) = layout.left {
-                draw_header_section(stdout, "PDF", left.x, 0, left.width, ChonkerTheme::accent_pdf())?;
+                draw_header_section(stdout, "PDF", left.x, 1, left.width, ChonkerTheme::accent_pdf())?;
             }
             if let Some(right) = layout.right {
-                draw_header_section(stdout, "EDIT [v8]", right.x, 0, right.width, ChonkerTheme::accent_text())?;
+                draw_header_section(stdout, "TEXT", right.x, 1, right.width, ChonkerTheme::accent_text())?;
             }
         }
-        DisplayMode::PdfMarkdown => {
+        DisplayMode::PdfReader => {
             if let Some(left) = layout.left {
-                draw_header_section(stdout, "PDF", left.x, 0, left.width, ChonkerTheme::accent_pdf())?;
+                draw_header_section(stdout, "PDF", left.x, 1, left.width, ChonkerTheme::accent_pdf())?;
             }
             if let Some(right) = layout.right {
-                draw_header_section(stdout, "MARKDOWN", right.x, 0, right.width, ChonkerTheme::accent_options())?;
+                draw_header_section(stdout, "READER", right.x, 1, right.width, ChonkerTheme::accent_options())?;
             }
-        }
-        DisplayMode::Options => {
-            draw_header_section(stdout, "OPTIONS", 0, 0, layout.main.width, ChonkerTheme::accent_options())?;
         }
     }
     
@@ -723,7 +678,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
 /// Draw status bar
 fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
     let status = format!(
-        " {} | [Ctrl+O]pen [Ctrl+E]xtract [Tab]Mode [Ctrl+Q]uit ",
+        " {} | [Ctrl+O]pen [Ctrl+E]xtract [Tab]Toggle [Ctrl+Q]uit ",
         app.status_message
     );
     
@@ -748,130 +703,20 @@ fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()>
     Ok(())
 }
 
-/// Draw options panel with cursor
-fn draw_options_panel(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
-    // Clean background
-    let bg = if app.dark_mode { ChonkerTheme::bg_secondary() } else { ChonkerTheme::bg_secondary_light() };
-    draw_panel_background(stdout, area, bg)?;
-    
-    // Start near top for more content
-    let mut y = area.y + 2;
-    
-    // Title
-    execute!(
-        stdout,
-        MoveTo(area.x + 2, y),
-        SetForegroundColor(ChonkerTheme::accent_text()),
-        SetAttribute(Attribute::Bold),
-        Print("OPTIONS & HELP"),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
-    y += 2;
-    
-    // Keyboard shortcuts section
-    execute!(
-        stdout,
-        MoveTo(area.x + 2, y),
-        SetForegroundColor(ChonkerTheme::accent_text()),
-        SetAttribute(Attribute::Bold),
-        Print("KEYBOARD SHORTCUTS"),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
-    y += 2;
-    
-    // List shortcuts
-    let shortcuts = [
-        ("Ctrl+O", "Open PDF file"),
-        ("Ctrl+E", "Extract text from current page"),
-        ("Ctrl+D", "Toggle dark/light mode (PDF background)"),
-        ("Ctrl+Q", "Quit application"),
-        ("Tab", "Switch between PDF/EDIT/MARKDOWN/OPTIONS"),
-        ("", ""),
-        ("EDIT Mode:", ""),
-        ("↑↓←→", "Scroll text"),
-        ("Type", "Edit text"),
-        ("Backspace", "Delete before cursor"),
-        ("Delete", "Delete at cursor"),
-        ("Enter", "New line"),
-        ("Cmd+C", "Copy selection"),
-        ("Cmd+V", "Paste"),
-        ("", ""),
-        ("MARKDOWN Mode:", ""),
-        ("↑↓", "Scroll content"),
-    ];
-    
-    for (key, desc) in shortcuts {
-        if key.is_empty() && desc.is_empty() {
-            y += 1;
-            continue;
-        }
-        
-        if desc.is_empty() {
-            // Section header
-            execute!(
-                stdout,
-                MoveTo(area.x + 2, y),
-                SetForegroundColor(ChonkerTheme::accent_text()),
-                Print(key),
-                ResetColor
-            )?;
-        } else if key.is_empty() {
-            // Description only
-            execute!(
-                stdout,
-                MoveTo(area.x + 4, y),
-                SetForegroundColor(ChonkerTheme::text_dim()),
-                Print(desc),
-                ResetColor
-            )?;
-        } else {
-            // Key + description
-            execute!(
-                stdout,
-                MoveTo(area.x + 4, y),
-                SetForegroundColor(ChonkerTheme::text_primary()),
-                Print(format!("{:12}", key)),
-                SetForegroundColor(ChonkerTheme::text_secondary()),
-                Print(desc),
-                ResetColor
-            )?;
-        }
-        y += 1;
-        
-        // Stop if we're running out of space
-        if y >= area.y + area.height - 2 {
-            break;
-        }
-    }
-    
-    // Footer
-    let footer = "Tab to return";
-    execute!(
-        stdout,
-        MoveTo(area.x + (area.width - footer.len() as u16) / 2, area.y + area.height - 2),
-        SetForegroundColor(ChonkerTheme::text_dim()),
-        Print(footer),
-        ResetColor
-    )?;
-    
-    Ok(())
-}
 
-/// Handle mouse input for EDIT and MARKDOWN modes
+/// Handle mouse input for TEXT and READER modes
 fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Result<()> {
     use crossterm::event::{MouseEventKind, MouseButton};
     
-    // Handle MARKDOWN mode scrolling
-    if app.display_mode == DisplayMode::PdfMarkdown && app.markdown_data.is_some() {
+    // Handle READER mode scrolling
+    if app.display_mode == DisplayMode::PdfReader && app.markdown_data.is_some() {
         if let Some(right) = layout.right {
             let panel_x = right.x + 1;
             let panel_y = right.y;
             let panel_width = right.width - 2;
             let panel_height = right.height;
             
-            // Check if mouse is within the MARKDOWN panel
+            // Check if mouse is within the READER panel
             if mouse.column >= panel_x && 
                mouse.column < panel_x + panel_width && 
                mouse.row >= panel_y && 
@@ -895,19 +740,19 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
         return Ok(());
     }
     
-    // Handle EDIT mode
-    if app.display_mode != DisplayMode::PdfEdit || app.edit_data.is_none() {
+    // Handle TEXT mode
+    if app.display_mode != DisplayMode::PdfText || app.edit_data.is_none() {
         return Ok(());
     }
     
-    // Get the EDIT panel bounds
+    // Get the TEXT panel bounds
     if let Some(right) = layout.right {
         let panel_x = right.x + 1; // Account for border
         let panel_y = right.y;
         let panel_width = right.width - 2;
         let panel_height = right.height;
         
-        // Check if mouse is within the EDIT panel
+        // Check if mouse is within the TEXT panel
         if mouse.column >= panel_x && 
            mouse.column < panel_x + panel_width && 
            mouse.row >= panel_y && 

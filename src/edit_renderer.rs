@@ -2,7 +2,6 @@ use crossterm::{
     cursor::MoveTo,
     execute,
     style::{Color, Print, SetForegroundColor, SetBackgroundColor, ResetColor},
-    terminal,
 };
 use std::io::{self, Write};
 
@@ -211,7 +210,6 @@ impl EditPanelRenderer {
                 let end_col = (start_col + render_width as usize).min(row.len());
                 
                 for x in start_col..end_col {
-                    let screen_x = x - start_col;
                     let is_cursor = cursor == (x, buffer_y);
                     
                     // Check if position is in selection
