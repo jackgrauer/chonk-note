@@ -1,6 +1,6 @@
 use anyhow::Result;
 use pdfium_render::prelude::*;
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Character data extracted from PDFium with full spatial information
@@ -328,115 +328,41 @@ fn place_text_on_grid_spatial(
 
 
 pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<String> {
-    // For now, keep using Ferrules for markdown generation
-    // TODO: Convert to PDFium-based extraction
-    use ferrules_core::{
-        blocks::BlockType,
-        FerrulesParseConfig, FerrulesParser,
-        layout::model::ORTConfig,
-    };
+    // Use PDFium-based extraction instead of ferrules
+    let pdfium = crate::pdf_renderer::get_pdfium_instance();
+    let document = pdfium.load_pdf_from_file(pdf_path, None)?;
+    let page = document.pages().get(page_num as u16)?;
     
-    let ort_config = ORTConfig::default();
-    let parser = FerrulesParser::new(ort_config);
+    // Extract text using PDFium
+    let text_page = page.text()?;
+    let text = text_page.all();
     
-    let parse_config = FerrulesParseConfig {
-        password: None,
-        flatten_pdf: true,
-        page_range: Some(page_num..page_num + 1),
-        debug_dir: None,
-    };
-    
-    let pdf_bytes = tokio::fs::read(pdf_path).await?;
-    let parsed_doc = parser.parse_document(
-        &pdf_bytes,
-        pdf_path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("document.pdf")
-            .to_string(),
-        parse_config,
-        None::<fn(usize)>,
-    ).await?;
-    
-    // Table extraction disabled - was causing crashes
-    
-    // Convert parsed document blocks to markdown with better spatial awareness
+    // Convert to markdown with simple formatting
     let mut markdown = String::new();
     
-    if let Some(page) = parsed_doc.pages.first() {
-        let page_id = page.id;
-        let page_height = page.height;
+    if !text.trim().is_empty() {
+        // Split into paragraphs and format
+        let paragraphs: Vec<&str> = text.split("\n\n").collect();
         
-        // Collect blocks with their positions
-        let mut positioned_blocks: Vec<(&ferrules_core::blocks::Block, f32)> = Vec::new();
-        
-        for block in &parsed_doc.blocks {
-            if block.pages_id.contains(&page_id) {
-                // Use y position for sorting (top to bottom)
-                positioned_blocks.push((block, block.bbox.y0));
+        for (i, para) in paragraphs.iter().enumerate() {
+            let trimmed = para.trim();
+            if trimmed.is_empty() {
+                continue;
             }
-        }
-        
-        // Sort by vertical position to preserve reading order
-        positioned_blocks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        
-        let mut last_y = 0.0;
-        
-        for (block, y_pos) in positioned_blocks {
-            // Add extra spacing if there's a significant vertical gap
-            if last_y > 0.0 && (y_pos - last_y) > page_height * 0.05 {
-                markdown.push_str("\n");
-            }
-            last_y = y_pos + (block.bbox.y1 - block.bbox.y0);
             
-            match &block.kind {
-                BlockType::Title(t) => {
-                    // Title without excessive formatting
-                    markdown.push_str(&format!("# {}\n\n", t.text.trim()));
-                }
-                BlockType::Header(h) => {
-                    // Section header with better formatting
-                    markdown.push_str(&format!("## {}\n\n", h.text.trim()));
-                }
-                BlockType::Table => {
-                    // Ferrules says there's a table but doesn't extract it
-                    markdown.push_str("[Table content not extracted]\n\n");
-                }
-                BlockType::TextBlock(tb) => {
-                    let text = tb.text.trim();
-                    
-                    // Just handle special markdown formatting, no table detection
-                    if text.lines().any(|line| line.starts_with("    ") || line.starts_with("\t")) {
-                        // Code block
-                        markdown.push_str("```\n");
-                        markdown.push_str(text);
-                        markdown.push_str("\n```\n\n");
-                    } else if text.starts_with("Note:") || text.starts_with("NOTE:") {
-                        // Note blocks
-                        markdown.push_str(&format!("> **Note:** {}\n\n", &text[5..].trim()));
-                    } else if text.starts_with("Warning:") || text.starts_with("WARNING:") {
-                        // Warning blocks
-                        markdown.push_str(&format!("> ⚠️ **Warning:** {}\n\n", &text[8..].trim()));
-                    } else {
-                        // Regular paragraph
-                        markdown.push_str(&format!("{}\n\n", text));
-                    }
-                }
-                BlockType::ListBlock(l) => {
-                    // Enhanced list formatting
-                    markdown.push_str("\n");
-                    for (i, item) in l.items.iter().enumerate() {
-                        // Use different bullet styles for variety
-                        let bullet = if i % 3 == 0 { "•" } else if i % 3 == 1 { "▸" } else { "◦" };
-                        markdown.push_str(&format!("{} {}\n", bullet, item.trim()));
-                    }
-                    markdown.push_str("\n");
-                }
-                BlockType::Footer(f) => {
-                    // Footer with better formatting
-                    markdown.push_str("\n---\n\n");
-                    markdown.push_str(&format!("_{}_\n\n", f.text.trim()));
-                }
-                _ => {}
+            // Simple heuristics for formatting
+            if i == 0 && trimmed.len() < 100 && !trimmed.contains('.') {
+                // Likely a title
+                markdown.push_str(&format!("# {}\n\n", trimmed));
+            } else if trimmed.len() < 80 && trimmed.chars().filter(|c| c.is_uppercase()).count() > trimmed.len() / 3 {
+                // Likely a header (lots of caps)
+                markdown.push_str(&format!("## {}\n\n", trimmed));
+            } else if trimmed.starts_with("•") || trimmed.starts_with("-") || trimmed.starts_with("*") {
+                // List item
+                markdown.push_str(&format!("{}\n", trimmed));
+            } else {
+                // Regular paragraph
+                markdown.push_str(&format!("{}\n\n", trimmed));
             }
         }
     }

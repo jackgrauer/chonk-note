@@ -1,6 +1,6 @@
 [package]
 name = "chonker7"
-version = "7.12.0"
+version = "7.26.0"
 edition = "2021"
 
 [dependencies]
@@ -8,9 +8,6 @@ edition = "2021"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1.38", features = ["full"] }
-
-# Ferrules for PDF extraction (local with patches)
-ferrules-core = { path = "ferrules/ferrules-core" }
 
 # Terminal UI - Pure crossterm, no ratatui!
 crossterm = "0.28"
