@@ -6,6 +6,7 @@ use ferrules_core::{
 };
 use std::path::Path;
 use crate::table_extractor;
+use crate::table_extractor_v2;
 // SpatialTextGrid removed - implementation incomplete
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
@@ -48,15 +49,13 @@ pub async fn extract_to_matrix(
         None::<fn(usize)>,
     ).await?;
     
-    // TEMPORARILY DISABLED: Table extraction is too slow and causes freezing
-    // TODO: Optimize table extraction or run it asynchronously
-    let tables: Vec<crate::table_extractor::Table> = Vec::new();
-    // let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
-    //     .unwrap_or_else(|e| {
-    //         #[cfg(debug_assertions)]
-    //         eprintln!("Failed to extract tables: {}", e);
-    //         Vec::new()
-    //     });
+    // Use fast table extraction (v2)
+    let tables = table_extractor_v2::extract_tables_from_page_fast(pdf_path, page_num)
+        .unwrap_or_else(|e| {
+            #[cfg(debug_assertions)]
+            eprintln!("Failed to extract tables: {}", e);
+            Vec::new()
+        });
     
     // Extract text from blocks and place in grid using spatial coordinates
     if let Some(page) = parsed_doc.pages.first() {
@@ -203,7 +202,7 @@ pub async fn extract_to_matrix(
                         
                         if y_match && x_match {
                             // Format table for grid display
-                            let table_lines = table_extractor::table_to_grid(table, width - grid_x - 2);
+                            let table_lines = table_extractor_v2::table_to_grid(table, width - grid_x - 2);
                             
                             let mut current_y = grid_y;
                             for line in &table_lines {
@@ -342,15 +341,13 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
         None::<fn(usize)>,
     ).await?;
     
-    // TEMPORARILY DISABLED: Table extraction is too slow and causes freezing
-    // TODO: Optimize table extraction or run it asynchronously
-    let tables: Vec<crate::table_extractor::Table> = Vec::new();
-    // let tables = table_extractor::extract_tables_from_page(pdf_path, page_num)
-    //     .unwrap_or_else(|e| {
-    //         #[cfg(debug_assertions)]
-    //         eprintln!("Failed to extract tables for markdown: {}", e);
-    //         Vec::new()
-    //     });
+    // Use fast table extraction (v2) 
+    let tables = table_extractor_v2::extract_tables_from_page_fast(pdf_path, page_num)
+        .unwrap_or_else(|e| {
+            #[cfg(debug_assertions)]
+            eprintln!("Failed to extract tables for markdown: {}", e);
+            Vec::new()
+        });
     
     // Convert parsed document blocks to markdown with better spatial awareness
     let mut markdown = String::new();
@@ -401,7 +398,7 @@ pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<St
                         
                         if y_match && x_match {
                             // Convert table to markdown format
-                            let table_md = table_extractor::table_to_markdown(table);
+                            let table_md = table_extractor_v2::table_to_markdown(table);
                             markdown.push_str("\n");
                             markdown.push_str(&table_md);
                             markdown.push_str("\n");
