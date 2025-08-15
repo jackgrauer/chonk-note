@@ -1,3 +1,32 @@
+// CHONKER 7.34 - TEXT EXTRACTION KNOWLEDGE BASE
+// ==============================================
+//
+// After extensive iteration, we have two distinct approaches:
+//
+// 1. COLUMN-AWARE APPROACH (v7.28-v7.34) - BEST FOR TABLES
+//    - Uses TextLine structures to group by baseline
+//    - Detects column boundaries via consistent gaps
+//    - ColumnAwareGridMapper splits content into columns
+//    - Adds pipe separators between columns
+//    - PROS: Excellent for tables, preserves column structure
+//    - CONS: Can struggle with regular text, may add unwanted spacing
+//
+// 2. SIMPLE SEQUENTIAL APPROACH (v7.27) - BEST FOR TEXT
+//    - Places words sequentially left-to-right
+//    - Simple word clustering based on gaps
+//    - No column detection logic
+//    - PROS: Works well for regular text paragraphs
+//    - CONS: Tables become unreadable blobs of concatenated values
+//
+// CURRENT IMPLEMENTATION: Column-aware (better for mixed content)
+// Trade-off: Some regular text may have odd spacing, but tables are readable
+//
+// Key parameters that work:
+// - Grid size: 400x200 (captures full tables)
+// - Column detection threshold: 60% of lines
+// - Gap threshold: 0.5 * font_size
+// - Row merge tolerance: 2.0 pixels
+
 use anyhow::Result;
 use pdfium_render::prelude::*;
 use std::path::Path;
@@ -181,7 +210,16 @@ pub async fn extract_to_matrix(
     // Check if this is a financial table
     let _table_structure = detect_financial_table(&text_lines, &columns);
     
-    // Use column-aware mapping for proper table rendering
+    // DECISION POINT: Column-aware vs Sequential
+    // ============================================
+    // This is where we choose between two extraction strategies:
+    // - Column-aware: Better for tables but may mess up regular text
+    // - Sequential: Better for text but tables become unreadable
+    //
+    // To switch to simple sequential (v7.27 style):
+    // Comment out the column detection and always use map_lines_to_grid
+    //
+    // Current: Use column-aware when columns detected (favors tables)
     if !columns.is_empty() && columns.len() >= 2 {
         // We have columns - use column-aware mapper
         let mapper = ColumnAwareGridMapper::new(columns, width);
