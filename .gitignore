@@ -4,6 +4,7 @@ Cargo.lock
 
 # Dependencies 
 ferrules/
+lib/
 
 # IDE files
 .vscode/
