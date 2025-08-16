@@ -30,7 +30,7 @@
 use anyhow::Result;
 use pdfium_render::prelude::*;
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use ordered_float::OrderedFloat;
 
 /// Character data extracted from PDFium with full spatial information
@@ -60,6 +60,45 @@ struct TableStructure {
     rows: Vec<f32>,     // Y coordinates of row boundaries
     columns: Vec<f32>,  // X coordinates of column boundaries
     cells: Vec<Vec<String>>, // Cell contents
+}
+
+/// Content region with its own extraction strategy
+#[derive(Debug, Clone)]
+struct ContentRegion {
+    bbox: BoundingBox,
+    strategy: RegionStrategy,
+    confidence: f32,
+}
+
+/// Bounding box for regions
+#[derive(Debug, Clone)]
+struct BoundingBox {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+}
+
+impl BoundingBox {
+    fn contains(&self, char: &CharacterData) -> bool {
+        char.x >= self.x1 && char.x <= self.x2 &&
+        char.y >= self.y1 && char.y <= self.y2
+    }
+    
+    fn height(&self) -> f32 {
+        self.y2 - self.y1
+    }
+    
+    fn width(&self) -> f32 {
+        self.x2 - self.x1
+    }
+}
+
+/// Strategy for extracting a region
+#[derive(Debug, Clone)]
+enum RegionStrategy {
+    Table,
+    Text,
 }
 
 /// Column-aware grid mapper for preserving table structure
@@ -155,6 +194,189 @@ impl ColumnAwareGridMapper {
     }
 }
 
+/// Detect content regions using gap-based splitting
+fn detect_content_regions(page: &PdfPage, characters: &[CharacterData]) -> Vec<ContentRegion> {
+    let mut regions = Vec::new();
+    
+    // Get all page objects to analyze structure
+    let y_gaps = find_vertical_gaps(page, characters);
+    
+    // Split page into regions at major gaps
+    let region_bounds = split_at_gaps(&y_gaps, characters);
+    
+    // Classify each region
+    for bbox in region_bounds {
+        let region_chars: Vec<&CharacterData> = characters.iter()
+            .filter(|c| bbox.contains(c))
+            .collect();
+        
+        let strategy = classify_region(page, &bbox, &region_chars);
+        
+        regions.push(ContentRegion {
+            bbox,
+            strategy,
+            confidence: 0.8, // TODO: Calculate actual confidence
+        });
+    }
+    
+    eprintln!("Detected {} regions", regions.len());
+    for (i, region) in regions.iter().enumerate() {
+        eprintln!("  Region {}: {:?} at ({:.0},{:.0})-({:.0},{:.0})", 
+                 i, region.strategy, 
+                 region.bbox.x1, region.bbox.y1,
+                 region.bbox.x2, region.bbox.y2);
+    }
+    
+    regions
+}
+
+/// Find significant vertical gaps in content
+fn find_vertical_gaps(_page: &PdfPage, characters: &[CharacterData]) -> Vec<f32> {
+    if characters.is_empty() {
+        return vec![];
+    }
+    
+    // Group characters by approximate Y position
+    let mut y_positions: Vec<f32> = characters.iter()
+        .map(|c| c.baseline_y)
+        .collect();
+    y_positions.sort_by_key(|y| OrderedFloat(*y));
+    y_positions.dedup_by_key(|y| OrderedFloat((*y / 5.0).round() * 5.0));
+    
+    // Find gaps between consecutive Y positions
+    let mut gaps = Vec::new();
+    for window in y_positions.windows(2) {
+        let gap_size = window[1] - window[0];
+        if gap_size > 20.0 { // Significant gap threshold
+            gaps.push((window[0] + window[1]) / 2.0); // Midpoint of gap
+        }
+    }
+    
+    gaps
+}
+
+/// Split page into regions based on gaps
+fn split_at_gaps(gaps: &[f32], characters: &[CharacterData]) -> Vec<BoundingBox> {
+    let mut regions = Vec::new();
+    
+    if characters.is_empty() {
+        return regions;
+    }
+    
+    // Get page bounds
+    let min_x = characters.iter()
+        .map(|c| OrderedFloat(c.x))
+        .min()
+        .unwrap().0;
+    let max_x = characters.iter()
+        .map(|c| OrderedFloat(c.x + c.width))
+        .max()
+        .unwrap().0;
+    let min_y = characters.iter()
+        .map(|c| OrderedFloat(c.y))
+        .min()
+        .unwrap().0;
+    let max_y = characters.iter()
+        .map(|c| OrderedFloat(c.y + c.height))
+        .max()
+        .unwrap().0;
+    
+    // Create regions between gaps
+    let mut current_y = min_y;
+    
+    for &gap_y in gaps {
+        if gap_y > current_y {
+            regions.push(BoundingBox {
+                x1: min_x,
+                y1: current_y,
+                x2: max_x,
+                y2: gap_y,
+            });
+            current_y = gap_y;
+        }
+    }
+    
+    // Add final region
+    if current_y < max_y {
+        regions.push(BoundingBox {
+            x1: min_x,
+            y1: current_y,
+            x2: max_x,
+            y2: max_y,
+        });
+    }
+    
+    // If no gaps found, return whole page as one region
+    if regions.is_empty() {
+        regions.push(BoundingBox {
+            x1: min_x,
+            y1: min_y,
+            x2: max_x,
+            y2: max_y,
+        });
+    }
+    
+    regions
+}
+
+/// Classify a region as Table or Text based on its content
+fn classify_region(page: &PdfPage, bbox: &BoundingBox, chars: &[&CharacterData]) -> RegionStrategy {
+    let mut table_indicators = 0;
+    let mut text_indicators = 0;
+    
+    // Check for path objects (lines) in this region
+    for object in page.objects().iter() {
+        if let Some(path) = object.as_path_object() {
+            if let Ok(bounds) = path.bounds() {
+                // Check if this path is within our region
+                if bounds.top().value >= bbox.y1 && bounds.bottom().value <= bbox.y2 &&
+                   bounds.left().value >= bbox.x1 && bounds.right().value <= bbox.x2 {
+                    
+                    // Horizontal or vertical line?
+                    if bounds.height().value < 2.0 || bounds.width().value < 2.0 {
+                        table_indicators += 2;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check for column alignment in characters
+    if chars.len() > 10 {
+        let x_positions: Vec<f32> = chars.iter().map(|c| c.x).collect();
+        let unique_x: HashSet<i32> = x_positions.iter()
+            .map(|&x| (x / 10.0) as i32) // Bucket by 10px
+            .collect();
+        
+        if unique_x.len() > 3 && unique_x.len() < 20 {
+            table_indicators += 1; // Multiple aligned columns
+        }
+    }
+    
+    // Check for numeric content (tables often have numbers)
+    let text: String = chars.iter().map(|c| c.unicode).collect();
+    let digit_count = text.chars().filter(|c| c.is_ascii_digit()).count();
+    let dollar_count = text.chars().filter(|&c| c == '$').count();
+    
+    if dollar_count > 2 || digit_count > text.len() / 4 {
+        table_indicators += 1;
+    }
+    
+    // Check for regular text patterns
+    if text.contains(". ") || text.contains(", ") {
+        text_indicators += 1;
+    }
+    
+    eprintln!("  Region classification: table_ind={}, text_ind={}", 
+             table_indicators, text_indicators);
+    
+    if table_indicators >= 2 {
+        RegionStrategy::Table
+    } else {
+        RegionStrategy::Text
+    }
+}
+
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
     // Use our pdf_renderer module which already has PDFium integration
     crate::pdf_renderer::get_pdf_page_count(pdf_path)
@@ -201,32 +423,111 @@ pub async fn extract_to_matrix(
         return Ok(simple_text_fallback(&characters, width, height));
     }
     
-    // Build text lines with proper baseline grouping
-    let text_lines = build_text_lines(&characters);
+    // REGION-BASED EXTRACTION WITH RAIL SWITCH
+    let regions = detect_content_regions(&page, &characters);
     
-    // Detect column boundaries for table preservation
-    let columns = detect_column_boundaries(&text_lines);
-    
-    // Check if this is a financial table
-    let _table_structure = detect_financial_table(&text_lines, &columns);
-    
-    // DECISION POINT: Column-aware vs Sequential
-    // ============================================
-    // This is where we choose between two extraction strategies:
-    // - Column-aware: Better for tables but may mess up regular text
-    // - Sequential: Better for text but tables become unreadable
-    //
-    // To switch to simple sequential (v7.27 style):
-    // Comment out the column detection and always use map_lines_to_grid
-    //
-    // Current: Use column-aware when columns detected (favors tables)
-    if !columns.is_empty() && columns.len() >= 2 {
-        // We have columns - use column-aware mapper
-        let mapper = ColumnAwareGridMapper::new(columns, width);
-        grid = mapper.map_to_grid(&text_lines, width, height);
+    if regions.len() == 1 {
+        // Single region - use simple strategy decision
+        let region = &regions[0];
+        let text_lines = build_text_lines(&characters);
+        
+        match region.strategy {
+            RegionStrategy::Table => {
+                eprintln!("Single region: TABLE mode");
+                let columns = detect_column_boundaries(&text_lines);
+                if !columns.is_empty() && columns.len() >= 2 {
+                    let mapper = ColumnAwareGridMapper::new(columns, width);
+                    grid = mapper.map_to_grid(&text_lines, width, height);
+                } else {
+                    map_lines_to_grid(&mut grid, &text_lines, width, height);
+                }
+            }
+            RegionStrategy::Text => {
+                eprintln!("Single region: TEXT mode");
+                map_lines_to_grid(&mut grid, &text_lines, width, height);
+            }
+        }
     } else {
-        // No columns detected - use simple line-based mapping
-        map_lines_to_grid(&mut grid, &text_lines, width, height);
+        // Multiple regions - process each with its own strategy
+        eprintln!("Processing {} regions separately", regions.len());
+        
+        // Get page height for coordinate conversion
+        let page_height = page.height().value;
+        
+        for region in &regions {
+            // Filter characters for this region
+            let region_chars: Vec<CharacterData> = characters.iter()
+                .filter(|c| region.bbox.contains(c))
+                .cloned()
+                .collect();
+            
+            if region_chars.is_empty() {
+                continue;
+            }
+            
+            let region_lines = build_text_lines(&region_chars);
+            
+            // Calculate region position in grid
+            let grid_y_start = ((region.bbox.y1 / page_height) * height as f32) as usize;
+            let grid_y_end = ((region.bbox.y2 / page_height) * height as f32) as usize;
+            
+            match region.strategy {
+                RegionStrategy::Table => {
+                    eprintln!("  Processing table region at y={}-{}", grid_y_start, grid_y_end);
+                    // Extract as table with columns
+                    let columns = detect_column_boundaries(&region_lines);
+                    
+                    if !columns.is_empty() && columns.len() >= 2 {
+                        let mapper = ColumnAwareGridMapper::new(columns, width);
+                        let region_height = grid_y_end.saturating_sub(grid_y_start);
+                        let region_grid = mapper.map_to_grid(&region_lines, width, region_height);
+                        
+                        // Copy region grid to main grid
+                        for (y, row) in region_grid.iter().enumerate() {
+                            if grid_y_start + y < height {
+                                for (x, &ch) in row.iter().enumerate() {
+                                    if x < width && ch != ' ' {
+                                        grid[grid_y_start + y][x] = ch;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // No columns detected, use simple mapping
+                        for (y, line) in region_lines.iter().enumerate() {
+                            if grid_y_start + y >= height {
+                                break;
+                            }
+                            
+                            let mut x = 0;
+                            for ch in &line.chars {
+                                if x < width {
+                                    grid[grid_y_start + y][x] = ch.unicode;
+                                    x += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                RegionStrategy::Text => {
+                    eprintln!("  Processing text region at y={}-{}", grid_y_start, grid_y_end);
+                    // Extract as flowing text - no column detection
+                    for (y, line) in region_lines.iter().enumerate() {
+                        if grid_y_start + y >= height {
+                            break;
+                        }
+                        
+                        let mut x = 0;
+                        for ch in &line.chars {
+                            if x < width {
+                                grid[grid_y_start + y][x] = ch.unicode;
+                                x += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     Ok(grid)

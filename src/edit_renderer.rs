@@ -1,3 +1,26 @@
+// VIEWPORT AND SCROLLING - WHY IT'S SO FRAGILE
+// =============================================
+//
+// The viewport system has multiple coordinate systems that don't play well:
+//
+// 1. BUFFER SIZE: The actual extracted text (e.g., 400x200)
+// 2. VIEWPORT SIZE: The terminal panel size (e.g., term_width/2 x term_height)
+// 3. DISPLAY COORDINATES: Where on screen to render (with borders, headers)
+// 4. SCROLL OFFSETS: How much we've scrolled in X and Y
+//
+// FRAGILITY ISSUES:
+// - Buffer gets resized on every update_buffer() call
+// - Viewport size changes when terminal resizes but buffer doesn't know
+// - Scroll bounds calculation is inconsistent
+// - Mouse events use screen coords, need translation to buffer coords
+// - No validation that scroll position is still valid after resize
+//
+// COMMON BREAKS:
+// - Scroll past end of content -> panic or garbage display
+// - Terminal resize -> scroll position now out of bounds
+// - Buffer smaller than viewport -> negative scroll bounds
+// - Mouse click outside buffer bounds -> index out of range
+
 use crossterm::{
     cursor::MoveTo,
     execute,
@@ -6,11 +29,11 @@ use crossterm::{
 use std::io::{self, Write};
 
 pub struct EditPanelRenderer {
-    buffer: Vec<Vec<char>>,
-    viewport_width: u16,
-    viewport_height: u16,
-    scroll_x: u16,
-    scroll_y: u16,
+    buffer: Vec<Vec<char>>,      // The full extracted content
+    viewport_width: u16,          // Display panel width (terminal constrained)
+    viewport_height: u16,         // Display panel height (terminal constrained)
+    scroll_x: u16,               // Horizontal scroll offset
+    scroll_y: u16,               // Vertical scroll offset
 }
 
 impl EditPanelRenderer {

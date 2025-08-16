@@ -1,6 +1,6 @@
 [package]
 name = "chonker7"
-version = "7.34.0"
+version = "7.35.0"
 edition = "2021"
 
 [dependencies]
