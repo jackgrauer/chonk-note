@@ -69,7 +69,7 @@ impl Rect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum DisplayMode {
+pub enum DisplayMode {
     PdfText,     // Raw text extraction mode (editable)
     PdfReader,   // Formatted reader mode (markdown)
 }
@@ -166,13 +166,6 @@ impl App {
                 let height = (self.term_height - 4).max(20) as u32;
                 // Ultra-high resolution with aspect ratio correction
                 // Terminal cells are ~2:1 (height:width), so we scale height by 1.8x
-                (width * 14, (height * 14 * 18) / 10)  // 1.8x height for better aspect ratio
-            }
-            _ => {
-                // Default for other modes
-                let width = ((self.term_width / 2) - 4).max(40) as u32;
-                let height = (self.term_height - 4).max(20) as u32;
-                // Same aspect ratio correction
                 (width * 14, (height * 14 * 18) / 10)  // 1.8x height for better aspect ratio
             }
         };
@@ -636,7 +629,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
     let (term_width, _) = terminal::size()?;
     
     // Draw centered title "Chonker 7.35" at the top
-    let title = "🐹 Chonker 7.38";
+    let title = "🐹 Chonker 7.41";
     let title_x = (term_width - title.len() as u16) / 2;
     execute!(
         stdout,

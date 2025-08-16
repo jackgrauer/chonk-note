@@ -30,7 +30,7 @@
 use anyhow::Result;
 use pdfium_render::prelude::*;
 use std::path::Path;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 
 /// Character data extracted from PDFium with full spatial information
@@ -43,6 +43,15 @@ struct CharacterData {
     height: f32,      // Character height
     font_size: f32,
     baseline_y: f32,  // Text baseline for alignment
+    // New PDFium properties
+    font_name: Option<String>,     // Font family name
+    font_weight: u32,              // Font weight (400=normal, 700=bold)
+    is_italic: bool,               // Font style
+    is_monospace: bool,            // Fixed-width font
+    scaled_font_size: f32,         // Actual rendered font size
+    is_generated: bool,            // PDFium generated this char
+    is_hyphen: bool,               // Character is a hyphen
+    char_angle: f32,               // Rotation angle in radians
 }
 
 /// Represents a text line with grouped characters
@@ -60,6 +69,27 @@ struct TableStructure {
     rows: Vec<f32>,     // Y coordinates of row boundaries
     columns: Vec<f32>,  // X coordinates of column boundaries
     cells: Vec<Vec<String>>, // Cell contents
+}
+
+/// Annotation data from PDF
+#[derive(Debug, Clone)]
+struct AnnotationData {
+    annotation_type: String,  // Highlight, Note, Link, etc.
+    bounds: (f32, f32, f32, f32), // (left, top, right, bottom)
+    contents: Option<String>, // Annotation text content
+    author: Option<String>,   // Creator of annotation
+    color: Option<(u8, u8, u8)>, // RGB color
+}
+
+/// Form field data from PDF
+#[derive(Debug, Clone)]
+struct FormFieldData {
+    field_type: String,       // Text, Checkbox, Radio, etc.
+    name: String,             // Field name
+    value: Option<String>,    // Current value
+    bounds: (f32, f32, f32, f32), // (left, top, right, bottom)
+    is_readonly: bool,
+    is_required: bool,
 }
 
 /// Simple extraction strategy - just table or text
@@ -196,6 +226,44 @@ fn detect_extraction_strategy(page: &PdfPage) -> ExtractionStrategy {
     }
 }
 
+/// Extract annotations from PDF page
+fn extract_annotations(page: &PdfPage) -> Vec<AnnotationData> {
+    let mut annotations = Vec::new();
+    
+    for annot in page.annotations().iter() {
+        if let Ok(bounds) = annot.bounds() {
+            let annotation_type = format!("{:?}", annot.annotation_type());
+            let contents = annot.contents();
+            
+            annotations.push(AnnotationData {
+                annotation_type,
+                bounds: (
+                    bounds.left().value,
+                    bounds.top().value,
+                    bounds.right().value,
+                    bounds.bottom().value,
+                ),
+                contents,
+                author: None, // Author not available in current pdfium-render
+                color: None, // TODO: extract color if available
+            });
+        }
+    }
+    
+    annotations
+}
+
+/// Extract form fields from PDF page
+fn extract_form_fields(_page: &PdfPage) -> Vec<FormFieldData> {
+    let fields = Vec::new();
+    
+    // PDFium form field extraction would go here
+    // Note: This requires the form API which may not be fully exposed
+    // through pdfium-render yet
+    
+    fields
+}
+
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
     // Use our pdf_renderer module which already has PDFium integration
     crate::pdf_renderer::get_pdf_page_count(pdf_path)
@@ -233,8 +301,38 @@ pub async fn extract_to_matrix(
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
     
+    // Get page properties
+    let page_width = page.width().value;
+    let page_height = page.height().value;
+    
+    // Show page info in stderr for debugging
+    eprintln!("Page properties: {:.0}x{:.0} pts", page_width, page_height);
+    
     // Extract characters with spatial data
     let characters = extract_characters_from_page(&page)?;
+    
+    // Extract annotations and form fields
+    let annotations = extract_annotations(&page);
+    let _form_fields = extract_form_fields(&page);
+    
+    // Show debug info about extracted properties
+    if !annotations.is_empty() {
+        eprintln!("Found {} annotations on page", annotations.len());
+        for annot in &annotations {
+            if let Some(ref contents) = annot.contents {
+                eprintln!("  - {}: {}", annot.annotation_type, contents);
+            }
+        }
+    }
+    
+    // Show font info for first few characters to demonstrate extraction
+    if !characters.is_empty() && characters.len() <= 10 {
+        eprintln!("Font properties for first characters:");
+        for (i, ch) in characters.iter().take(5).enumerate() {
+            eprintln!("  Char {}: '{}' font={:?} size={:.1} weight={} italic={}", 
+                i, ch.unicode, ch.font_name, ch.scaled_font_size, ch.font_weight, ch.is_italic);
+        }
+    }
     
     // Safety check: Prevent processing too many characters
     if characters.len() > MAX_CHARS_PER_PAGE {
@@ -249,6 +347,16 @@ pub async fn extract_to_matrix(
     // Check for images and add placeholders
     let mut current_grid_y = 0;
     let mut has_images = false;
+    
+    // Add page info header
+    let header = format!("[Page: {:.0}x{:.0}pts]", page_width, page_height);
+    
+    for (x, ch) in header.chars().enumerate() {
+        if x < width && current_grid_y < height {
+            grid[current_grid_y][x] = ch;
+        }
+    }
+    current_grid_y += 2; // Space after header
     
     // First, add image placeholders if any
     for object in page.objects().iter() {
@@ -267,6 +375,17 @@ pub async fn extract_to_matrix(
                 }
             }
         }
+    }
+    
+    // Add annotation markers if any
+    if !annotations.is_empty() {
+        let annot_text = format!("[{} Annotations]", annotations.len());
+        for (x, ch) in annot_text.chars().enumerate() {
+            if x < width && current_grid_y < height {
+                grid[current_grid_y][x] = ch;
+            }
+        }
+        current_grid_y += 2;
     }
     
     match strategy {
@@ -353,17 +472,53 @@ fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
         
         let bounds = char.loose_bounds()?;
         
-        // Estimate font size from character height
-        let font_size = bounds.height().value;
+        // Get font information if available
+        // Note: Many of these methods aren't exposed in pdfium-render 0.8
+        // We'll use what's available and provide defaults for the rest
+        let font_name = None; // Not available in current API
+        let font_weight = 400; // Default to normal weight
+        let is_italic = false; // Would need font flags
+        let is_monospace = false; // Would need font flags
+        
+        // Use character height as font size estimate
+        let scaled_font_size = bounds.height().value;
+        
+        // Check if character is a hyphen
+        let is_generated = false; // Not available in current API
+        let is_hyphen = unicode == '-' || unicode == '­';  // Regular or soft hyphen
+        
+        // Get character rotation angle - also not available on text chars
+        let char_angle = 0.0; // Default to no rotation
+        
+        // Estimate display font size from character height if scaled size not available
+        let font_size = if scaled_font_size > 0.0 {
+            scaled_font_size
+        } else {
+            bounds.height().value
+        };
+        
+        // No rotation transformation for now - pdfium-render doesn't expose rotation easily
+        let x = bounds.left().value;
+        let y = page_height - bounds.top().value; // Convert to top-down coordinates
+        let baseline_y = page_height - bounds.bottom().value;
         
         characters.push(CharacterData {
             unicode,
-            x: bounds.left().value,
-            y: page_height - bounds.top().value, // Convert to top-down coordinates
+            x,
+            y,
             width: bounds.width().value,
             height: bounds.height().value,
             font_size,
-            baseline_y: page_height - bounds.bottom().value,
+            baseline_y,
+            // New properties
+            font_name,
+            font_weight,
+            is_italic,
+            is_monospace,
+            scaled_font_size,
+            is_generated,
+            is_hyphen,
+            char_angle,
         });
     }
     
@@ -870,46 +1025,130 @@ fn place_text_on_grid_spatial(
 
 
 pub async fn get_markdown_content(pdf_path: &Path, page_num: usize) -> Result<String> {
-    // Use PDFium-based extraction instead of ferrules
+    // Use PDFium-based extraction with rich metadata
     let pdfium = crate::pdf_renderer::get_pdfium_instance();
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
     
-    // Extract text using PDFium
-    let text_page = page.text()?;
-    let text = text_page.all();
+    // Extract characters with full metadata
+    let characters = extract_characters_from_page(&page)?;
     
-    // Convert to markdown with simple formatting
+    // Extract annotations and form fields
+    let annotations = extract_annotations(&page);
+    let _form_fields = extract_form_fields(&page);
+    
+    // Build text lines with font information
+    let text_lines = build_text_lines(&characters);
+    
+    // Convert to markdown with rich formatting
     let mut markdown = String::new();
     
-    if !text.trim().is_empty() {
-        // Split into paragraphs and format
-        let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    // Add page metadata if interesting
+    let page_width = page.width().value;
+    let page_height = page.height().value;
+    
+    // Add annotations section if present
+    if !annotations.is_empty() {
+        markdown.push_str("## 📝 Annotations\n\n");
+        for annot in &annotations {
+            if let Some(ref contents) = annot.contents {
+                markdown.push_str(&format!("- **{}**: {}\n", annot.annotation_type, contents));
+            } else {
+                markdown.push_str(&format!("- **{}**\n", annot.annotation_type));
+            }
+        }
+        markdown.push_str("\n---\n\n");
+    }
+    
+    // Process text with font-aware formatting
+    if !text_lines.is_empty() {
+        let mut last_font_size = 0.0;
+        let mut in_list = false;
         
-        for (i, para) in paragraphs.iter().enumerate() {
-            let trimmed = para.trim();
-            if trimmed.is_empty() {
+        // Calculate average font size for the page
+        let avg_font_size: f32 = text_lines.iter()
+            .flat_map(|line| line.chars.iter().map(|c| c.font_size))
+            .sum::<f32>() / text_lines.iter().map(|l| l.chars.len()).sum::<usize>() as f32;
+        
+        for (i, line) in text_lines.iter().enumerate() {
+            if line.chars.is_empty() {
                 continue;
             }
             
-            // Simple heuristics for formatting
-            if i == 0 && trimmed.len() < 100 && !trimmed.contains('.') {
-                // Likely a title
-                markdown.push_str(&format!("# {}\n\n", trimmed));
-            } else if trimmed.len() < 80 && trimmed.chars().filter(|c| c.is_uppercase()).count() > trimmed.len() / 3 {
-                // Likely a header (lots of caps)
-                markdown.push_str(&format!("## {}\n\n", trimmed));
-            } else if trimmed.starts_with("•") || trimmed.starts_with("-") || trimmed.starts_with("*") {
-                // List item
-                markdown.push_str(&format!("{}\n", trimmed));
-            } else {
-                // Regular paragraph
-                markdown.push_str(&format!("{}\n\n", trimmed));
+            // Get line text
+            let line_text: String = line.chars.iter().map(|c| c.unicode).collect::<String>().trim().to_string();
+            if line_text.is_empty() {
+                continue;
             }
+            
+            // Get predominant font size for this line
+            let line_font_size = if !line.chars.is_empty() {
+                line.chars.iter().map(|c| c.font_size).sum::<f32>() / line.chars.len() as f32
+            } else {
+                avg_font_size
+            };
+            
+            // Check if this line is bold (higher weight)
+            let is_bold = line.chars.iter().any(|c| c.font_weight > 400);
+            
+            // Check if this line is italic
+            let is_italic = line.chars.iter().any(|c| c.is_italic);
+            
+            // Detect headers based on font size
+            if line_font_size > avg_font_size * 1.5 {
+                // Large text - likely a title
+                markdown.push_str(&format!("# {}\n\n", line_text));
+                in_list = false;
+            } else if line_font_size > avg_font_size * 1.2 || (is_bold && i == 0) {
+                // Medium large text or bold at start - likely a section header
+                markdown.push_str(&format!("## {}\n\n", line_text));
+                in_list = false;
+            } else if line_text.starts_with("•") || line_text.starts_with("-") || line_text.starts_with("*") || line_text.starts_with("·") {
+                // List item
+                markdown.push_str(&format!("{}\n", line_text));
+                in_list = true;
+            } else if line_text.chars().take(1).any(|c| c.is_ascii_digit()) && line_text.chars().nth(1) == Some('.') {
+                // Numbered list
+                markdown.push_str(&format!("{}\n", line_text));
+                in_list = true;
+            } else {
+                // Regular text
+                let mut formatted_text = line_text.clone();
+                
+                // Apply inline formatting
+                if is_bold && is_italic {
+                    formatted_text = format!("***{}***", formatted_text);
+                } else if is_bold {
+                    formatted_text = format!("**{}**", formatted_text);
+                } else if is_italic {
+                    formatted_text = format!("*{}*", formatted_text);
+                }
+                
+                // Add as paragraph unless we're in a list
+                if in_list {
+                    markdown.push_str(&format!("  {}\n", formatted_text)); // Indent under list
+                } else {
+                    markdown.push_str(&format!("{}\n\n", formatted_text));
+                }
+                
+                // Check for significant font size change
+                if (line_font_size - last_font_size).abs() > avg_font_size * 0.3 {
+                    in_list = false;
+                }
+            }
+            
+            last_font_size = line_font_size;
         }
     }
     
-    if markdown.is_empty() {
+    // Add footer with extraction metadata
+    markdown.push_str(&format!("\n---\n_Page {:.0}x{:.0} pts", page_width, page_height));
+    if !annotations.is_empty() {
+        markdown.push_str(&format!(" • {} annotations", annotations.len()));
+    }
+    markdown.push_str("_\n");
+    
+    if markdown.trim().is_empty() {
         markdown = "# 📄 No Content Found\n\n> No text content could be extracted from this page.\n\n**Try:**\n• Checking if the PDF contains text (not just images)\n• Using a different page\n• Enabling OCR if the PDF is scanned".to_string();
     }
     
