@@ -1002,8 +1002,8 @@ fn map_lines_to_grid_with_natural_spacing(
         // Calculate how many lines to skip based on baseline difference
         let gap = ((line.baseline - prev_baseline) / avg_spacing) as usize;
         
-        // Cap gaps at 1 line maximum
-        let lines_to_skip = gap.min(1);
+        // Only add blank line if gap is significant (more than 1.5x normal spacing)
+        let lines_to_skip = if gap > 1 { 1 } else { 0 };
         current_grid_y += lines_to_skip;
         
         if current_grid_y >= height {
