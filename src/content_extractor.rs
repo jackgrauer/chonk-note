@@ -99,6 +99,7 @@ impl BoundingBox {
 enum RegionStrategy {
     Table,
     Text,
+    Image,  // For embedded images/figures
 }
 
 /// Column-aware grid mapper for preserving table structure
@@ -231,7 +232,7 @@ fn detect_content_regions(page: &PdfPage, characters: &[CharacterData]) -> Vec<C
 }
 
 /// Find significant vertical gaps in content
-fn find_vertical_gaps(_page: &PdfPage, characters: &[CharacterData]) -> Vec<f32> {
+fn find_vertical_gaps(_page: &PdfPage, characters: &[CharacterData]) -> Vec<(f32, f32)> {
     if characters.is_empty() {
         return vec![];
     }
@@ -243,20 +244,39 @@ fn find_vertical_gaps(_page: &PdfPage, characters: &[CharacterData]) -> Vec<f32>
     y_positions.sort_by_key(|y| OrderedFloat(*y));
     y_positions.dedup_by_key(|y| OrderedFloat((*y / 5.0).round() * 5.0));
     
-    // Find gaps between consecutive Y positions
+    // Calculate average line spacing
+    let mut line_spacings = Vec::new();
+    for window in y_positions.windows(2) {
+        let spacing = window[1] - window[0];
+        if spacing < 15.0 { // Normal line spacing
+            line_spacings.push(spacing);
+        }
+    }
+    let avg_line_spacing = if !line_spacings.is_empty() {
+        line_spacings.iter().sum::<f32>() / line_spacings.len() as f32
+    } else {
+        8.0 // Default fallback
+    };
+    
+    // Find gaps that are significantly larger than normal line spacing
     let mut gaps = Vec::new();
     for window in y_positions.windows(2) {
         let gap_size = window[1] - window[0];
-        if gap_size > 20.0 { // Significant gap threshold
-            gaps.push((window[0] + window[1]) / 2.0); // Midpoint of gap
+        // Gap is significant if it's more than 2x normal line spacing
+        if gap_size > avg_line_spacing * 2.0 && gap_size > 10.0 {
+            // Store both the midpoint and the gap size
+            gaps.push(((window[0] + window[1]) / 2.0, gap_size));
+            eprintln!("  Gap detected: {:.1}px ({}x normal spacing)", 
+                     gap_size, (gap_size / avg_line_spacing) as i32);
         }
     }
     
+    eprintln!("Found {} gaps with avg line spacing {:.1}px", gaps.len(), avg_line_spacing);
     gaps
 }
 
 /// Split page into regions based on gaps
-fn split_at_gaps(gaps: &[f32], characters: &[CharacterData]) -> Vec<BoundingBox> {
+fn split_at_gaps(gaps: &[(f32, f32)], characters: &[CharacterData]) -> Vec<BoundingBox> {
     let mut regions = Vec::new();
     
     if characters.is_empty() {
@@ -284,15 +304,15 @@ fn split_at_gaps(gaps: &[f32], characters: &[CharacterData]) -> Vec<BoundingBox>
     // Create regions between gaps
     let mut current_y = min_y;
     
-    for &gap_y in gaps {
-        if gap_y > current_y {
+    for &(gap_midpoint, _gap_size) in gaps {
+        if gap_midpoint > current_y {
             regions.push(BoundingBox {
                 x1: min_x,
                 y1: current_y,
                 x2: max_x,
-                y2: gap_y,
+                y2: gap_midpoint,
             });
-            current_y = gap_y;
+            current_y = gap_midpoint;
         }
     }
     
@@ -319,13 +339,34 @@ fn split_at_gaps(gaps: &[f32], characters: &[CharacterData]) -> Vec<BoundingBox>
     regions
 }
 
-/// Classify a region as Table or Text based on its content
+/// Classify a region as Table, Text, or Image based on its content
 fn classify_region(page: &PdfPage, bbox: &BoundingBox, chars: &[&CharacterData]) -> RegionStrategy {
     let mut table_indicators = 0;
     let mut text_indicators = 0;
+    let _has_image = false; // Currently unused but will be for mixed content
     
-    // Check for path objects (lines) in this region
+    // Check for different object types in this region
     for object in page.objects().iter() {
+        let obj_type = object.object_type();
+        
+        // Check for images first
+        if obj_type == PdfPageObjectType::Image {
+            if let Ok(bounds) = object.bounds() {
+                // Check if this image is within our region
+                if bounds.top().value >= bbox.y1 && bounds.bottom().value <= bbox.y2 &&
+                   bounds.left().value >= bbox.x1 && bounds.right().value <= bbox.x2 {
+                    // has_image = true; // For future mixed content detection
+                    // If region is mostly an image, classify as Image
+                    let image_area = bounds.width().value * bounds.height().value;
+                    let region_area = (bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1);
+                    if image_area > region_area * 0.5 {
+                        return RegionStrategy::Image;
+                    }
+                }
+            }
+        }
+        
+        // Check for path objects (table lines)
         if let Some(path) = object.as_path_object() {
             if let Ok(bounds) = path.bounds() {
                 // Check if this path is within our region
@@ -446,15 +487,45 @@ pub async fn extract_to_matrix(
                 eprintln!("Single region: TEXT mode");
                 map_lines_to_grid(&mut grid, &text_lines, width, height);
             }
+            RegionStrategy::Image => {
+                eprintln!("Single region: IMAGE mode");
+                // Just put a placeholder for the image
+                let image_text = "[Image]";
+                for (i, ch) in image_text.chars().enumerate() {
+                    if i < width {
+                        grid[0][i] = ch;
+                    }
+                }
+            }
         }
     } else {
         // Multiple regions - process each with its own strategy
         eprintln!("Processing {} regions separately", regions.len());
         
-        // Get page height for coordinate conversion
-        let page_height = page.height().value;
+        // Track current grid Y position for compressed layout
+        let mut current_grid_y = 0;
+        let mut last_line_had_content = false;
         
-        for region in &regions {
+        for (i, region) in regions.iter().enumerate() {
+            // For images, we don't need character filtering
+            if matches!(region.strategy, RegionStrategy::Image) {
+                // Add ONE line gap if previous region had content
+                if last_line_had_content && current_grid_y < height {
+                    current_grid_y += 1;
+                }
+                
+                // Place image placeholder
+                let image_text = "[Image/Figure]";
+                for (x, ch) in image_text.chars().enumerate() {
+                    if x < width && current_grid_y < height {
+                        grid[current_grid_y][x] = ch;
+                    }
+                }
+                current_grid_y += 1;
+                last_line_had_content = true;
+                continue;
+            }
+            
             // Filter characters for this region
             let region_chars: Vec<CharacterData> = characters.iter()
                 .filter(|c| region.bbox.contains(c))
@@ -467,64 +538,77 @@ pub async fn extract_to_matrix(
             
             let region_lines = build_text_lines(&region_chars);
             
-            // Calculate region position in grid
-            let grid_y_start = ((region.bbox.y1 / page_height) * height as f32) as usize;
-            let grid_y_end = ((region.bbox.y2 / page_height) * height as f32) as usize;
+            // Smart gap: only add 1 line between regions if previous had content
+            if i > 0 && last_line_had_content && current_grid_y < height {
+                current_grid_y += 1; // Just ONE line gap
+            }
+            
+            eprintln!("  Region {}: {:?} starting at grid line {}", 
+                     i, region.strategy, current_grid_y);
             
             match region.strategy {
                 RegionStrategy::Table => {
-                    eprintln!("  Processing table region at y={}-{}", grid_y_start, grid_y_end);
                     // Extract as table with columns
                     let columns = detect_column_boundaries(&region_lines);
                     
                     if !columns.is_empty() && columns.len() >= 2 {
                         let mapper = ColumnAwareGridMapper::new(columns, width);
-                        let region_height = grid_y_end.saturating_sub(grid_y_start);
+                        let available_height = height.saturating_sub(current_grid_y);
+                        let region_height = region_lines.len().min(available_height);
                         let region_grid = mapper.map_to_grid(&region_lines, width, region_height);
                         
                         // Copy region grid to main grid
                         for (y, row) in region_grid.iter().enumerate() {
-                            if grid_y_start + y < height {
+                            if current_grid_y + y < height {
                                 for (x, &ch) in row.iter().enumerate() {
                                     if x < width && ch != ' ' {
-                                        grid[grid_y_start + y][x] = ch;
+                                        grid[current_grid_y + y][x] = ch;
                                     }
                                 }
                             }
                         }
+                        current_grid_y += region_height;
+                        last_line_had_content = region_height > 0;
                     } else {
                         // No columns detected, use simple mapping
-                        for (y, line) in region_lines.iter().enumerate() {
-                            if grid_y_start + y >= height {
+                        for (_y, line) in region_lines.iter().enumerate() {
+                            if current_grid_y >= height {
                                 break;
                             }
                             
                             let mut x = 0;
                             for ch in &line.chars {
                                 if x < width {
-                                    grid[grid_y_start + y][x] = ch.unicode;
+                                    grid[current_grid_y][x] = ch.unicode;
                                     x += 1;
                                 }
                             }
+                            current_grid_y += 1;
+                            last_line_had_content = true;
                         }
                     }
                 }
                 RegionStrategy::Text => {
-                    eprintln!("  Processing text region at y={}-{}", grid_y_start, grid_y_end);
                     // Extract as flowing text - no column detection
-                    for (y, line) in region_lines.iter().enumerate() {
-                        if grid_y_start + y >= height {
+                    for (_y, line) in region_lines.iter().enumerate() {
+                        if current_grid_y >= height {
                             break;
                         }
                         
                         let mut x = 0;
                         for ch in &line.chars {
                             if x < width {
-                                grid[grid_y_start + y][x] = ch.unicode;
+                                grid[current_grid_y][x] = ch.unicode;
                                 x += 1;
                             }
                         }
+                        current_grid_y += 1;
+                        last_line_had_content = true;
                     }
+                }
+                RegionStrategy::Image => {
+                    // This case is handled above, but adding for completeness
+                    unreachable!("Image regions are handled earlier");
                 }
             }
         }
