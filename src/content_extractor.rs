@@ -493,15 +493,16 @@ fn analyze_indentation_with_ml(characters: &[CharacterData]) {
     eprintln!("   • {} text lines detected", lines.len());
     eprintln!("   • {} unique indentation levels found", indentation_levels.len());
     
-    // Show indentation pattern
+    // Show indentation pattern with visual representation
     if indentation_levels.len() > 1 {
-        eprintln!("   • Indentation pattern:");
+        eprintln!("   • Indentation pattern detected:");
         let mut levels: Vec<_> = indentation_levels.iter().collect();
         levels.sort_by_key(|&(level, _)| level);
         
         for (level, count) in levels {
             let indent_str = "  ".repeat(*level as usize);
-            eprintln!("     {}Level {}: {} lines", indent_str, level, count);
+            let bar = "▌".repeat((*level as usize).max(1));
+            eprintln!("     {}{}Level {}: {} lines", indent_str, bar, level, count);
         }
         
         // Detect common patterns
@@ -918,8 +919,8 @@ fn map_lines_to_grid(
         }
         
         // Calculate indentation in PDF units and convert to grid columns
-        // Assuming ~6 PDF units per character width on average
-        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        // Better scaling: ~4-5 PDF units per character for typical fonts
+        let indent = ((line.x_start - min_x) / 4.5) as usize;
         let mut x = indent.min(width.saturating_sub(1));
         
         for ch in &line.chars {
@@ -950,8 +951,8 @@ fn map_lines_to_grid_with_offset(
         }
         
         // Calculate indentation in PDF units and convert to grid columns
-        // Assuming ~6 PDF units per character width on average
-        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        // Better scaling: ~4-5 PDF units per character for typical fonts
+        let indent = ((line.x_start - min_x) / 4.5) as usize;
         let mut x = indent.min(width.saturating_sub(1));
         
         for ch in &line.chars {
@@ -1010,8 +1011,8 @@ fn map_lines_to_grid_with_natural_spacing(
         }
         
         // Calculate indentation in PDF units and convert to grid columns
-        // Assuming ~6 PDF units per character width on average
-        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        // Better scaling: ~4-5 PDF units per character for typical fonts
+        let indent = ((line.x_start - min_x) / 4.5) as usize;
         let mut x = indent.min(width.saturating_sub(1));
         
         // Place characters with preserved indentation
