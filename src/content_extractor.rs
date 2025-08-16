@@ -834,12 +834,21 @@ fn map_lines_to_grid(
     width: usize,
     height: usize,
 ) {
+    // Find the minimum x position (left margin) across all lines
+    let min_x = lines.iter()
+        .map(|line| line.x_start)
+        .fold(f32::MAX, f32::min);
+    
     for (y, line) in lines.iter().enumerate() {
         if y >= height {
             break;
         }
         
-        let mut x = 0;
+        // Calculate indentation in PDF units and convert to grid columns
+        // Assuming ~6 PDF units per character width on average
+        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        let mut x = indent.min(width.saturating_sub(1));
+        
         for ch in &line.chars {
             if x < width {
                 grid[y][x] = ch.unicode;
@@ -857,12 +866,21 @@ fn map_lines_to_grid_with_offset(
     height: usize,
     offset_y: usize,
 ) {
+    // Find the minimum x position (left margin) across all lines
+    let min_x = lines.iter()
+        .map(|line| line.x_start)
+        .fold(f32::MAX, f32::min);
+    
     for (y, line) in lines.iter().enumerate() {
         if offset_y + y >= height {
             break;
         }
         
-        let mut x = 0;
+        // Calculate indentation in PDF units and convert to grid columns
+        // Assuming ~6 PDF units per character width on average
+        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        let mut x = indent.min(width.saturating_sub(1));
+        
         for ch in &line.chars {
             if x < width {
                 grid[offset_y + y][x] = ch.unicode;
@@ -883,6 +901,11 @@ fn map_lines_to_grid_with_natural_spacing(
     if lines.is_empty() {
         return;
     }
+    
+    // Find the minimum x position (left margin) across all lines
+    let min_x = lines.iter()
+        .map(|line| line.x_start)
+        .fold(f32::MAX, f32::min);
     
     let mut current_grid_y = start_y;
     let mut prev_baseline = lines[0].baseline;
@@ -913,8 +936,12 @@ fn map_lines_to_grid_with_natural_spacing(
             break;
         }
         
-        // Place characters
-        let mut x = 0;
+        // Calculate indentation in PDF units and convert to grid columns
+        // Assuming ~6 PDF units per character width on average
+        let indent = ((line.x_start - min_x) / 6.0) as usize;
+        let mut x = indent.min(width.saturating_sub(1));
+        
+        // Place characters with preserved indentation
         for ch in &line.chars {
             if x < width {
                 grid[current_grid_y][x] = ch.unicode;
