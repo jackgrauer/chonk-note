@@ -62,44 +62,11 @@ struct TableStructure {
     cells: Vec<Vec<String>>, // Cell contents
 }
 
-/// Content region with its own extraction strategy
+/// Simple extraction strategy - just table or text
 #[derive(Debug, Clone)]
-struct ContentRegion {
-    bbox: BoundingBox,
-    strategy: RegionStrategy,
-    confidence: f32,
-}
-
-/// Bounding box for regions
-#[derive(Debug, Clone)]
-struct BoundingBox {
-    x1: f32,
-    y1: f32,
-    x2: f32,
-    y2: f32,
-}
-
-impl BoundingBox {
-    fn contains(&self, char: &CharacterData) -> bool {
-        char.x >= self.x1 && char.x <= self.x2 &&
-        char.y >= self.y1 && char.y <= self.y2
-    }
-    
-    fn height(&self) -> f32 {
-        self.y2 - self.y1
-    }
-    
-    fn width(&self) -> f32 {
-        self.x2 - self.x1
-    }
-}
-
-/// Strategy for extracting a region
-#[derive(Debug, Clone)]
-enum RegionStrategy {
-    Table,
-    Text,
-    Image,  // For embedded images/figures
+enum ExtractionStrategy {
+    Table,  // Has grid lines or strong column alignment
+    Text,   // Everything else - preserve natural spacing
 }
 
 /// Column-aware grid mapper for preserving table structure
@@ -195,226 +162,37 @@ impl ColumnAwareGridMapper {
     }
 }
 
-/// Detect content regions using gap-based splitting
-fn detect_content_regions(page: &PdfPage, characters: &[CharacterData]) -> Vec<ContentRegion> {
-    let mut regions = Vec::new();
+/// Simple detection - just check if page has table indicators
+fn detect_extraction_strategy(page: &PdfPage) -> ExtractionStrategy {
+    let mut line_count = 0;
+    let mut has_horizontal_lines = false;
+    let mut has_vertical_lines = false;
     
-    // Get all page objects to analyze structure
-    let y_gaps = find_vertical_gaps(page, characters);
-    
-    // Split page into regions at major gaps
-    let region_bounds = split_at_gaps(&y_gaps, characters);
-    
-    // Classify each region
-    for bbox in region_bounds {
-        let region_chars: Vec<&CharacterData> = characters.iter()
-            .filter(|c| bbox.contains(c))
-            .collect();
-        
-        let strategy = classify_region(page, &bbox, &region_chars);
-        
-        regions.push(ContentRegion {
-            bbox,
-            strategy,
-            confidence: 0.8, // TODO: Calculate actual confidence
-        });
-    }
-    
-    eprintln!("Detected {} regions", regions.len());
-    for (i, region) in regions.iter().enumerate() {
-        eprintln!("  Region {}: {:?} at ({:.0},{:.0})-({:.0},{:.0})", 
-                 i, region.strategy, 
-                 region.bbox.x1, region.bbox.y1,
-                 region.bbox.x2, region.bbox.y2);
-    }
-    
-    regions
-}
-
-/// Find significant vertical gaps in content
-fn find_vertical_gaps(_page: &PdfPage, characters: &[CharacterData]) -> Vec<(f32, f32)> {
-    if characters.is_empty() {
-        return vec![];
-    }
-    
-    // Group characters by approximate Y position
-    let mut y_positions: Vec<f32> = characters.iter()
-        .map(|c| c.baseline_y)
-        .collect();
-    y_positions.sort_by_key(|y| OrderedFloat(*y));
-    y_positions.dedup_by_key(|y| OrderedFloat((*y / 5.0).round() * 5.0));
-    
-    // Calculate average line spacing
-    let mut line_spacings = Vec::new();
-    for window in y_positions.windows(2) {
-        let spacing = window[1] - window[0];
-        if spacing < 15.0 { // Normal line spacing
-            line_spacings.push(spacing);
-        }
-    }
-    let avg_line_spacing = if !line_spacings.is_empty() {
-        line_spacings.iter().sum::<f32>() / line_spacings.len() as f32
-    } else {
-        8.0 // Default fallback
-    };
-    
-    // Find gaps that are significantly larger than normal line spacing
-    let mut gaps = Vec::new();
-    for window in y_positions.windows(2) {
-        let gap_size = window[1] - window[0];
-        // Gap is significant if it's more than 2x normal line spacing
-        if gap_size > avg_line_spacing * 2.0 && gap_size > 10.0 {
-            // Store both the midpoint and the gap size
-            gaps.push(((window[0] + window[1]) / 2.0, gap_size));
-            eprintln!("  Gap detected: {:.1}px ({}x normal spacing)", 
-                     gap_size, (gap_size / avg_line_spacing) as i32);
-        }
-    }
-    
-    eprintln!("Found {} gaps with avg line spacing {:.1}px", gaps.len(), avg_line_spacing);
-    gaps
-}
-
-/// Split page into regions based on gaps
-fn split_at_gaps(gaps: &[(f32, f32)], characters: &[CharacterData]) -> Vec<BoundingBox> {
-    let mut regions = Vec::new();
-    
-    if characters.is_empty() {
-        return regions;
-    }
-    
-    // Get page bounds
-    let min_x = characters.iter()
-        .map(|c| OrderedFloat(c.x))
-        .min()
-        .unwrap().0;
-    let max_x = characters.iter()
-        .map(|c| OrderedFloat(c.x + c.width))
-        .max()
-        .unwrap().0;
-    let min_y = characters.iter()
-        .map(|c| OrderedFloat(c.y))
-        .min()
-        .unwrap().0;
-    let max_y = characters.iter()
-        .map(|c| OrderedFloat(c.y + c.height))
-        .max()
-        .unwrap().0;
-    
-    // Create regions between gaps
-    let mut current_y = min_y;
-    
-    for &(gap_midpoint, _gap_size) in gaps {
-        if gap_midpoint > current_y {
-            regions.push(BoundingBox {
-                x1: min_x,
-                y1: current_y,
-                x2: max_x,
-                y2: gap_midpoint,
-            });
-            current_y = gap_midpoint;
-        }
-    }
-    
-    // Add final region
-    if current_y < max_y {
-        regions.push(BoundingBox {
-            x1: min_x,
-            y1: current_y,
-            x2: max_x,
-            y2: max_y,
-        });
-    }
-    
-    // If no gaps found, return whole page as one region
-    if regions.is_empty() {
-        regions.push(BoundingBox {
-            x1: min_x,
-            y1: min_y,
-            x2: max_x,
-            y2: max_y,
-        });
-    }
-    
-    regions
-}
-
-/// Classify a region as Table, Text, or Image based on its content
-fn classify_region(page: &PdfPage, bbox: &BoundingBox, chars: &[&CharacterData]) -> RegionStrategy {
-    let mut table_indicators = 0;
-    let mut text_indicators = 0;
-    let _has_image = false; // Currently unused but will be for mixed content
-    
-    // Check for different object types in this region
+    // Count path objects (lines) that look like table borders
     for object in page.objects().iter() {
-        let obj_type = object.object_type();
-        
-        // Check for images first
-        if obj_type == PdfPageObjectType::Image {
-            if let Ok(bounds) = object.bounds() {
-                // Check if this image is within our region
-                if bounds.top().value >= bbox.y1 && bounds.bottom().value <= bbox.y2 &&
-                   bounds.left().value >= bbox.x1 && bounds.right().value <= bbox.x2 {
-                    // has_image = true; // For future mixed content detection
-                    // If region is mostly an image, classify as Image
-                    let image_area = bounds.width().value * bounds.height().value;
-                    let region_area = (bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1);
-                    if image_area > region_area * 0.5 {
-                        return RegionStrategy::Image;
-                    }
-                }
-            }
-        }
-        
-        // Check for path objects (table lines)
         if let Some(path) = object.as_path_object() {
             if let Ok(bounds) = path.bounds() {
-                // Check if this path is within our region
-                if bounds.top().value >= bbox.y1 && bounds.bottom().value <= bbox.y2 &&
-                   bounds.left().value >= bbox.x1 && bounds.right().value <= bbox.x2 {
-                    
-                    // Horizontal or vertical line?
-                    if bounds.height().value < 2.0 || bounds.width().value < 2.0 {
-                        table_indicators += 2;
-                    }
+                // Horizontal line?
+                if bounds.height().value < 2.0 && bounds.width().value > 50.0 {
+                    has_horizontal_lines = true;
+                    line_count += 1;
+                }
+                // Vertical line?
+                if bounds.width().value < 2.0 && bounds.height().value > 20.0 {
+                    has_vertical_lines = true;
+                    line_count += 1;
                 }
             }
         }
     }
     
-    // Check for column alignment in characters
-    if chars.len() > 10 {
-        let x_positions: Vec<f32> = chars.iter().map(|c| c.x).collect();
-        let unique_x: HashSet<i32> = x_positions.iter()
-            .map(|&x| (x / 10.0) as i32) // Bucket by 10px
-            .collect();
-        
-        if unique_x.len() > 3 && unique_x.len() < 20 {
-            table_indicators += 1; // Multiple aligned columns
-        }
-    }
-    
-    // Check for numeric content (tables often have numbers)
-    let text: String = chars.iter().map(|c| c.unicode).collect();
-    let digit_count = text.chars().filter(|c| c.is_ascii_digit()).count();
-    let dollar_count = text.chars().filter(|&c| c == '$').count();
-    
-    if dollar_count > 2 || digit_count > text.len() / 4 {
-        table_indicators += 1;
-    }
-    
-    // Check for regular text patterns
-    if text.contains(". ") || text.contains(", ") {
-        text_indicators += 1;
-    }
-    
-    eprintln!("  Region classification: table_ind={}, text_ind={}", 
-             table_indicators, text_indicators);
-    
-    if table_indicators >= 2 {
-        RegionStrategy::Table
+    // If we see both horizontal and vertical lines, it's likely a table
+    if has_horizontal_lines && has_vertical_lines && line_count >= 4 {
+        eprintln!("Detected TABLE page ({} grid lines found)", line_count);
+        ExtractionStrategy::Table
     } else {
-        RegionStrategy::Text
+        eprintln!("Detected TEXT page (no table grid found)");
+        ExtractionStrategy::Text
     }
 }
 
@@ -464,153 +242,59 @@ pub async fn extract_to_matrix(
         return Ok(simple_text_fallback(&characters, width, height));
     }
     
-    // REGION-BASED EXTRACTION WITH RAIL SWITCH
-    let regions = detect_content_regions(&page, &characters);
+    // SIMPLIFIED EXTRACTION: Just detect table vs text for the whole page
+    let strategy = detect_extraction_strategy(&page);
+    let text_lines = build_text_lines(&characters);
     
-    if regions.len() == 1 {
-        // Single region - use simple strategy decision
-        let region = &regions[0];
-        let text_lines = build_text_lines(&characters);
-        
-        match region.strategy {
-            RegionStrategy::Table => {
-                eprintln!("Single region: TABLE mode");
-                let columns = detect_column_boundaries(&text_lines);
-                if !columns.is_empty() && columns.len() >= 2 {
-                    let mapper = ColumnAwareGridMapper::new(columns, width);
-                    grid = mapper.map_to_grid(&text_lines, width, height);
-                } else {
-                    map_lines_to_grid(&mut grid, &text_lines, width, height);
-                }
-            }
-            RegionStrategy::Text => {
-                eprintln!("Single region: TEXT mode");
-                map_lines_to_grid(&mut grid, &text_lines, width, height);
-            }
-            RegionStrategy::Image => {
-                eprintln!("Single region: IMAGE mode");
-                // Just put a placeholder for the image
-                let image_text = "[Image]";
-                for (i, ch) in image_text.chars().enumerate() {
-                    if i < width {
-                        grid[0][i] = ch;
+    // Check for images and add placeholders
+    let mut current_grid_y = 0;
+    let mut has_images = false;
+    
+    // First, add image placeholders if any
+    for object in page.objects().iter() {
+        if object.object_type() == PdfPageObjectType::Image {
+            if let Ok(_bounds) = object.bounds() {
+                // Add image placeholder at appropriate position
+                if !has_images {
+                    let image_text = "[Image/Figure]";
+                    for (x, ch) in image_text.chars().enumerate() {
+                        if x < width && current_grid_y < height {
+                            grid[current_grid_y][x] = ch;
+                        }
                     }
+                    current_grid_y += 2; // Space after image
+                    has_images = true;
                 }
             }
         }
-    } else {
-        // Multiple regions - process each with its own strategy
-        eprintln!("Processing {} regions separately", regions.len());
-        
-        // Track current grid Y position for compressed layout
-        let mut current_grid_y = 0;
-        let mut last_line_had_content = false;
-        
-        for (i, region) in regions.iter().enumerate() {
-            // For images, we don't need character filtering
-            if matches!(region.strategy, RegionStrategy::Image) {
-                // Add ONE line gap if previous region had content
-                if last_line_had_content && current_grid_y < height {
-                    current_grid_y += 1;
-                }
+    }
+    
+    match strategy {
+        ExtractionStrategy::Table => {
+            // Use column-aware extraction for tables
+            let columns = detect_column_boundaries(&text_lines);
+            if !columns.is_empty() && columns.len() >= 2 {
+                let mapper = ColumnAwareGridMapper::new(columns, width);
+                let table_grid = mapper.map_to_grid(&text_lines, width, height - current_grid_y);
                 
-                // Place image placeholder
-                let image_text = "[Image/Figure]";
-                for (x, ch) in image_text.chars().enumerate() {
-                    if x < width && current_grid_y < height {
-                        grid[current_grid_y][x] = ch;
-                    }
-                }
-                current_grid_y += 1;
-                last_line_had_content = true;
-                continue;
-            }
-            
-            // Filter characters for this region
-            let region_chars: Vec<CharacterData> = characters.iter()
-                .filter(|c| region.bbox.contains(c))
-                .cloned()
-                .collect();
-            
-            if region_chars.is_empty() {
-                continue;
-            }
-            
-            let region_lines = build_text_lines(&region_chars);
-            
-            // Smart gap: only add 1 line between regions if previous had content
-            if i > 0 && last_line_had_content && current_grid_y < height {
-                current_grid_y += 1; // Just ONE line gap
-            }
-            
-            eprintln!("  Region {}: {:?} starting at grid line {}", 
-                     i, region.strategy, current_grid_y);
-            
-            match region.strategy {
-                RegionStrategy::Table => {
-                    // Extract as table with columns
-                    let columns = detect_column_boundaries(&region_lines);
-                    
-                    if !columns.is_empty() && columns.len() >= 2 {
-                        let mapper = ColumnAwareGridMapper::new(columns, width);
-                        let available_height = height.saturating_sub(current_grid_y);
-                        let region_height = region_lines.len().min(available_height);
-                        let region_grid = mapper.map_to_grid(&region_lines, width, region_height);
-                        
-                        // Copy region grid to main grid
-                        for (y, row) in region_grid.iter().enumerate() {
-                            if current_grid_y + y < height {
-                                for (x, &ch) in row.iter().enumerate() {
-                                    if x < width && ch != ' ' {
-                                        grid[current_grid_y + y][x] = ch;
-                                    }
-                                }
+                // Copy table to main grid
+                for (y, row) in table_grid.iter().enumerate() {
+                    if current_grid_y + y < height {
+                        for (x, &ch) in row.iter().enumerate() {
+                            if x < width && ch != ' ' {
+                                grid[current_grid_y + y][x] = ch;
                             }
-                        }
-                        current_grid_y += region_height;
-                        last_line_had_content = region_height > 0;
-                    } else {
-                        // No columns detected, use simple mapping
-                        for (_y, line) in region_lines.iter().enumerate() {
-                            if current_grid_y >= height {
-                                break;
-                            }
-                            
-                            let mut x = 0;
-                            for ch in &line.chars {
-                                if x < width {
-                                    grid[current_grid_y][x] = ch.unicode;
-                                    x += 1;
-                                }
-                            }
-                            current_grid_y += 1;
-                            last_line_had_content = true;
                         }
                     }
                 }
-                RegionStrategy::Text => {
-                    // Extract as flowing text - no column detection
-                    for (_y, line) in region_lines.iter().enumerate() {
-                        if current_grid_y >= height {
-                            break;
-                        }
-                        
-                        let mut x = 0;
-                        for ch in &line.chars {
-                            if x < width {
-                                grid[current_grid_y][x] = ch.unicode;
-                                x += 1;
-                            }
-                        }
-                        current_grid_y += 1;
-                        last_line_had_content = true;
-                    }
-                }
-                RegionStrategy::Image => {
-                    // This case is handled above, but adding for completeness
-                    unreachable!("Image regions are handled earlier");
-                }
+            } else {
+                // No columns detected, fall back to simple mapping
+                map_lines_to_grid_with_offset(&mut grid, &text_lines, width, height, current_grid_y);
             }
+        }
+        ExtractionStrategy::Text => {
+            // Use natural spacing for text
+            map_lines_to_grid_with_natural_spacing(&mut grid, &text_lines, width, height, current_grid_y);
         }
     }
     
@@ -996,6 +680,84 @@ fn map_lines_to_grid(
                 x += 1;
             }
         }
+    }
+}
+
+/// Map lines to grid with an offset (for when we have images above)
+fn map_lines_to_grid_with_offset(
+    grid: &mut Vec<Vec<char>>,
+    lines: &[TextLine],
+    width: usize,
+    height: usize,
+    offset_y: usize,
+) {
+    for (y, line) in lines.iter().enumerate() {
+        if offset_y + y >= height {
+            break;
+        }
+        
+        let mut x = 0;
+        for ch in &line.chars {
+            if x < width {
+                grid[offset_y + y][x] = ch.unicode;
+                x += 1;
+            }
+        }
+    }
+}
+
+/// Map lines with natural spacing - preserve gaps but cap them at 1 line
+fn map_lines_to_grid_with_natural_spacing(
+    grid: &mut Vec<Vec<char>>,
+    lines: &[TextLine],
+    width: usize,
+    height: usize,
+    start_y: usize,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    
+    let mut current_grid_y = start_y;
+    let mut prev_baseline = lines[0].baseline;
+    
+    // Calculate average line spacing
+    let mut spacings = Vec::new();
+    for window in lines.windows(2) {
+        let spacing = (window[1].baseline - window[0].baseline).abs();
+        if spacing < 50.0 { // Normal spacing
+            spacings.push(spacing);
+        }
+    }
+    let avg_spacing = if !spacings.is_empty() {
+        spacings.iter().sum::<f32>() / spacings.len() as f32
+    } else {
+        12.0
+    };
+    
+    for line in lines {
+        // Calculate how many lines to skip based on baseline difference
+        let gap = ((line.baseline - prev_baseline) / avg_spacing) as usize;
+        
+        // Cap gaps at 1 line maximum
+        let lines_to_skip = gap.min(1);
+        current_grid_y += lines_to_skip;
+        
+        if current_grid_y >= height {
+            break;
+        }
+        
+        // Place characters
+        let mut x = 0;
+        for ch in &line.chars {
+            if x < width {
+                grid[current_grid_y][x] = ch.unicode;
+                x += 1;
+            }
+        }
+        
+        current_grid_y += 1;
+        prev_baseline = line.baseline;
     }
 }
 
