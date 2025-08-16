@@ -1,6 +1,6 @@
 [package]
 name = "chonker7"
-version = "7.42.0"
+version = "7.43.0"
 edition = "2021"
 
 [dependencies]
@@ -52,7 +52,7 @@ objc = { version = "0.2", optional = true }
 core-foundation = { version = "0.10", optional = true }
 
 [features]
-default = ["kitty-images"]
+default = ["kitty-images", "ml"]
 kitty-images = []
 
 # ML features
