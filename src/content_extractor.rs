@@ -33,25 +33,36 @@ use std::path::Path;
 use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 
+/// Complete page data for ML processing
+#[derive(Debug, Clone)]
+pub struct PageData {
+    pub characters: Vec<CharacterData>,
+    pub page_width: f32,
+    pub page_height: f32,
+    pub page_image: Option<image::DynamicImage>,
+    pub annotations: Vec<AnnotationData>,
+    pub form_fields: Vec<FormFieldData>,
+}
+
 /// Character data extracted from PDFium with full spatial information
 #[derive(Debug, Clone)]
-struct CharacterData {
-    unicode: char,
-    x: f32,           // Position in PDF coordinates
-    y: f32,
-    width: f32,       // Character width
-    height: f32,      // Character height
-    font_size: f32,
-    baseline_y: f32,  // Text baseline for alignment
+pub struct CharacterData {
+    pub unicode: char,
+    pub x: f32,           // Position in PDF coordinates
+    pub y: f32,
+    pub width: f32,       // Character width
+    pub height: f32,      // Character height
+    pub font_size: f32,
+    pub baseline_y: f32,  // Text baseline for alignment
     // New PDFium properties
-    font_name: Option<String>,     // Font family name
-    font_weight: u32,              // Font weight (400=normal, 700=bold)
-    is_italic: bool,               // Font style
-    is_monospace: bool,            // Fixed-width font
-    scaled_font_size: f32,         // Actual rendered font size
-    is_generated: bool,            // PDFium generated this char
-    is_hyphen: bool,               // Character is a hyphen
-    char_angle: f32,               // Rotation angle in radians
+    pub font_name: Option<String>,     // Font family name
+    pub font_weight: u32,              // Font weight (400=normal, 700=bold)
+    pub is_italic: bool,               // Font style
+    pub is_monospace: bool,            // Fixed-width font
+    pub scaled_font_size: f32,         // Actual rendered font size
+    pub is_generated: bool,            // PDFium generated this char
+    pub is_hyphen: bool,               // Character is a hyphen
+    pub char_angle: f32,               // Rotation angle in radians
 }
 
 /// Represents a text line with grouped characters

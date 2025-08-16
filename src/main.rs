@@ -34,6 +34,9 @@ mod viuer_display;
 mod markdown_renderer;
 mod keyboard;
 
+#[cfg(feature = "ml")]
+mod ml;
+
 use edit_renderer::EditPanelRenderer;
 use theme::ChonkerTheme;
 use markdown_renderer::MarkdownRenderer;
