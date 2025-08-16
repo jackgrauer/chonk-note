@@ -310,32 +310,47 @@ pub async fn extract_to_matrix(
     // Initialize grid
     let mut grid = vec![vec![' '; width]; height];
     
-    // Use PDFium for character-level extraction
+    // Two-pass extraction
+    eprintln!("📊 Two-pass extraction starting...");
+    
+    // Pass 1: Get raw data from PDFium (cached)
+    let pass1 = crate::two_pass::extract_pass1(pdf_path, page_num)?;
+    eprintln!("Pass 1: {} characters extracted", pass1.characters.len());
+    
+    // Pass 2: Try ML enrichment (with fallback)
+    let pass2 = crate::two_pass::enrich_pass2(&pass1, pdf_path, page_num)?;
+    
+    // Show enrichment results
+    if pass2.confidence > 0.0 {
+        eprintln!("Pass 2: ML enrichment successful (confidence: {:.2})", pass2.confidence);
+        if !pass2.entities.is_empty() {
+            eprintln!("   • {} entities detected", pass2.entities.len());
+            for entity in pass2.entities.iter().take(5) {
+                eprintln!("     - {:?}: {}", entity.entity_type, entity.text);
+            }
+        }
+    } else {
+        eprintln!("Pass 2: Using Pass 1 data only (ML not available or failed)");
+    }
+    
+    // Use Pass 1 characters for rendering (Pass 2 enrichment shown via overlays)
+    let characters = &pass1.characters;
+    let page_width = pass1.page_width;
+    let page_height = pass1.page_height;
+    
+    // Extract annotations from original page (for compatibility)
     let pdfium = crate::pdf_renderer::get_pdfium_instance();
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
-    
-    // Get page properties
-    let page_width = page.width().value;
-    let page_height = page.height().value;
-    
-    // Show page info in stderr for debugging
-    eprintln!("Page properties: {:.0}x{:.0} pts", page_width, page_height);
-    
-    // Extract characters with spatial data
-    let characters = extract_characters_from_page(&page)?;
-    
-    // Extract annotations and form fields
     let annotations = extract_annotations(&page);
-    let _form_fields = extract_form_fields(&page);
     
     // ML-enhanced analysis if available
     #[cfg(feature = "ml")]
     {
-        eprintln!("🧠 ML Analysis: Detecting document structure and indentation patterns...");
-        // Note: Full ML integration would require model initialization
-        // For now, we'll show enhanced indentation detection
-        analyze_indentation_with_ml(&characters);
+        if pass2.confidence > 0.0 {
+            eprintln!("🧠 ML Analysis: Document structure detected");
+        }
+        analyze_indentation_with_ml(characters);
     }
     
     // Show debug info about extracted properties
@@ -530,7 +545,7 @@ fn analyze_indentation_with_ml(characters: &[CharacterData]) {
 }
 
 /// Extract individual characters from a PDF page with spatial data
-fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
+pub fn extract_characters_from_page(page: &PdfPage) -> Result<Vec<CharacterData>> {
     let mut characters = Vec::new();
     let text_page = page.text()?;
     

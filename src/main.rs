@@ -33,6 +33,7 @@ mod theme;
 mod viuer_display;
 mod markdown_renderer;
 mod keyboard;
+mod two_pass;
 
 #[cfg(feature = "ml")]
 mod ml;
@@ -632,7 +633,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
     let (term_width, _) = terminal::size()?;
     
     // Draw centered title "Chonker 7.35" at the top
-    let title = "🐹 Chonker 7.45";
+    let title = "🐹 Chonker 7.46";
     let title_x = (term_width - title.len() as u16) / 2;
     execute!(
         stdout,

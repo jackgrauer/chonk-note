@@ -75,14 +75,15 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
         // Draw uniform header matching other tabs
         let (term_width, _) = terminal::size().unwrap_or((80, 24));
         
-        // First header line with tab styling
+        // First header line with tab styling and version
+        let header_text = "LOAD FILE - Chonker 7.46";
         execute!(
             stdout,
             MoveTo(0, 0),
             SetBackgroundColor(ChonkerTheme::accent_load_file()),
             SetForegroundColor(ChonkerTheme::text_header()),
             SetAttribute(Attribute::Bold),
-            Print(format!("  {:<width$}", "LOAD FILE", width = (term_width - 2) as usize)),
+            Print(format!("  {:<width$}", header_text, width = (term_width - 2) as usize)),
             ResetColor,
             SetAttribute(Attribute::Reset)
         )?;
