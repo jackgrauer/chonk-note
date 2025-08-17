@@ -1,6 +1,6 @@
 [package]
 name = "chonker7"
-version = "7.46.0"
+version = "7.64.0"
 edition = "2021"
 
 [dependencies]
@@ -42,6 +42,20 @@ ordered-float = "4.2"
 lru = "0.12"
 lazy_static = "1.4"
 
+# Temporary files for OCR
+tempfile = "3.8"
+
+# OCR Support (optional)
+ocrs = { version = "0.8", optional = true }
+rten = { version = "0.13", optional = true }
+rten-tensor = { version = "0.13", optional = true }
+rten-imageproc = { version = "0.13", optional = true }
+imageproc = { version = "0.25", optional = true }
+dirs = "5.0"
+reqwest = { version = "0.11", features = ["json"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 # Machine Learning (optional)
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
@@ -63,3 +77,6 @@ kitty-images = []
 ml = ["candle-core", "candle-nn", "candle-transformers", "tokenizers", "safetensors"]
 coreml = ["ml", "objc", "core-foundation"]
 metal = ["ml", "candle-metal-kernels"]
+
+# OCR features
+ocr = ["ocrs", "rten", "rten-tensor", "rten-imageproc", "imageproc", "reqwest"]

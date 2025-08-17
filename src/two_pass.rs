@@ -40,7 +40,7 @@ pub struct Entity {
     pub confidence: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EntityType {
     Header,
     Value,      // Monetary/numeric
@@ -137,7 +137,7 @@ pub fn extract_pass1(pdf_path: &Path, page_num: usize) -> Result<Pass1Data> {
 }
 
 /// Enrich with Pass2 (ML) with caching and fallback
-pub fn enrich_pass2(pass1: &Pass1Data, pdf_path: &Path, page_num: usize) -> Result<Pass2Data> {
+pub async fn enrich_pass2(pass1: &Pass1Data, pdf_path: &Path, page_num: usize) -> Result<Pass2Data> {
     let key = (pdf_path.to_path_buf(), page_num);
     
     // Check cache first
@@ -154,7 +154,7 @@ pub fn enrich_pass2(pass1: &Pass1Data, pdf_path: &Path, page_num: usize) -> Resu
     
     #[cfg(feature = "ml")]
     {
-        match enrich_with_ml(pass1, pdf_path, page_num) {
+        match enrich_with_ml(pass1, pdf_path, page_num).await {
             Ok(pass2) => {
                 // Cache successful enrichment
                 let mut cache = PASS2_CACHE.lock().unwrap();
@@ -176,6 +176,32 @@ pub fn enrich_pass2(pass1: &Pass1Data, pdf_path: &Path, page_num: usize) -> Resu
         layout_regions: Vec::new(),
         confidence: 0.0,
     })
+}
+
+/// Force ML enrichment for vertical text (bypasses cache)
+pub async fn force_ml_enrichment(pass1: &Pass1Data, pdf_path: &Path, page_num: usize) -> Result<Pass2Data> {
+    eprintln!("🔄 Force ML mode activated for vertical text on page {}", page_num);
+    
+    #[cfg(feature = "ml")]
+    {
+        // Always try ML for vertical text, don't use cache
+        match enrich_with_ml(pass1, pdf_path, page_num).await {
+            Ok(pass2) => {
+                eprintln!("✅ ML processing successful for vertical text");
+                return Ok(pass2);
+            }
+            Err(e) => {
+                eprintln!("⚠️ ML processing failed for vertical text: {}", e);
+                return Err(e);
+            }
+        }
+    }
+    
+    #[cfg(not(feature = "ml"))]
+    {
+        eprintln!("⚠️ ML feature not available, cannot force ML mode");
+        return Err(anyhow::anyhow!("ML feature not compiled in"));
+    }
 }
 
 /// Clear all caches
@@ -224,46 +250,58 @@ fn extract_raw_from_pdfium(pdf_path: &Path, page_num: usize) -> Result<Pass1Data
 }
 
 #[cfg(feature = "ml")]
-fn enrich_with_ml(pass1: &Pass1Data, _pdf_path: &Path, _page_num: usize) -> Result<Pass2Data> {
-    // TODO: Actual LayoutLM integration
-    // For now, just do simple pattern-based enrichment
+async fn enrich_with_ml(pass1: &Pass1Data, _pdf_path: &Path, _page_num: usize) -> Result<Pass2Data> {
+    // Use real ML inference!
+    eprintln!("🧠 Running real LayoutLMv3 inference with Candle...");
     
-    let mut entities = Vec::new();
-    let mut current_text = String::new();
-    let mut current_indices = Vec::new();
+    // Call async inference directly
+    let result = crate::ml::inference::run_inference(pass1).await;
     
-    // Simple entity detection based on patterns
-    for &idx in &pass1.reading_order {
-        let ch = &pass1.characters[idx];
-        current_text.push(ch.unicode);
-        current_indices.push(idx);
-        
-        // Detect end of word/entity
-        if ch.unicode.is_whitespace() || idx == pass1.reading_order.last().copied().unwrap_or(0) {
-            if !current_text.trim().is_empty() {
-                let entity_type = detect_entity_type(&current_text);
-                if !matches!(entity_type, EntityType::Text) {
-                    entities.push(Entity {
-                        text: current_text.trim().to_string(),
-                        entity_type,
-                        char_indices: current_indices.clone(),
-                        confidence: 0.8,
-                    });
+    match result {
+        Ok(pass2) => {
+            eprintln!("✅ ML inference successful!");
+            Ok(pass2)
+        },
+        Err(e) => {
+            eprintln!("⚠️ ML inference failed: {}, falling back to patterns", e);
+            
+            // Fallback to pattern-based detection
+            let mut entities = Vec::new();
+            let mut current_text = String::new();
+            let mut current_indices = Vec::new();
+            
+            for &idx in &pass1.reading_order {
+                let ch = &pass1.characters[idx];
+                current_text.push(ch.unicode);
+                current_indices.push(idx);
+                
+                if ch.unicode.is_whitespace() || idx == pass1.reading_order.last().copied().unwrap_or(0) {
+                    if !current_text.trim().is_empty() {
+                        let entity_type = detect_entity_type(&current_text);
+                        if !matches!(entity_type, EntityType::Text) {
+                            entities.push(Entity {
+                                text: current_text.trim().to_string(),
+                                entity_type,
+                                char_indices: current_indices.clone(),
+                                confidence: 0.5,
+                            });
+                        }
+                    }
+                    current_text.clear();
+                    current_indices.clear();
                 }
             }
-            current_text.clear();
-            current_indices.clear();
+            
+            Ok(Pass2Data {
+                base: pass1.clone(),
+                entities,
+                tables: Vec::new(),
+                relations: Vec::new(),
+                layout_regions: Vec::new(),
+                confidence: 0.3,
+            })
         }
     }
-    
-    Ok(Pass2Data {
-        base: pass1.clone(),
-        entities,
-        tables: Vec::new(),
-        relations: Vec::new(),
-        layout_regions: Vec::new(),
-        confidence: 0.7,
-    })
 }
 
 fn detect_entity_type(text: &str) -> EntityType {

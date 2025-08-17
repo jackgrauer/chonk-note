@@ -76,7 +76,7 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
         let (term_width, _) = terminal::size().unwrap_or((80, 24));
         
         // First header line with tab styling and version
-        let header_text = "LOAD FILE - Chonker 7.46";
+        let header_text = format!("🐹 Chonker {}", env!("CARGO_PKG_VERSION"));
         execute!(
             stdout,
             MoveTo(0, 0),
@@ -244,65 +244,81 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
         if event::poll(std::time::Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            return Ok(None);
-                        }
-                        KeyCode::Enter => {
-                            if !all_matches.is_empty() && selected_index < all_matches.len() {
-                                let selected = all_matches[selected_index].data.as_ref();
-                                return Ok(Some(PathBuf::from(selected)));
+                    // Handle Ctrl commands first
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                // Ctrl+Q - quit the entire application
+                                return Ok(None);
                             }
-                        }
-                        KeyCode::Up => {
-                            if selected_index > 0 {
-                                selected_index -= 1;
+                            KeyCode::Char('c') | KeyCode::Char('C') => {
+                                // Ctrl+C - also quit
+                                return Ok(None);
                             }
+                            _ => {}
                         }
-                        KeyCode::Down => {
-                            if selected_index < all_matches.len().saturating_sub(1) {
-                                selected_index += 1;
+                    } else {
+                        // Handle regular key input
+                        match key.code {
+                            KeyCode::Esc => {
+                                return Ok(None);
                             }
+                            KeyCode::Enter => {
+                                if !all_matches.is_empty() && selected_index < all_matches.len() {
+                                    let selected = all_matches[selected_index].data.as_ref();
+                                    return Ok(Some(PathBuf::from(selected)));
+                                }
+                            }
+                            KeyCode::Up => {
+                                if selected_index > 0 {
+                                    selected_index -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if selected_index < all_matches.len().saturating_sub(1) {
+                                    selected_index += 1;
+                                }
+                            }
+                            KeyCode::PageUp => {
+                                selected_index = selected_index.saturating_sub(max_display_items);
+                            }
+                            KeyCode::PageDown => {
+                                selected_index = (selected_index + max_display_items).min(all_matches.len().saturating_sub(1));
+                            }
+                            KeyCode::Home => {
+                                selected_index = 0;
+                            }
+                            KeyCode::End => {
+                                selected_index = all_matches.len().saturating_sub(1);
+                            }
+                            KeyCode::Backspace => {
+                                query.pop();
+                                selected_index = 0;
+                                scroll_offset = 0;
+                                // Update nucleo pattern
+                                nucleo.pattern.reparse(
+                                    0,
+                                    &query,
+                                    nucleo::pattern::CaseMatching::Smart,
+                                    nucleo::pattern::Normalization::Smart,
+                                    false
+                                );
+                            }
+                            KeyCode::Char(c) => {
+                                query.push(c);
+                                selected_index = 0;
+                                scroll_offset = 0;
+                                // Update nucleo pattern
+                                nucleo.pattern.reparse(
+                                    0,
+                                    &query,
+                                    nucleo::pattern::CaseMatching::Smart,
+                                    nucleo::pattern::Normalization::Smart,
+                                    false
+                                );
+                            }
+                            _ => {}
                         }
-                        KeyCode::PageUp => {
-                            selected_index = selected_index.saturating_sub(max_display_items);
-                        }
-                        KeyCode::PageDown => {
-                            selected_index = (selected_index + max_display_items).min(all_matches.len().saturating_sub(1));
-                        }
-                        KeyCode::Home => {
-                            selected_index = 0;
-                        }
-                        KeyCode::End => {
-                            selected_index = all_matches.len().saturating_sub(1);
-                        }
-                        KeyCode::Backspace => {
-                            query.pop();
-                            selected_index = 0;
-                            scroll_offset = 0;
-                            // Update nucleo pattern
-                            nucleo.pattern.reparse(
-                                0,
-                                &query,
-                                nucleo::pattern::CaseMatching::Smart,
-                                nucleo::pattern::Normalization::Smart,
-                                false
-                            );
-                        }
-                        KeyCode::Char(c) => {
-                            query.push(c);
-                            selected_index = 0;
-                            scroll_offset = 0;
-                            // Update nucleo pattern
-                            nucleo.pattern.reparse(
-                                0,
-                                &query,
-                                nucleo::pattern::CaseMatching::Smart,
-                                nucleo::pattern::Normalization::Smart,
-                                false
-                            );
-                        }
-                        _ => {}
                     }
                 }
                 Event::Mouse(mouse) => {

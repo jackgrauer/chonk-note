@@ -3,7 +3,99 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Handle all keyboard input for the application
-pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runtime) -> Result<bool> {
+pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+    // Universal clipboard operations that work in ALL modes
+    // Cmd+A - Select All
+    if key.code == KeyCode::Char('a') && key.modifiers.contains(MOD_KEY) {
+        match app.display_mode {
+            DisplayMode::PdfText => {
+                if let Some(data) = &app.edit_data {
+                    // Select entire text buffer
+                    app.selection_start = Some((0, 0));
+                    let last_y = data.len().saturating_sub(1);
+                    let last_x = if last_y < data.len() {
+                        data[last_y].len().saturating_sub(1)
+                    } else {
+                        0
+                    };
+                    app.selection_end = Some((last_x, last_y));
+                    app.status_message = "Selected all text".to_string();
+                }
+            }
+            DisplayMode::Debug => {
+                app.status_message = format!("Selected {} lines of debug output", app.debug_console.len());
+            }
+            _ => {}
+        }
+        return Ok(true);
+    }
+    
+    // Cmd+C - Copy
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(MOD_KEY) {
+        match app.display_mode {
+            DisplayMode::PdfText => {
+                if let Some(text) = extract_selection_text(app) {
+                    if let Err(e) = copy_to_clipboard(&text) {
+                        app.status_message = format!("Copy failed: {}", e);
+                    } else {
+                        app.status_message = "Text copied to clipboard".to_string();
+                    }
+                } else if let Some(data) = &app.edit_data {
+                    // If no selection, copy entire buffer
+                    let text: String = data.iter()
+                        .map(|row| row.iter().collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if let Err(e) = copy_to_clipboard(&text) {
+                        app.status_message = format!("Copy failed: {}", e);
+                    } else {
+                        app.status_message = "Entire text copied to clipboard".to_string();
+                    }
+                }
+            }
+            DisplayMode::Debug => {
+                let debug_text = app.debug_console.join("\n");
+                match cli_clipboard::set_contents(debug_text.clone()) {
+                    Ok(_) => {
+                        app.status_message = format!("Copied {} lines of debug output", app.debug_console.len());
+                    }
+                    Err(e) => {
+                        app.status_message = format!("Failed to copy: {}", e);
+                    }
+                }
+            }
+            DisplayMode::PdfReader => {
+                if let Some(markdown) = &app.markdown_data {
+                    match cli_clipboard::set_contents(markdown.clone()) {
+                        Ok(_) => {
+                            app.status_message = "Markdown content copied to clipboard".to_string();
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Failed to copy: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(true);
+    }
+    
+    // Cmd+V - Paste
+    if key.code == KeyCode::Char('v') && key.modifiers.contains(MOD_KEY) {
+        if app.display_mode == DisplayMode::PdfText {
+            match paste_from_clipboard() {
+                Ok(text) => {
+                    paste_at_cursor(app, &text);
+                    app.status_message = "Text pasted".to_string();
+                }
+                Err(e) => {
+                    app.status_message = format!("Paste failed: {}", e);
+                }
+            }
+        }
+        return Ok(true);
+    }
+    
     match key.code {
         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.exit_requested = true;
@@ -23,8 +115,50 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
             app.status_message = format!("Mode: {}", if app.dark_mode { "Dark" } else { "Light" });
         }
         
+        
+        
+        
+        // OCR operation (Ctrl+R)
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            #[cfg(feature = "ocr")]
+            {
+                // Analyze current page for OCR needs
+                if let Some(_image) = &app.current_page_image {
+                    let text = if let Some(data) = &app.edit_data {
+                        // Convert matrix to string for analysis
+                        data.iter()
+                            .map(|row| row.iter().collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        String::new()
+                    };
+                    
+                    let has_images = true; // We have a PDF image
+                    let need = app.ocr_layer.analyze_page_text(&text, has_images);
+                    
+                    app.status_message = match need {
+                        crate::ocr::OcrNeed::HasText => "Text layer exists - Press F to Force new OCR (strips old layer)".into(),
+                        crate::ocr::OcrNeed::NeedsOcr => "No text found - Press A for Auto OCR".into(),
+                        crate::ocr::OcrNeed::BadOcr => "Poor text quality - Press R to Repair".into(),
+                        crate::ocr::OcrNeed::MixedContent => "Mixed content - Press F to Force OCR".into(),
+                    };
+                    
+                    app.ocr_menu.show();
+                } else {
+                    app.status_message = "Load a page first (Ctrl+E)".into();
+                }
+            }
+            
+            #[cfg(not(feature = "ocr"))]
+            {
+                app.status_message = "OCR not available - compile with --features ocr".into();
+            }
+        }
+        
+        // Load file operation (Ctrl+O)
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Open new file
+            // Load new file
             crossterm::terminal::disable_raw_mode()?;
             println!("\r\n🐹 Opening file picker...\r");
             
@@ -36,13 +170,98 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
                 if let Ok(new_app) = App::new(new_file.clone(), 1, "edit") {
                     *app = new_app;
                     app.status_message = format!("Loaded: {}", new_file.display());
-                    runtime.block_on(app.load_pdf_page())?;
+                    app.load_pdf_page().await?;
                 }
             }
         }
         
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            runtime.block_on(app.extract_current_page())?;
+            app.extract_current_page().await?;
+        }
+        
+        // OCR menu handlers
+        #[cfg(feature = "ocr")]
+        KeyCode::Char('a') | KeyCode::Char('A') if app.ocr_menu.visible => {
+            app.ocr_menu.set_processing(0.0);
+            app.status_message = "Running OCR...".into();
+            
+            if let Some(image) = &app.current_page_image {
+                let image_clone = image.clone();
+                let result = app.ocr_layer.process(&image_clone, crate::ocr::OcrMode::Overlay).await;
+                
+                match result {
+                    Ok(ocr_result) => {
+                        app.ocr_menu.set_complete(crate::ocr::OcrStats {
+                            blocks: ocr_result.blocks.len(),
+                            confidence: ocr_result.confidence,
+                            duration_ms: ocr_result.duration_ms,
+                        });
+                        app.status_message = format!("OCR complete: {} blocks detected", ocr_result.blocks.len());
+                    }
+                    Err(e) => {
+                        app.ocr_menu.set_error(e.to_string());
+                        app.status_message = format!("OCR failed: {}", e);
+                    }
+                }
+            }
+        }
+        
+        #[cfg(feature = "ocr")]
+        KeyCode::Char('f') | KeyCode::Char('F') if app.ocr_menu.visible => {
+            app.ocr_menu.set_processing(0.0);
+            app.status_message = "Force OCR (stripping existing text layer)...".into();
+            
+            if let Some(image) = &app.current_page_image {
+                let image_clone = image.clone();
+                let result = app.ocr_layer.process(&image_clone, crate::ocr::OcrMode::Force).await;
+                
+                match result {
+                    Ok(ocr_result) => {
+                        app.ocr_menu.set_complete(crate::ocr::OcrStats {
+                            blocks: ocr_result.blocks.len(),
+                            confidence: ocr_result.confidence,
+                            duration_ms: ocr_result.duration_ms,
+                        });
+                        app.status_message = format!("OCR complete (forced): {} blocks detected", ocr_result.blocks.len());
+                    }
+                    Err(e) => {
+                        app.ocr_menu.set_error(e.to_string());
+                        app.status_message = format!("OCR failed: {}", e);
+                    }
+                }
+            }
+        }
+        
+        #[cfg(feature = "ocr")]
+        KeyCode::Char('r') | KeyCode::Char('R') if app.ocr_menu.visible => {
+            app.ocr_menu.set_processing(0.0);
+            app.status_message = "Repairing OCR...".into();
+            
+            if let Some(image) = &app.current_page_image {
+                let image_clone = image.clone();
+                let result = app.ocr_layer.process(&image_clone, crate::ocr::OcrMode::Replace).await;
+                
+                match result {
+                    Ok(ocr_result) => {
+                        app.ocr_menu.set_complete(crate::ocr::OcrStats {
+                            blocks: ocr_result.blocks.len(),
+                            confidence: ocr_result.confidence,
+                            duration_ms: ocr_result.duration_ms,
+                        });
+                        app.status_message = format!("OCR repaired: {} blocks detected", ocr_result.blocks.len());
+                    }
+                    Err(e) => {
+                        app.ocr_menu.set_error(e.to_string());
+                        app.status_message = format!("OCR repair failed: {}", e);
+                    }
+                }
+            }
+        }
+        
+        #[cfg(feature = "ocr")]
+        KeyCode::Esc if app.ocr_menu.visible => {
+            app.ocr_menu.hide();
+            app.status_message = "OCR cancelled".into();
         }
         
         // TEXT mode keyboard handlers - only active when in TEXT mode with content
@@ -53,6 +272,11 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
         // READER mode keyboard handlers - only active when in READER mode with content
         _ if app.display_mode == DisplayMode::PdfReader && app.markdown_data.is_some() => {
             handle_reader_mode_keys(app, key)?;
+        }
+        
+        // DEBUG mode keyboard handlers
+        _ if app.display_mode == DisplayMode::Debug => {
+            handle_debug_mode_keys(app, key)?;
         }
         
         
@@ -67,29 +291,7 @@ pub fn handle_input(app: &mut App, key: KeyEvent, runtime: &tokio::runtime::Runt
 /// Handle TEXT mode specific keyboard input
 fn handle_text_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
-        // Copy selection
-        KeyCode::Char('c') if key.modifiers.contains(MOD_KEY) => {
-            if let Some(text) = extract_selection_text(app) {
-                if let Err(e) = copy_to_clipboard(&text) {
-                    app.status_message = format!("Copy failed: {}", e);
-                } else {
-                    app.status_message = "Text copied to clipboard".to_string();
-                }
-            }
-        }
-        
-        // Paste at cursor
-        KeyCode::Char('v') if key.modifiers.contains(MOD_KEY) => {
-            match paste_from_clipboard() {
-                Ok(text) => {
-                    paste_at_cursor(app, &text);
-                    app.status_message = "Text pasted".to_string();
-                }
-                Err(e) => {
-                    app.status_message = format!("Paste failed: {}", e);
-                }
-            }
-        }
+        // Note: Cmd+C, Cmd+V, Cmd+A are now handled universally above
         
         // Arrow key navigation for moving cursor
         KeyCode::Up => {
@@ -464,4 +666,34 @@ fn paste_from_clipboard() -> Result<String> {
     
     ctx.get_contents()
         .map_err(|e| anyhow::anyhow!("Failed to get clipboard contents: {}", e))
+}
+
+/// Handle DEBUG mode specific keyboard input
+fn handle_debug_mode_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        // Arrow key navigation for scrolling
+        KeyCode::Up => {
+            if app.debug_scroll_offset > 0 {
+                app.debug_scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.debug_scroll_offset + 20 < app.debug_console.len() {
+                app.debug_scroll_offset += 1;
+            }
+        }
+        KeyCode::PageUp => {
+            app.debug_scroll_offset = app.debug_scroll_offset.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            let max_offset = app.debug_console.len().saturating_sub(20);
+            app.debug_scroll_offset = (app.debug_scroll_offset + 10).min(max_offset);
+        }
+        
+        // Note: Cmd+C and Cmd+A are now handled universally above
+        
+        _ => {}
+    }
+    
+    Ok(())
 }

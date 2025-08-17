@@ -73,6 +73,14 @@ impl EditPanelRenderer {
         self.scroll_x = (self.scroll_x + cols).min(max_scroll);
     }
     
+    pub fn scroll_to_x(&mut self, x: u16) {
+        self.scroll_x = x;
+    }
+    
+    pub fn scroll_to_y(&mut self, y: u16) {
+        self.scroll_y = y;
+    }
+    
     /// Efficiently render the text buffer to the terminal within bounds
     pub fn render(&self, start_x: u16, start_y: u16, max_width: u16, max_height: u16) -> io::Result<()> {
         let mut stdout = io::stdout();

@@ -14,6 +14,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     time::Duration,
+    sync::{Arc, Mutex},
 };
 use image::DynamicImage;
 use clap::Parser;
@@ -26,6 +27,7 @@ const MOD_KEY: KeyModifiers = KeyModifiers::CONTROL; // Ctrl key elsewhere
 
 // Existing modules
 mod content_extractor;
+use content_extractor::MlProcessingStats;
 mod edit_renderer;
 mod pdf_renderer;
 mod file_picker;
@@ -34,9 +36,13 @@ mod viuer_display;
 mod markdown_renderer;
 mod keyboard;
 mod two_pass;
+mod debug_capture;
 
 #[cfg(feature = "ml")]
 mod ml;
+
+#[cfg(feature = "ocr")]
+mod ocr;
 
 use edit_renderer::EditPanelRenderer;
 use theme::ChonkerTheme;
@@ -76,11 +82,12 @@ impl Rect {
 pub enum DisplayMode {
     PdfText,     // Raw text extraction mode (editable)
     PdfReader,   // Formatted reader mode (markdown)
+    Debug,       // Debug console mode
 }
 
 #[derive(Clone, Debug)]
 pub struct AppSettings {
-    pub spatial_recognition_enabled: bool,
+    // Vision mode is now always enabled
 }
 
 pub struct App {
@@ -96,6 +103,10 @@ pub struct App {
     pub settings: AppSettings,
     pub exit_requested: bool,
     pub status_message: String,
+    pub ml_stats: Option<MlProcessingStats>,
+    pub ml_debug_visible: bool,
+    pub debug_console: Vec<String>,  // Store all debug output
+    pub debug_scroll_offset: usize,  // For scrolling through debug
     pub term_width: u16,
     pub term_height: u16,
     pub dark_mode: bool, // Dark mode toggle
@@ -104,6 +115,11 @@ pub struct App {
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
     pub is_selecting: bool,
+    // OCR support
+    #[cfg(feature = "ocr")]
+    pub ocr_layer: ocr::OcrLayer,
+    #[cfg(feature = "ocr")]
+    pub ocr_menu: ocr::OcrMenu,
 }
 
 impl App {
@@ -127,10 +143,14 @@ impl App {
             markdown_data: None,
             markdown_renderer: None,
             settings: AppSettings {
-                spatial_recognition_enabled: true,
+                // Vision mode is always enabled
             },
             exit_requested: false,
-            status_message: format!("Page {}/{}", starting_page, total_pages),
+            status_message: format!("Page {}/{} - Ctrl+O: Open | Ctrl+E: Extract | Tab: Switch Mode", starting_page, total_pages),
+            ml_stats: None,
+            ml_debug_visible: false,
+            debug_console: Vec::new(),
+            debug_scroll_offset: 0,
             term_width: width,
             term_height: height,
             dark_mode: true, // Default to dark mode
@@ -138,6 +158,10 @@ impl App {
             selection_start: None,
             selection_end: None,
             is_selecting: false,
+            #[cfg(feature = "ocr")]
+            ocr_layer: ocr::OcrLayer::new(),
+            #[cfg(feature = "ocr")]
+            ocr_menu: ocr::OcrMenu::new(),
         })
     }
     
@@ -172,12 +196,16 @@ impl App {
                 // Terminal cells are ~2:1 (height:width), so we scale height by 1.8x
                 (width * 14, (height * 14 * 18) / 10)  // 1.8x height for better aspect ratio
             }
+            DisplayMode::Debug => {
+                // Debug mode doesn't show PDF, but we need some values
+                (800, 600)
+            }
         };
         
         match pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, image_width, image_height) {
             Ok(image) => {
                 self.current_page_image = Some(image);
-                self.status_message = format!("Page {}/{} - Ctrl+E: Extract text", self.current_page + 1, self.total_pages);
+                self.status_message = format!("Page {}/{} - Ctrl+O: Open | Ctrl+E: Extract | Ctrl+R: OCR", self.current_page + 1, self.total_pages);
             }
             Err(e) => {
                 self.current_page_image = None;
@@ -199,23 +227,41 @@ impl App {
     pub async fn extract_current_page(&mut self) -> Result<()> {
         self.status_message = "Extracting content...".to_string();
         
+        // Clear debug console for new extraction
+        debug_capture::clear_debug_buffer();
+        self.debug_console.clear();
+        self.debug_console.push(format!("=== Extracting Page {} ===", self.current_page));
+        
         // Much larger dimensions to capture full table width
         let matrix_width = 400;  // Wide enough for tables
         let matrix_height = 200; // Tall enough for full content
         
-        // Extract text
-        self.status_message = if self.settings.spatial_recognition_enabled {
-            "Extracting content with spatial recognition...".to_string()
-        } else {
-            "Extracting content...".to_string()
-        };
-        
-        let matrix = content_extractor::extract_to_matrix(
+        // Use two-pass mode (PDFium + ML)
+        self.status_message = "Extracting content with PDFium + ML...".to_string();
+        let (matrix, ml_stats) = content_extractor::extract_to_matrix(
             &self.pdf_path,
             self.current_page,
             matrix_width,
             matrix_height,
         ).await?;
+        
+        // Store ML stats for status display
+        self.ml_stats = Some(ml_stats.clone());
+        
+        // Add extraction summary to debug console
+        self.debug_console.push(format!("Extraction Mode: Two-Pass (PDFium + ML)"));
+        self.debug_console.push(format!("ML Active: {}", ml_stats.ml_active));
+        self.debug_console.push(format!("Processing Method: {}", ml_stats.processing_method));
+        self.debug_console.push(format!("Entities Detected: {}", ml_stats.entities_detected));
+        self.debug_console.push(format!("Columns Detected: {}", ml_stats.columns_detected));
+        self.debug_console.push(format!("Matrix Size: {}x{}", matrix_width, matrix_height));
+        
+        // Sync debug messages from extraction process
+        let captured_debug = debug_capture::get_debug_messages();
+        if !captured_debug.is_empty() {
+            self.debug_console.push("--- Console Output ---".to_string());
+            self.debug_console.extend(captured_debug);
+        }
         
         // Create or update renderer
         let renderer_width = if matches!(self.display_mode, DisplayMode::PdfText | DisplayMode::PdfReader) {
@@ -243,23 +289,36 @@ impl App {
         self.selection_end = None;
         self.is_selecting = false;
         
-        // Extract markdown if spatial recognition is enabled
-        if self.settings.spatial_recognition_enabled {
-            let markdown = content_extractor::get_markdown_content(&self.pdf_path, self.current_page).await?;
-            
-            // Create or update markdown renderer
-            if self.markdown_renderer.is_none() {
-                self.markdown_renderer = Some(MarkdownRenderer::new());
-            }
-            
-            if let Some(renderer) = &mut self.markdown_renderer {
-                renderer.set_content(&markdown);
-            }
-            
-            self.markdown_data = Some(markdown);
+        // Extract markdown
+        let markdown = content_extractor::get_markdown_content(&self.pdf_path, self.current_page).await?;
+        
+        // Create or update markdown renderer
+        if self.markdown_renderer.is_none() {
+            self.markdown_renderer = Some(MarkdownRenderer::new());
         }
         
-        self.status_message = format!("Page {}/{} - Content extracted", self.current_page + 1, self.total_pages);
+        if let Some(renderer) = &mut self.markdown_renderer {
+            renderer.set_content(&markdown);
+        }
+        
+        self.markdown_data = Some(markdown);
+        
+        // Create enhanced status message with ML info
+        let base_status = format!("Page {}/{} - Content extracted | Ctrl+R: OCR", self.current_page + 1, self.total_pages);
+        self.status_message = if let Some(ref stats) = self.ml_stats {
+            if stats.ml_active {
+                format!("{} | 🧠 {} | {}s {}c", 
+                    base_status, 
+                    stats.processing_method,
+                    stats.superscripts_merged,
+                    stats.columns_detected
+                )
+            } else {
+                format!("{} | 📄 PDFium Raw", base_status)
+            }
+        } else {
+            base_status
+        };
         Ok(())
     }
     
@@ -272,7 +331,7 @@ impl App {
             self.edit_display = None; // Clear TEXT renderer
             self.markdown_renderer = None; // Clear READER renderer
             self.markdown_data = None;
-            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract text", self.current_page + 1, self.total_pages);
+            self.status_message = format!("Page {}/{} - Ctrl+O: Open | Ctrl+E: Extract | Ctrl+R: OCR", self.current_page + 1, self.total_pages);
         }
     }
     
@@ -285,20 +344,21 @@ impl App {
             self.edit_display = None; // Clear TEXT renderer
             self.markdown_renderer = None; // Clear READER renderer
             self.markdown_data = None;
-            self.status_message = format!("Page {}/{} - Press Ctrl+E to extract text", self.current_page + 1, self.total_pages);
+            self.status_message = format!("Page {}/{} - Ctrl+O: Open | Ctrl+E: Extract | Ctrl+R: OCR", self.current_page + 1, self.total_pages);
         }
     }
     
     pub fn toggle_mode(&mut self) {
         self.display_mode = match self.display_mode {
             DisplayMode::PdfText => {
-                if self.settings.spatial_recognition_enabled && self.markdown_data.is_some() {
+                if self.markdown_data.is_some() {
                     DisplayMode::PdfReader
                 } else {
-                    DisplayMode::PdfText  // Stay in text mode if no markdown
+                    DisplayMode::Debug  // Go to debug if no markdown
                 }
             }
-            DisplayMode::PdfReader => DisplayMode::PdfText,
+            DisplayMode::PdfReader => DisplayMode::Debug,
+            DisplayMode::Debug => DisplayMode::PdfText,
         };
         
         self.status_message = format!("Mode: {:?}", self.display_mode);
@@ -314,7 +374,8 @@ struct Layout {
 }
 
 /// Main entry point
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     
     // Get PDF file
@@ -342,14 +403,11 @@ fn main() -> Result<()> {
     // Setup terminal
     setup_terminal()?;
     
-    // Create tokio runtime
-    let runtime = tokio::runtime::Runtime::new()?;
-    
     // Initial load - just the PDF, not text extraction
-    runtime.block_on(app.load_pdf_page())?;
+    app.load_pdf_page().await?;
     
     // Run the app
-    let result = run_app(&mut app, &runtime);
+    let result = run_app(&mut app).await;
     
     // Always restore terminal
     restore_terminal()?;
@@ -399,7 +457,7 @@ fn restore_terminal() -> Result<()> {
 }
 
 /// Main application loop with SYNCHRONIZED RENDERING
-fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
+async fn run_app(app: &mut App) -> Result<()> {
     let mut stdout = io::stdout();
     
     loop {
@@ -426,11 +484,22 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
         
         // Draw UI chrome
         draw_headers(&mut stdout, &layout, app.display_mode)?;
+        
+        // Draw OCR menu if visible
+        #[cfg(feature = "ocr")]
+        {
+            if app.ocr_menu.visible {
+                app.ocr_menu.render(&mut stdout, app.term_height - 4, app.term_width)?;
+            }
+        }
+        
         draw_status_bar(&mut stdout, app, layout.status)?;
         
         // Draw main content based on mode
-        // PDF panel - where the pdf image displays
-        if let Some(left) = layout.left {
+        if app.display_mode == DisplayMode::Debug {
+            // Show debug console in full screen
+            draw_debug_console(&mut stdout, app, layout.main)?;
+        } else if let Some(left) = layout.left {
             // Use a dark gray for PDF panel in dark mode for better contrast with black PDFs
             let bg = if app.dark_mode { 
                 Color::Rgb { r: 30, g: 30, b: 30 }  // Dark gray instead of pure black
@@ -533,7 +602,7 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
             match event::read()? {
                 Event::Key(key) => {
                     // Use the keyboard module to handle input
-                    if keyboard::handle_input(app, key, runtime)? {
+                    if keyboard::handle_input(app, key).await? {
                         if app.exit_requested {
                             // Clear graphics before quitting
                             let _ = viuer_display::clear_graphics();
@@ -555,14 +624,26 @@ fn run_app(app: &mut App, runtime: &tokio::runtime::Runtime) -> Result<()> {
 }
 
 /// Calculate layout based on terminal size and display mode
-fn calculate_layout(width: u16, height: u16, _mode: DisplayMode) -> Layout {
-    // Always return split layout for PdfText and PdfReader
-    // Now accounts for title bar on line 0, headers on line 1, content starts at line 2
-    Layout {
-        main: Rect::new(0, 2, width, height - 4),
-        left: Some(Rect::new(0, 2, width/2, height - 4)),
-        right: Some(Rect::new(width/2, 2, width/2, height - 4)),
-        status: Rect::new(0, height - 2, width, 2),
+fn calculate_layout(width: u16, height: u16, mode: DisplayMode) -> Layout {
+    match mode {
+        DisplayMode::Debug => {
+            // Full screen for debug console
+            Layout {
+                main: Rect::new(0, 2, width, height - 4),
+                left: None,
+                right: None,
+                status: Rect::new(0, height - 2, width, 2),
+            }
+        }
+        _ => {
+            // Split layout for PdfText and PdfReader
+            Layout {
+                main: Rect::new(0, 2, width, height - 4),
+                left: Some(Rect::new(0, 2, width/2, height - 4)),
+                right: Some(Rect::new(width/2, 2, width/2, height - 4)),
+                status: Rect::new(0, height - 2, width, 2),
+            }
+        }
     }
 }
 
@@ -632,18 +713,7 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
     // Get terminal width for centering
     let (term_width, _) = terminal::size()?;
     
-    // Draw centered title "Chonker 7.35" at the top
-    let title = "🐹 Chonker 7.46";
-    let title_x = (term_width - title.len() as u16) / 2;
-    execute!(
-        stdout,
-        MoveTo(title_x, 0),
-        SetForegroundColor(ChonkerTheme::text_header()),
-        SetAttribute(Attribute::Bold),
-        Print(title),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
+    // No title display in main interface - version only shows in file picker
     
     // Draw panel headers on line 1
     match mode {
@@ -663,6 +733,9 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
                 draw_header_section(stdout, "READER", right.x, 1, right.width, ChonkerTheme::accent_options())?;
             }
         }
+        DisplayMode::Debug => {
+            draw_header_section(stdout, "DEBUG CONSOLE", 0, 1, term_width, ChonkerTheme::accent_load_file())?;
+        }
     }
     
     Ok(())
@@ -671,26 +744,93 @@ fn draw_headers(stdout: &mut io::Stdout, layout: &Layout, mode: DisplayMode) -> 
 /// Draw status bar
 fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
     let status = format!(
-        " {} | [Ctrl+O]pen [Ctrl+E]xtract [Tab]Toggle [Ctrl+Q]uit ",
+        " {} | [Ctrl+O]pen [Ctrl+E]xtract [Tab]Mode [Ctrl+Q]uit ",
         app.status_message
     );
     
-    // Draw both lines of status bar to ensure full coverage
-    for y_offset in 0..area.height {
-        let line_content = if y_offset == 0 {
-            format!("{:<width$}", status, width = area.width as usize)
-        } else {
-            " ".repeat(area.width as usize)
-        };
+    // Normal status display (single line)
+    let line_content = format!("{:<width$}", status, width = area.width as usize);
+    
+    execute!(
+        stdout,
+        MoveTo(area.x, area.y),
+        SetBackgroundColor(ChonkerTheme::bg_status()),
+        SetForegroundColor(ChonkerTheme::text_secondary()),
+        Print(line_content),
+        ResetColor
+    )?;
+    
+    Ok(())
+}
+
+/// Draw debug console in its own tab
+fn draw_debug_console(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()> {
+    if true {
+        // Use entire area for debug console
+        let debug_height = area.height; // Use full height
         
+        // Draw header
         execute!(
             stdout,
-            MoveTo(area.x, area.y + y_offset),
-            SetBackgroundColor(ChonkerTheme::bg_status()),
-            SetForegroundColor(ChonkerTheme::text_secondary()),
-            Print(line_content),
-            ResetColor
+            MoveTo(area.x, area.y),
+            SetBackgroundColor(Color::DarkGrey),
+            SetForegroundColor(Color::White),
+            SetAttribute(Attribute::Bold),
+            Print(format!(" 📋 DEBUG CONSOLE - [↑/↓] Scroll | [Cmd+A] Select All | [Cmd+C] Copy {:<width$}", 
+                "", width = (area.width as usize).saturating_sub(70))),
+            SetAttribute(Attribute::Reset)
         )?;
+        
+        // Show debug messages
+        let start_idx = app.debug_scroll_offset;
+        let visible_lines = (debug_height - 1) as usize;
+        
+        for i in 0..visible_lines {
+            let y = area.y + i as u16 + 1;
+            if y >= area.y + area.height {
+                break;
+            }
+            
+            execute!(stdout, MoveTo(area.x, y))?;
+            
+            let line_idx = start_idx + i;
+            if line_idx < app.debug_console.len() {
+                let line = &app.debug_console[line_idx];
+                // Color code based on content
+                let color = if line.contains("ERROR") || line.contains("❌") {
+                    Color::Red
+                } else if line.contains("WARNING") || line.contains("⚠️") {
+                    Color::Yellow
+                } else if line.contains("✅") || line.contains("SUCCESS") {
+                    Color::Green
+                } else if line.starts_with("===") {
+                    Color::Cyan
+                } else {
+                    Color::Grey
+                };
+                
+                execute!(
+                    stdout,
+                    SetBackgroundColor(Color::Black),
+                    SetForegroundColor(color),
+                    Print(format!("{:<width$}", 
+                        if line.len() > area.width as usize { 
+                            &line[..area.width as usize]
+                        } else { 
+                            line 
+                        }, 
+                        width = area.width as usize))
+                )?;
+            } else {
+                execute!(
+                    stdout,
+                    SetBackgroundColor(Color::Black),
+                    Print(" ".repeat(area.width as usize))
+                )?;
+            }
+        }
+        
+        execute!(stdout, ResetColor)?;
     }
     
     Ok(())
@@ -700,6 +840,34 @@ fn draw_status_bar(stdout: &mut io::Stdout, app: &App, area: Rect) -> Result<()>
 /// Handle mouse input for TEXT and READER modes
 fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Result<()> {
     use crossterm::event::{MouseEventKind, MouseButton};
+    
+    // Handle DEBUG mode scrolling
+    if app.display_mode == DisplayMode::Debug {
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                if app.debug_scroll_offset + 20 < app.debug_console.len() {
+                    app.debug_scroll_offset += 3;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if app.debug_scroll_offset > 0 {
+                    app.debug_scroll_offset = app.debug_scroll_offset.saturating_sub(3);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Click to select line in debug console
+                if mouse.row >= 3 && mouse.row < app.term_height - 2 {
+                    let clicked_line = app.debug_scroll_offset + (mouse.row - 3) as usize;
+                    if clicked_line < app.debug_console.len() {
+                        app.status_message = format!("Line {}: {}", clicked_line + 1, 
+                            app.debug_console[clicked_line].chars().take(80).collect::<String>());
+                    }
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
     
     // Handle READER mode scrolling
     if app.display_mode == DisplayMode::PdfReader && app.markdown_data.is_some() {
@@ -733,7 +901,7 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
         return Ok(());
     }
     
-    // Handle TEXT mode
+    // Handle TEXT mode - improved mouse tracking
     if app.display_mode != DisplayMode::PdfText || app.edit_data.is_none() {
         return Ok(());
     }
@@ -753,43 +921,89 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
             
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    // Start selection
+                    // Start selection - improved cursor alignment
                     let grid_x = (mouse.column - panel_x) as usize;
                     let grid_y = (mouse.row - panel_y) as usize;
                     
-                    if let Some(renderer) = &app.edit_display {
+                    if let Some(renderer) = &mut app.edit_display {
                         // Adjust for scroll offset
                         let (scroll_x, scroll_y) = renderer.get_scroll();
                         let actual_x = grid_x + scroll_x as usize;
                         let actual_y = grid_y + scroll_y as usize;
                         
-                        app.cursor = (actual_x, actual_y);
-                        app.selection_start = Some((actual_x, actual_y));
-                        app.selection_end = None;
-                        app.is_selecting = true;
+                        // Ensure cursor is within bounds of actual data
+                        if let Some(data) = &app.edit_data {
+                            let bounded_y = actual_y.min(data.len().saturating_sub(1));
+                            let bounded_x = if bounded_y < data.len() {
+                                actual_x.min(data[bounded_y].len())
+                            } else {
+                                0
+                            };
+                            
+                            app.cursor = (bounded_x, bounded_y);
+                            app.selection_start = Some((bounded_x, bounded_y));
+                            app.selection_end = None;
+                            app.is_selecting = true;
+                            
+                            // Auto-scroll to make cursor visible
+                            let (viewport_width, viewport_height) = renderer.get_viewport_size();
+                            if bounded_y < scroll_y as usize {
+                                renderer.scroll_to_y(bounded_y as u16);
+                            } else if bounded_y >= (scroll_y + viewport_height) as usize {
+                                renderer.scroll_to_y((bounded_y as u16).saturating_sub(viewport_height - 1));
+                            }
+                            if bounded_x < scroll_x as usize {
+                                renderer.scroll_to_x(bounded_x as u16);
+                            } else if bounded_x >= (scroll_x + viewport_width) as usize {
+                                renderer.scroll_to_x((bounded_x as u16).saturating_sub(viewport_width - 1));
+                            }
+                        }
                     }
                 }
                 MouseEventKind::Drag(MouseButton::Left) => {
-                    // Update selection end
+                    // Update selection end with improved tracking
                     if app.is_selecting {
-                        let grid_x = (mouse.column - panel_x) as usize;
-                        let grid_y = (mouse.row - panel_y) as usize;
+                        let grid_x = (mouse.column.saturating_sub(panel_x)) as usize;
+                        let grid_y = (mouse.row.saturating_sub(panel_y)) as usize;
                         
-                        if let Some(renderer) = &app.edit_display {
+                        if let Some(renderer) = &mut app.edit_display {
                             // Adjust for scroll offset
                             let (scroll_x, scroll_y) = renderer.get_scroll();
                             let actual_x = grid_x + scroll_x as usize;
                             let actual_y = grid_y + scroll_y as usize;
                             
-                            app.selection_end = Some((actual_x, actual_y));
+                            // Ensure selection end is within bounds
+                            if let Some(data) = &app.edit_data {
+                                let bounded_y = actual_y.min(data.len().saturating_sub(1));
+                                let bounded_x = if bounded_y < data.len() {
+                                    actual_x.min(data[bounded_y].len())
+                                } else {
+                                    0
+                                };
+                                
+                                app.selection_end = Some((bounded_x, bounded_y));
+                                app.cursor = (bounded_x, bounded_y);
+                                
+                                // Auto-scroll during drag if near edges
+                                if grid_y == 0 && scroll_y > 0 {
+                                    renderer.scroll_up(1);
+                                } else if grid_y >= panel_height as usize - 1 {
+                                    renderer.scroll_down(1);
+                                }
+                                if grid_x == 0 && scroll_x > 0 {
+                                    renderer.scroll_left(1);
+                                } else if grid_x >= panel_width as usize - 1 {
+                                    renderer.scroll_right(1);
+                                }
+                            }
                         }
                     }
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
                     // End selection
                     if app.is_selecting {
-                        let grid_x = (mouse.column - panel_x) as usize;
-                        let grid_y = (mouse.row - panel_y) as usize;
+                        let grid_x = (mouse.column.saturating_sub(panel_x)) as usize;
+                        let grid_y = (mouse.row.saturating_sub(panel_y)) as usize;
                         
                         if let Some(renderer) = &app.edit_display {
                             // Adjust for scroll offset
@@ -797,8 +1011,25 @@ fn handle_mouse_input(app: &mut App, mouse: MouseEvent, layout: &Layout) -> Resu
                             let actual_x = grid_x + scroll_x as usize;
                             let actual_y = grid_y + scroll_y as usize;
                             
-                            app.selection_end = Some((actual_x, actual_y));
-                            app.is_selecting = false;
+                            // Ensure selection end is within bounds
+                            if let Some(data) = &app.edit_data {
+                                let bounded_y = actual_y.min(data.len().saturating_sub(1));
+                                let bounded_x = if bounded_y < data.len() {
+                                    actual_x.min(data[bounded_y].len())
+                                } else {
+                                    0
+                                };
+                                
+                                app.selection_end = Some((bounded_x, bounded_y));
+                                app.cursor = (bounded_x, bounded_y);
+                                app.is_selecting = false;
+                                
+                                // If selection start and end are the same, clear selection
+                                if app.selection_start == app.selection_end {
+                                    app.selection_start = None;
+                                    app.selection_end = None;
+                                }
+                            }
                         }
                     }
                 }

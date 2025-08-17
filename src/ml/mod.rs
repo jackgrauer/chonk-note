@@ -5,6 +5,8 @@ pub mod layoutlm;
 pub mod coreml_bridge;
 pub mod tensor_utils;
 pub mod document_understanding;
+pub mod model_loader;
+pub mod inference;
 
 pub use layoutlm::LayoutLMv3Native;
 pub use document_understanding::{DocumentUnderstanding, EntityType, TableCell};
