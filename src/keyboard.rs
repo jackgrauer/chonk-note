@@ -46,23 +46,81 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.extract_current_page().await?;
         }
         
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => app.next_page(),
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => app.prev_page(),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.next_page();
+            if app.current_page_image.is_none() {
+                app.load_pdf_page().await?;
+            }
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.prev_page();
+            if app.current_page_image.is_none() {
+                app.load_pdf_page().await?;
+            }
+        }
         
-        // Arrow keys for cursor movement
-        KeyCode::Up if app.cursor.1 > 0 => app.cursor.1 -= 1,
-        KeyCode::Down => {
-            if let Some(data) = &app.edit_data {
-                if app.cursor.1 < data.len() - 1 {
-                    app.cursor.1 += 1;
+        // Arrow keys for cursor movement (with shift for selection)
+        KeyCode::Up => {
+            if app.cursor.1 > 0 {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    if app.selection_start.is_none() {
+                        app.selection_start = Some(app.cursor);
+                    }
+                    app.cursor.1 -= 1;
+                    app.selection_end = Some(app.cursor);
+                } else {
+                    app.cursor.1 -= 1;
+                    app.selection_start = None;
+                    app.selection_end = None;
                 }
             }
         }
-        KeyCode::Left if app.cursor.0 > 0 => app.cursor.0 -= 1,
+        KeyCode::Down => {
+            if let Some(data) = &app.edit_data {
+                if app.cursor.1 < data.len() - 1 {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        if app.selection_start.is_none() {
+                            app.selection_start = Some(app.cursor);
+                        }
+                        app.cursor.1 += 1;
+                        app.selection_end = Some(app.cursor);
+                    } else {
+                        app.cursor.1 += 1;
+                        app.selection_start = None;
+                        app.selection_end = None;
+                    }
+                }
+            }
+        }
+        KeyCode::Left => {
+            if app.cursor.0 > 0 {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    if app.selection_start.is_none() {
+                        app.selection_start = Some(app.cursor);
+                    }
+                    app.cursor.0 -= 1;
+                    app.selection_end = Some(app.cursor);
+                } else {
+                    app.cursor.0 -= 1;
+                    app.selection_start = None;
+                    app.selection_end = None;
+                }
+            }
+        }
         KeyCode::Right => {
             if let Some(data) = &app.edit_data {
                 if app.cursor.1 < data.len() && app.cursor.0 < data[app.cursor.1].len() {
-                    app.cursor.0 += 1;
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        if app.selection_start.is_none() {
+                            app.selection_start = Some(app.cursor);
+                        }
+                        app.cursor.0 += 1;
+                        app.selection_end = Some(app.cursor);
+                    } else {
+                        app.cursor.0 += 1;
+                        app.selection_start = None;
+                        app.selection_end = None;
+                    }
                 }
             }
         }

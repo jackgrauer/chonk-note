@@ -1,4 +1,4 @@
-// MINIMAL PDF TEXT EXTRACTION
+// SPATIALLY ACCURATE PDF TEXT EXTRACTION
 use anyhow::Result;
 use pdfium_render::prelude::*;
 use std::path::Path;
@@ -21,18 +21,43 @@ pub async fn extract_to_matrix(
     
     // Get all text from page
     let text_page = page.text()?;
-    let chars = text_page.chars();
     
-    // Map each character to grid position
+    // Get character positions for spatial mapping
+    let chars = text_page.chars();
+    let page_width = page.width().value;
+    let page_height = page.height().value;
+    
+    // Collect all characters with their positions
+    let mut char_positions = Vec::new();
     for char_info in chars.iter() {
         if let Ok(bounds) = char_info.loose_bounds() {
-            let ch = char_info.unicode_string().unwrap_or_default().chars().next().unwrap_or(' ');
+            if let Some(ch) = char_info.unicode_string() {
+                if let Some(first_char) = ch.chars().next() {
+                    let x = bounds.left().value;
+                    let y = bounds.top().value;
+                    char_positions.push((first_char, x, y));
+                }
+            }
+        }
+    }
+    
+    // Sort by y position (top to bottom), then x position (left to right)
+    char_positions.sort_by(|a, b| {
+        let y_cmp = a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal);
+        if y_cmp == std::cmp::Ordering::Equal {
+            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            y_cmp
+        }
+    });
+    
+    // Place characters on the grid with better spacing
+    for (ch, x, y) in char_positions {
+        if ch != ' ' && ch != '\n' && ch != '\r' {
+            let grid_x = ((x / page_width) * width as f32).round() as usize;
+            let grid_y = ((y / page_height) * height as f32).round() as usize;
             
-            // Map PDF coordinates to grid
-            let grid_x = ((bounds.left().value / page.width().value) * width as f32) as usize;
-            let grid_y = ((bounds.top().value / page.height().value) * height as f32) as usize;
-            
-            if grid_x < width && grid_y < height && ch != ' ' {
+            if grid_x < width && grid_y < height {
                 grid[grid_y][grid_x] = ch;
             }
         }

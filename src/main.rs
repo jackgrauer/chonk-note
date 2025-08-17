@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
         path
     } else {
         // Use file picker
-        println!("🐹 Launching Chonker7 file picker...");
+        println!("🐹 Launching Chonker file picker...");
         if let Some(path) = file_picker::pick_pdf_file()? {
             println!("Selected: {}", path.display());
             path
@@ -193,6 +193,7 @@ async fn run_app(app: &mut App) -> Result<()> {
     
     loop {
         let (term_width, term_height) = terminal::size()?;
+        let split_x = term_width / 2;
         
         // Check if terminal was resized
         if (term_width, term_height) != last_term_size {
@@ -221,9 +222,6 @@ async fn run_app(app: &mut App) -> Result<()> {
         if app.needs_redraw {
             execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
             
-            // Simple split view: left for image, right for text
-            let split_x = term_width / 2;
-            
             // Render PDF image on left
             if let Some(image) = &app.current_page_image {
                 let _ = viuer_display::display_pdf_image(
@@ -251,14 +249,36 @@ async fn run_app(app: &mut App) -> Result<()> {
         // Handle input
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
+                let old_cursor = app.cursor;
+                let old_selection = (app.selection_start, app.selection_end);
+                
                 if !keyboard::handle_input(app, key).await? {
                     break;
                 }
                 if app.exit_requested {
                     break;
                 }
-                // Most key events need a redraw
-                app.needs_redraw = true;
+                
+                // Only redraw if something visual changed
+                // Don't redraw for simple cursor movements or selections
+                let cursor_or_selection_changed = app.cursor != old_cursor || 
+                    (app.selection_start, app.selection_end) != old_selection;
+                
+                if cursor_or_selection_changed {
+                    // Only update the text area, not the whole screen
+                    if let Some(renderer) = &app.edit_display {
+                        renderer.render_with_cursor_and_selection(
+                            split_x, 0, term_width - split_x, term_height - 2,
+                            app.cursor,
+                            app.selection_start,
+                            app.selection_end
+                        )?;
+                        stdout.flush()?;
+                    }
+                } else {
+                    // For other changes, do full redraw
+                    app.needs_redraw = true;
+                }
             }
         }
     }
