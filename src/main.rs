@@ -272,7 +272,7 @@ fn render_status_bar(stdout: &mut io::Stdout, app: &App, width: u16, height: u16
     execute!(stdout, SetForegroundColor(ChonkerTheme::text_status_dark()))?;
     
     let status = format!(
-        " Page {}/{} | {} | Ctrl+O: Open | Ctrl+C/V: Copy/Paste | Ctrl+Q: Quit ",
+        " Page {}/{} | {} | Ctrl+O: Open | Ctrl+N/P: Page | Ctrl+C/V: Copy/Paste | Ctrl+Q: Quit ",
         app.current_page + 1,
         app.total_pages,
         if app.status_message.is_empty() { "Ready" } else { &app.status_message }

@@ -46,8 +46,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.extract_current_page().await?;
         }
         
-        KeyCode::Char('n') => app.next_page(),
-        KeyCode::Char('p') => app.prev_page(),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => app.next_page(),
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => app.prev_page(),
         
         // Arrow keys for cursor movement
         KeyCode::Up if app.cursor.1 > 0 => app.cursor.1 -= 1,
