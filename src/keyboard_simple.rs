@@ -38,10 +38,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.exit_requested = true;
         }
         
-        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.open_file_picker = true;
-        }
-        
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.extract_current_page().await?;
         }
@@ -85,8 +81,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 while data.len() <= app.cursor.1 {
                     data.push(vec![]);
                 }
-                let row_len = data[app.cursor.1].len();
-                data[app.cursor.1].insert(app.cursor.0.min(row_len), c);
+                data[app.cursor.1].insert(app.cursor.0.min(data[app.cursor.1].len()), c);
                 app.cursor.0 += 1;
                 if let Some(renderer) = &mut app.edit_display {
                     renderer.update_buffer(data);
@@ -138,8 +133,7 @@ fn paste_at_cursor(app: &mut App, text: &str) {
                     data.push(vec![]);
                 }
             } else {
-                let row_len = data[app.cursor.1].len();
-                data[app.cursor.1].insert(app.cursor.0.min(row_len), ch);
+                data[app.cursor.1].insert(app.cursor.0.min(data[app.cursor.1].len()), ch);
                 app.cursor.0 += 1;
             }
         }
@@ -152,13 +146,13 @@ fn paste_at_cursor(app: &mut App, text: &str) {
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
     use copypasta::{ClipboardContext, ClipboardProvider};
-    let mut ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
-    ctx.set_contents(text.to_owned()).map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
+    let mut ctx = ClipboardContext::new()?;
+    ctx.set_contents(text.to_owned())?;
     Ok(())
 }
 
 fn paste_from_clipboard() -> Result<String> {
     use copypasta::{ClipboardContext, ClipboardProvider};
-    let mut ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
-    ctx.get_contents().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
+    let mut ctx = ClipboardContext::new()?;
+    ctx.get_contents().map_err(Into::into)
 }

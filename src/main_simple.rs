@@ -4,7 +4,7 @@ use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyModifiers, EnableMouseCapture, DisableMouseCapture},
     execute,
-    style::{Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use std::{io::{self, Write}, path::PathBuf, time::Duration};
@@ -49,8 +49,6 @@ pub struct App {
     pub status_message: String,
     pub dark_mode: bool,
     pub exit_requested: bool,
-    pub needs_redraw: bool,
-    pub open_file_picker: bool,
 }
 
 impl App {
@@ -70,8 +68,6 @@ impl App {
             status_message: String::new(),
             dark_mode: true,
             exit_requested: false,
-            needs_redraw: true,
-            open_file_picker: false,
         })
     }
 
@@ -87,7 +83,7 @@ impl App {
         );
         
         if let Some(data) = &self.edit_data {
-            let mut renderer = EditPanelRenderer::new(200, 100);
+            let mut renderer = EditPanelRenderer::new();
             renderer.update_buffer(data);
             self.edit_display = Some(renderer);
         }
@@ -104,7 +100,7 @@ impl App {
             if let Some(renderer) = &mut self.edit_display {
                 renderer.update_buffer(data);
             } else {
-                let mut renderer = EditPanelRenderer::new(200, 100);
+                let mut renderer = EditPanelRenderer::new();
                 renderer.update_buffer(data);
                 self.edit_display = Some(renderer);
             }
@@ -123,7 +119,6 @@ impl App {
             self.cursor = (0, 0);
             self.selection_start = None;
             self.selection_end = None;
-            self.needs_redraw = true;
         }
     }
 
@@ -137,7 +132,6 @@ impl App {
             self.cursor = (0, 0);
             self.selection_start = None;
             self.selection_end = None;
-            self.needs_redraw = true;
         }
     }
 }
@@ -186,70 +180,42 @@ fn restore_terminal() -> Result<()> {
 
 async fn run_app(app: &mut App) -> Result<()> {
     let mut stdout = io::stdout();
-    let mut last_term_size = (0, 0);
-    
-    // Initial render
-    app.needs_redraw = true;
     
     loop {
+        // Clear and render
+        execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+        
         let (term_width, term_height) = terminal::size()?;
         
-        // Check if terminal was resized
-        if (term_width, term_height) != last_term_size {
-            app.needs_redraw = true;
-            last_term_size = (term_width, term_height);
+        // Simple split view: left for image, right for text
+        let split_x = term_width / 2;
+        
+        // Render PDF image on left
+        if let Some(image) = &app.current_page_image {
+            let _ = viuer_display::display_pdf_image(
+                image, 0, 0, split_x - 1, term_height - 2, app.dark_mode
+            );
         }
         
-        // Check if we need to open file picker
-        if app.open_file_picker {
-            app.open_file_picker = false;
-            restore_terminal()?;
-            
-            if let Some(new_path) = file_picker::pick_pdf_file()? {
-                app.pdf_path = new_path;
-                app.current_page = 0;
-                app.total_pages = content_extractor::get_page_count(&app.pdf_path)?;
-                app.load_pdf_page().await?;
-                app.needs_redraw = true;
-            }
-            
-            setup_terminal()?;
-            app.needs_redraw = true;
+        // Render text editor on right
+        if let Some(renderer) = &mut app.edit_display {
+            renderer.render(
+                &mut stdout,
+                split_x, 0, term_width - split_x, term_height - 2,
+                app.cursor,
+                app.selection_start,
+                app.selection_end,
+                app.dark_mode
+            )?;
         }
         
-        // Only redraw when necessary
-        if app.needs_redraw {
-            execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
-            
-            // Simple split view: left for image, right for text
-            let split_x = term_width / 2;
-            
-            // Render PDF image on left
-            if let Some(image) = &app.current_page_image {
-                let _ = viuer_display::display_pdf_image(
-                    image, 0, 0, split_x - 1, term_height - 2, app.dark_mode
-                );
-            }
-            
-            // Render text editor on right
-            if let Some(renderer) = &app.edit_display {
-                renderer.render_with_cursor_and_selection(
-                    split_x, 0, term_width - split_x, term_height - 2,
-                    app.cursor,
-                    app.selection_start,
-                    app.selection_end
-                )?;
-            }
-            
-            // Status bar
-            render_status_bar(&mut stdout, app, term_width, term_height)?;
-            
-            stdout.flush()?;
-            app.needs_redraw = false;
-        }
+        // Status bar
+        render_status_bar(&mut stdout, app, term_width, term_height)?;
+        
+        stdout.flush()?;
         
         // Handle input
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if !keyboard::handle_input(app, key).await? {
                     break;
@@ -257,8 +223,6 @@ async fn run_app(app: &mut App) -> Result<()> {
                 if app.exit_requested {
                     break;
                 }
-                // Most key events need a redraw
-                app.needs_redraw = true;
             }
         }
     }
@@ -272,15 +236,14 @@ fn render_status_bar(stdout: &mut io::Stdout, app: &App, width: u16, height: u16
     execute!(stdout, SetForegroundColor(ChonkerTheme::text_status_dark()))?;
     
     let status = format!(
-        " Page {}/{} | {} | Ctrl+O: Open | Ctrl+C/V: Copy/Paste | Ctrl+Q: Quit ",
+        " Page {}/{} | {} | Ctrl+C/V: Copy/Paste | Ctrl+Q: Quit ",
         app.current_page + 1,
         app.total_pages,
         if app.status_message.is_empty() { "Ready" } else { &app.status_message }
     );
     
-    let status_len = status.len();
     execute!(stdout, Print(status))?;
-    execute!(stdout, Print(" ".repeat((width as usize).saturating_sub(status_len))))?;
+    execute!(stdout, Print(" ".repeat((width as usize).saturating_sub(status.len()))))?;
     execute!(stdout, ResetColor)?;
     
     Ok(())

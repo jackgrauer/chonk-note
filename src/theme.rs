@@ -22,6 +22,7 @@ impl ChonkerTheme {
     pub fn text_secondary_dark() -> Color { Color::Rgb { r: 150, g: 152, b: 150 } }
     pub fn text_dim_dark() -> Color { Color::Rgb { r: 96, g: 99, b: 102 } }
     pub fn text_header_dark() -> Color { Color::Rgb { r: 255, g: 255, b: 255 } }
+    pub fn text_status_dark() -> Color { Color::Rgb { r: 197, g: 200, b: 198 } }
     
     // Functional colors (same for both modes)
     pub fn success() -> Color { Color::Rgb { r: 181, g: 189, b: 104 } }      // #B5BD68 - Green
