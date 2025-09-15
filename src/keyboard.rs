@@ -2,8 +2,25 @@
 use crate::{App, MOD_KEY};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::fs::OpenOptions;
+use std::io::Write;
+
+fn debug_log(message: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/chonker7_debug.log")
+    {
+        let _ = writeln!(file, "{}: {}", chrono::Utc::now().format("%H:%M:%S%.3f"), message);
+    }
+}
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+    // Debug: log only important events to reduce noise
+    if matches!(key.code, KeyCode::Char('t') | KeyCode::Char('e') | KeyCode::Char('m')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+        debug_log(&format!("Key event: {:?} with modifiers: {:?}", key.code, key.modifiers));
+    }
+
     // Cmd+C - Copy
     if key.code == KeyCode::Char('c') && key.modifiers.contains(MOD_KEY) {
         if let Some(text) = extract_selection_text(app) {
@@ -42,9 +59,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.open_file_picker = true;
         }
         
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.extract_current_page().await?;
-        }
         
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.next_page();
@@ -58,68 +72,109 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.load_pdf_page().await?;
             }
         }
+
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.refresh_extraction().await?;
+        }
+
+        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            debug_log("Ctrl+M pressed, switching extraction method...");
+            app.toggle_extraction_method().await?;
+        }
+
+        // Alternative: Use 't' for toggle (more reliable)
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            debug_log("Ctrl+T pressed, switching extraction method...");
+            app.toggle_extraction_method().await?;
+        }
         
         // Arrow keys for cursor movement (with shift for selection)
         KeyCode::Up => {
+            let speed = app.update_key_repeat(KeyCode::Up);
             if app.cursor.1 > 0 {
+                let move_amount = speed.min(app.cursor.1);
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     if app.selection_start.is_none() {
                         app.selection_start = Some(app.cursor);
                     }
-                    app.cursor.1 -= 1;
+                    app.cursor.1 -= move_amount;
                     app.selection_end = Some(app.cursor);
                 } else {
-                    app.cursor.1 -= 1;
+                    app.cursor.1 -= move_amount;
                     app.selection_start = None;
                     app.selection_end = None;
+                }
+                // Follow cursor with viewport
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                 }
             }
         }
         KeyCode::Down => {
+            let speed = app.update_key_repeat(KeyCode::Down);
             if let Some(data) = &app.edit_data {
                 if app.cursor.1 < data.len() - 1 {
+                    let max_move = (data.len() - 1) - app.cursor.1;
+                    let move_amount = speed.min(max_move);
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         if app.selection_start.is_none() {
                             app.selection_start = Some(app.cursor);
                         }
-                        app.cursor.1 += 1;
+                        app.cursor.1 += move_amount;
                         app.selection_end = Some(app.cursor);
                     } else {
-                        app.cursor.1 += 1;
+                        app.cursor.1 += move_amount;
                         app.selection_start = None;
                         app.selection_end = None;
+                    }
+                    // Follow cursor with viewport
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                     }
                 }
             }
         }
         KeyCode::Left => {
+            let speed = app.update_key_repeat(KeyCode::Left);
             if app.cursor.0 > 0 {
+                let move_amount = speed.min(app.cursor.0);
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     if app.selection_start.is_none() {
                         app.selection_start = Some(app.cursor);
                     }
-                    app.cursor.0 -= 1;
+                    app.cursor.0 -= move_amount;
                     app.selection_end = Some(app.cursor);
                 } else {
-                    app.cursor.0 -= 1;
+                    app.cursor.0 -= move_amount;
                     app.selection_start = None;
                     app.selection_end = None;
+                }
+                // Follow cursor with viewport
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                 }
             }
         }
         KeyCode::Right => {
+            let speed = app.update_key_repeat(KeyCode::Right);
             if let Some(data) = &app.edit_data {
                 if app.cursor.1 < data.len() && app.cursor.0 < data[app.cursor.1].len() {
+                    let max_move = data[app.cursor.1].len() - app.cursor.0;
+                    let move_amount = speed.min(max_move);
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         if app.selection_start.is_none() {
                             app.selection_start = Some(app.cursor);
                         }
-                        app.cursor.0 += 1;
+                        app.cursor.0 += move_amount;
                         app.selection_end = Some(app.cursor);
                     } else {
-                        app.cursor.0 += 1;
+                        app.cursor.0 += move_amount;
                         app.selection_start = None;
                         app.selection_end = None;
+                    }
+                    // Follow cursor with viewport
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                     }
                 }
             }
@@ -133,6 +188,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.cursor.0 -= 1;
                     if let Some(renderer) = &mut app.edit_display {
                         renderer.update_buffer(data);
+                        renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                     }
                 }
             }
@@ -148,6 +204,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.cursor.0 += 1;
                 if let Some(renderer) = &mut app.edit_display {
                     renderer.update_buffer(data);
+                    renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
                 }
             }
         }
@@ -204,6 +261,7 @@ fn paste_at_cursor(app: &mut App, text: &str) {
         
         if let Some(renderer) = &mut app.edit_display {
             renderer.update_buffer(data);
+            renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
         }
     }
 }

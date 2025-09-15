@@ -7,7 +7,7 @@ use crossterm::{
     style::{Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use std::{io::{self, Write}, path::PathBuf, time::Duration};
+use std::{io::{self, Write}, path::PathBuf, time::{Duration, Instant}};
 use image::DynamicImage;
 use clap::Parser;
 
@@ -26,6 +26,13 @@ use theme::ChonkerTheme;
 const MOD_KEY: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 const MOD_KEY: KeyModifiers = KeyModifiers::CONTROL;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExtractionMethod {
+    Segments,    // Current PDFium segments method
+    PdfAlto,     // PDFAlto-style word-by-word extraction
+    LeptessOCR,  // Leptess OCR extraction
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -51,6 +58,14 @@ pub struct App {
     pub exit_requested: bool,
     pub needs_redraw: bool,
     pub open_file_picker: bool,
+    // Cursor acceleration
+    pub last_key_time: Option<Instant>,
+    pub last_key_code: Option<crossterm::event::KeyCode>,
+    pub key_repeat_count: u32,
+    // Display mode
+    pub dual_pane_mode: bool,
+    // Extraction method
+    pub extraction_method: ExtractionMethod,
 }
 
 impl App {
@@ -72,6 +87,11 @@ impl App {
             exit_requested: false,
             needs_redraw: true,
             open_file_picker: false,
+            last_key_time: None,
+            last_key_code: None,
+            key_repeat_count: 0,
+            dual_pane_mode: true,
+            extraction_method: ExtractionMethod::Segments,
         })
     }
 
@@ -80,36 +100,44 @@ impl App {
         self.current_page_image = Some(
             pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, 800, 1000)?
         );
-        
-        // Extract text to grid
-        self.edit_data = Some(
-            content_extractor::extract_to_matrix(&self.pdf_path, self.current_page, 200, 100).await?
-        );
-        
-        if let Some(data) = &self.edit_data {
-            let mut renderer = EditPanelRenderer::new(200, 100);
-            renderer.update_buffer(data);
-            self.edit_display = Some(renderer);
-        }
-        
+
+        // Auto-extract text with current method
+        self.extract_current_page().await?;
+
         Ok(())
     }
 
     pub async fn extract_current_page(&mut self) -> Result<()> {
+        // Use current terminal size for dual pane extraction
+        let (term_width, term_height) = terminal::size().unwrap_or((120, 40));
+        let text_width = term_width / 2; // Always dual pane mode
+        let text_height = term_height.saturating_sub(2);
+
         self.edit_data = Some(
-            content_extractor::extract_to_matrix(&self.pdf_path, self.current_page, 200, 100).await?
+            content_extractor::extract_to_matrix_with_method(
+                &self.pdf_path,
+                self.current_page,
+                text_width.max(400) as usize,  // Minimum 400 columns
+                text_height.max(200) as usize, // Minimum 200 rows
+                self.extraction_method
+            ).await?
         );
-        
+
         if let Some(data) = &self.edit_data {
             if let Some(renderer) = &mut self.edit_display {
                 renderer.update_buffer(data);
             } else {
-                let mut renderer = EditPanelRenderer::new(200, 100);
+                let mut renderer = EditPanelRenderer::new(text_width, text_height);
                 renderer.update_buffer(data);
                 self.edit_display = Some(renderer);
             }
         }
-        self.status_message = "Text extracted".to_string();
+        let method_name = match self.extraction_method {
+            ExtractionMethod::Segments => "Segments",
+            ExtractionMethod::PdfAlto => "PDFAlto",
+            ExtractionMethod::LeptessOCR => "OCR",
+        };
+        self.status_message = format!("Extracted with {} method", method_name);
         Ok(())
     }
 
@@ -139,6 +167,66 @@ impl App {
             self.selection_end = None;
             self.needs_redraw = true;
         }
+    }
+
+    // Calculate movement speed based on key repeat
+    pub fn update_key_repeat(&mut self, key_code: crossterm::event::KeyCode) -> usize {
+        let now = Instant::now();
+
+        // Check if this is the same key as last time
+        if let (Some(last_time), Some(last_key)) = (self.last_key_time, self.last_key_code) {
+            let time_since_last = now.duration_since(last_time);
+
+            // If same key and within repeat threshold (200ms), increment count
+            if key_code == last_key && time_since_last < Duration::from_millis(200) {
+                self.key_repeat_count += 1;
+            } else {
+                self.key_repeat_count = 1;
+            }
+        } else {
+            self.key_repeat_count = 1;
+        }
+
+        self.last_key_time = Some(now);
+        self.last_key_code = Some(key_code);
+
+        // Calculate movement speed: 1 for first press, then accelerate
+        match self.key_repeat_count {
+            1..=3 => 1,           // Normal speed for first few presses
+            4..=8 => 3,           // 3x speed after holding briefly
+            9..=15 => 6,          // 6x speed for sustained holding
+            _ => 10,              // Max 10x speed for long holds
+        }
+    }
+
+    // Force re-extraction (always dual pane mode now)
+    pub async fn refresh_extraction(&mut self) -> Result<()> {
+        self.extract_current_page().await?;
+        self.needs_redraw = true;
+        Ok(())
+    }
+
+    // Toggle between extraction methods
+    pub async fn toggle_extraction_method(&mut self) -> Result<()> {
+        self.extraction_method = match self.extraction_method {
+            ExtractionMethod::Segments => ExtractionMethod::PdfAlto,
+            ExtractionMethod::PdfAlto => ExtractionMethod::LeptessOCR,
+            ExtractionMethod::LeptessOCR => ExtractionMethod::Segments,
+        };
+
+        // Re-extract with new method
+        self.extract_current_page().await?;
+        self.needs_redraw = true;
+
+        // Update status message
+        let method_name = match self.extraction_method {
+            ExtractionMethod::Segments => "Segments",
+            ExtractionMethod::PdfAlto => "PDFAlto",
+            ExtractionMethod::LeptessOCR => "OCR",
+        };
+        self.status_message = format!("Switched to {} extraction", method_name);
+
+        Ok(())
     }
 }
 
@@ -221,14 +309,14 @@ async fn run_app(app: &mut App) -> Result<()> {
         // Only redraw when necessary
         if app.needs_redraw {
             execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
-            
-            // Render PDF image on left
+
+            // Always dual pane mode: PDF on left, text editor on right
             if let Some(image) = &app.current_page_image {
                 let _ = viuer_display::display_pdf_image(
                     image, 0, 0, split_x - 1, term_height - 2, app.dark_mode
                 );
             }
-            
+
             // Render text editor on right
             if let Some(renderer) = &app.edit_display {
                 renderer.render_with_cursor_and_selection(
@@ -238,10 +326,10 @@ async fn run_app(app: &mut App) -> Result<()> {
                     app.selection_end
                 )?;
             }
-            
+
             // Status bar
             render_status_bar(&mut stdout, app, term_width, term_height)?;
-            
+
             stdout.flush()?;
             app.needs_redraw = false;
         }
@@ -291,10 +379,17 @@ fn render_status_bar(stdout: &mut io::Stdout, app: &App, width: u16, height: u16
     execute!(stdout, SetBackgroundColor(ChonkerTheme::bg_status_dark()))?;
     execute!(stdout, SetForegroundColor(ChonkerTheme::text_status_dark()))?;
     
+    let method_name = match app.extraction_method {
+        ExtractionMethod::Segments => "SEG",
+        ExtractionMethod::PdfAlto => "ALTO",
+        ExtractionMethod::LeptessOCR => "OCR",
+    };
+
     let status = format!(
-        " Page {}/{} | {} | Ctrl+O: Open | Ctrl+N/P: Page | Ctrl+C/V: Copy/Paste | Ctrl+Q: Quit ",
+        " Page {}/{} | Method: {} | {} | T:Switch-Method O:Open N/P:Page ↑↓←→:Move C/V:Copy/Paste Q:Quit ",
         app.current_page + 1,
         app.total_pages,
+        method_name,
         if app.status_message.is_empty() { "Ready" } else { &app.status_message }
     );
     

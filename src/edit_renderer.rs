@@ -80,6 +80,43 @@ impl EditPanelRenderer {
     pub fn scroll_to_y(&mut self, y: u16) {
         self.scroll_y = y;
     }
+
+    /// Automatically scroll viewport to follow cursor with padding
+    pub fn follow_cursor(&mut self, cursor_x: usize, cursor_y: usize, padding: u16) {
+        let cursor_x = cursor_x as u16;
+        let cursor_y = cursor_y as u16;
+
+        // Vertical scrolling
+        let visible_top = self.scroll_y;
+        let visible_bottom = self.scroll_y + self.viewport_height;
+
+        // If cursor is too close to top edge, scroll up
+        if cursor_y < visible_top + padding {
+            self.scroll_y = cursor_y.saturating_sub(padding);
+        }
+        // If cursor is too close to bottom edge, scroll down
+        else if cursor_y + padding >= visible_bottom {
+            let target_scroll = (cursor_y + padding).saturating_sub(self.viewport_height) + 1;
+            let max_scroll = self.buffer.len().saturating_sub(self.viewport_height as usize) as u16;
+            self.scroll_y = target_scroll.min(max_scroll);
+        }
+
+        // Horizontal scrolling
+        let visible_left = self.scroll_x;
+        let visible_right = self.scroll_x + self.viewport_width;
+
+        // If cursor is too close to left edge, scroll left
+        if cursor_x < visible_left + padding {
+            self.scroll_x = cursor_x.saturating_sub(padding);
+        }
+        // If cursor is too close to right edge, scroll right
+        else if cursor_x + padding >= visible_right {
+            let target_scroll = (cursor_x + padding).saturating_sub(self.viewport_width) + 1;
+            let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
+            let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
+            self.scroll_x = target_scroll.min(max_scroll);
+        }
+    }
     
     /// Efficiently render the text buffer to the terminal within bounds
     pub fn render(&self, start_x: u16, start_y: u16, max_width: u16, max_height: u16) -> io::Result<()> {
@@ -158,8 +195,8 @@ impl EditPanelRenderer {
                     if is_highlighted {
                         execute!(
                             stdout,
-                            SetBackgroundColor(Color::Yellow),
-                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::DarkBlue),
+                            SetForegroundColor(Color::White),
                             Print(row[x]),
                             ResetColor
                         )?;
