@@ -299,14 +299,44 @@ async fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, Hide, EnableMouseCapture)?;
+
+    // Kitty-specific banner override
+    if std::env::var("KITTY_WINDOW_ID").is_ok() ||
+       std::env::var("TERM_PROGRAM").unwrap_or_default().contains("kitty") {
+        // Use Kitty fullscreen mode to hide banner
+        execute!(io::stdout(),
+            Print("\x1b[?1049h"),  // Save screen and enter alternate buffer
+            Print("\x1b[2J"),      // Clear screen
+            Print("\x1b[H"),       // Move to top-left
+            Print("\x1b[?25l"),    // Hide cursor
+            Print("\x1b[?1000h"),  // Enable mouse tracking
+        )?;
+    } else {
+        // Standard terminal setup
+        execute!(io::stdout(), EnterAlternateScreen, Hide, EnableMouseCapture)?;
+    }
+
     Ok(())
 }
 
 fn restore_terminal() -> Result<()> {
     let _ = viuer_display::clear_graphics();
-    execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
-    execute!(io::stdout(), Show, LeaveAlternateScreen, DisableMouseCapture)?;
+
+    // Kitty-specific banner restoration
+    if std::env::var("KITTY_WINDOW_ID").is_ok() ||
+       std::env::var("TERM_PROGRAM").unwrap_or_default().contains("kitty") {
+        execute!(io::stdout(),
+            Print("\x1b[?1000l"),  // Disable mouse tracking
+            Print("\x1b[?25h"),    // Show cursor
+            Print("\x1b[2J"),      // Clear screen
+            Print("\x1b[H"),       // Move to top-left
+            Print("\x1b[?1049l"),  // Restore screen and exit alternate buffer
+        )?;
+    } else {
+        execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
+        execute!(io::stdout(), Show, LeaveAlternateScreen, DisableMouseCapture)?;
+    }
+
     disable_raw_mode()?;
     Ok(())
 }
