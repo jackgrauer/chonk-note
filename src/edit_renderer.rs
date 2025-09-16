@@ -278,7 +278,7 @@ impl EditPanelRenderer {
                 let end_col = (start_col + render_width as usize).min(row.len());
                 
                 for x in start_col..end_col {
-                    let is_cursor = cursor == (x, buffer_y);
+                    let is_cursor = cursor.1 == buffer_y && cursor.0 == x;
                     
                     // Check if position is in selection
                     let is_selected = if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_bounds {

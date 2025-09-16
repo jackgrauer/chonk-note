@@ -1,7 +1,7 @@
 // MINIMAL KEYBOARD HANDLING
 use crate::{App, MOD_KEY};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
@@ -73,22 +73,30 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         // Arrow keys for cursor movement (with shift for selection)
         KeyCode::Up => {
             let speed = app.update_key_repeat(KeyCode::Up);
-            if app.cursor.1 > 0 {
-                let move_amount = speed.min(app.cursor.1);
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    if app.selection_start.is_none() {
-                        app.selection_start = Some(app.cursor);
+            if let Some(data) = &app.edit_data {
+                if app.cursor.1 > 0 {
+                    let move_amount = speed.min(app.cursor.1);
+                    let new_y = app.cursor.1 - move_amount;
+
+                    // Clamp cursor X to new line length
+                    let new_line_len = if new_y < data.len() { data[new_y].len() } else { 0 };
+                    let new_x = app.cursor.0.min(new_line_len);
+
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        if app.selection_start.is_none() {
+                            app.selection_start = Some(app.cursor);
+                        }
+                        app.cursor = (new_x, new_y);
+                        app.selection_end = Some(app.cursor);
+                    } else {
+                        app.cursor = (new_x, new_y);
+                        app.selection_start = None;
+                        app.selection_end = None;
                     }
-                    app.cursor.1 -= move_amount;
-                    app.selection_end = Some(app.cursor);
-                } else {
-                    app.cursor.1 -= move_amount;
-                    app.selection_start = None;
-                    app.selection_end = None;
-                }
-                // Follow cursor with viewport
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
+                    // Follow cursor with viewport
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
+                    }
                 }
             }
         }
@@ -98,14 +106,20 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 if app.cursor.1 < data.len() - 1 {
                     let max_move = (data.len() - 1) - app.cursor.1;
                     let move_amount = speed.min(max_move);
+                    let new_y = app.cursor.1 + move_amount;
+
+                    // Clamp cursor X to new line length
+                    let new_line_len = if new_y < data.len() { data[new_y].len() } else { 0 };
+                    let new_x = app.cursor.0.min(new_line_len);
+
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         if app.selection_start.is_none() {
                             app.selection_start = Some(app.cursor);
                         }
-                        app.cursor.1 += move_amount;
+                        app.cursor = (new_x, new_y);
                         app.selection_end = Some(app.cursor);
                     } else {
-                        app.cursor.1 += move_amount;
+                        app.cursor = (new_x, new_y);
                         app.selection_start = None;
                         app.selection_end = None;
                     }
@@ -176,6 +190,39 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
         
+        KeyCode::Enter => {
+            // Enter creates new line in text editor
+            if let Some(data) = &mut app.edit_data {
+                while data.len() <= app.cursor.1 {
+                    data.push(vec![]);
+                }
+
+                // Split current line at cursor
+                let current_row = &mut data[app.cursor.1];
+                let remaining: Vec<char> = current_row.drain(app.cursor.0..).collect();
+
+                // Insert new line with remaining characters
+                data.insert(app.cursor.1 + 1, remaining);
+
+                // Move cursor to start of new line
+                app.cursor.1 += 1;
+                app.cursor.0 = 0;
+
+                // Ensure cursor is within valid bounds
+                if app.cursor.1 >= data.len() {
+                    app.cursor.1 = data.len().saturating_sub(1);
+                }
+                if app.cursor.1 < data.len() && app.cursor.0 > data[app.cursor.1].len() {
+                    app.cursor.0 = data[app.cursor.1].len();
+                }
+
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.update_buffer(data);
+                    renderer.follow_cursor(app.cursor.0, app.cursor.1, 3);
+                }
+            }
+        }
+
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let Some(data) = &mut app.edit_data {
                 while data.len() <= app.cursor.1 {
@@ -249,14 +296,28 @@ fn paste_at_cursor(app: &mut App, text: &str) {
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
-    use copypasta::{ClipboardContext, ClipboardProvider};
-    let mut ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
-    ctx.set_contents(text.to_owned()).map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
+    // KITTY-NATIVE: Direct pbcopy, no copypasta
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(text.as_bytes())?;
+    }
+
+    child.wait()?;
     Ok(())
 }
 
 fn paste_from_clipboard() -> Result<String> {
-    use copypasta::{ClipboardContext, ClipboardProvider};
-    let mut ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))?;
-    ctx.get_contents().map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
+    // KITTY-NATIVE: Direct pbpaste, no copypasta
+    let output = std::process::Command::new("pbpaste")
+        .output()?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(anyhow::anyhow!("pbpaste failed"))
+    }
 }
