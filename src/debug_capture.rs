@@ -7,18 +7,8 @@ lazy_static! {
 }
 
 /// Add a debug message to both stderr and the debug buffer
-pub fn debug_print(msg: String) {
-    // Print to console as usual
-    eprintln!("{}", msg);
-    
-    // Also store in buffer
-    if let Ok(mut buffer) = DEBUG_BUFFER.lock() {
-        buffer.push(msg);
-        // Keep only last 500 lines to avoid memory issues
-        if buffer.len() > 500 {
-            buffer.drain(0..100);
-        }
-    }
+pub fn debug_print(_msg: String) {
+    // Debug output completely disabled
 }
 
 /// Get a copy of all debug messages

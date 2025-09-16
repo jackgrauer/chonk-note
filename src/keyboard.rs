@@ -2,24 +2,8 @@
 use crate::{App, MOD_KEY};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::fs::OpenOptions;
-use std::io::Write;
-
-fn debug_log(message: &str) {
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/chonker7_debug.log")
-    {
-        let _ = writeln!(file, "{}: {}", chrono::Utc::now().format("%H:%M:%S%.3f"), message);
-    }
-}
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
-    // Debug: log only important events to reduce noise
-    if matches!(key.code, KeyCode::Char('t') | KeyCode::Char('e') | KeyCode::Char('m')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-        debug_log(&format!("Key event: {:?} with modifiers: {:?}", key.code, key.modifiers));
-    }
 
     // Cmd+C - Copy
     if key.code == KeyCode::Char('c') && key.modifiers.contains(MOD_KEY) {
@@ -78,13 +62,11 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            debug_log("Ctrl+M pressed, switching extraction method...");
             app.toggle_extraction_method().await?;
         }
 
         // Alternative: Use 't' for toggle (more reliable)
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            debug_log("Ctrl+T pressed, switching extraction method...");
             app.toggle_extraction_method().await?;
         }
         

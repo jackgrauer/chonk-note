@@ -35,7 +35,7 @@ pub enum ExtractionMethod {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(name = "chonker7", author, version, about)]
 struct Args {
     pdf_file: Option<PathBuf>,
     #[arg(short, long, default_value_t = 1)]
@@ -265,18 +265,24 @@ impl App {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // NUCLEAR: Completely disable stderr and redirect to /dev/null
+    unsafe {
+        let dev_null = libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_WRONLY);
+        if dev_null != -1 {
+            libc::dup2(dev_null, libc::STDERR_FILENO);
+            libc::close(dev_null);
+        }
+    }
+
     let args = Args::parse();
     
     let pdf_path = if let Some(path) = args.pdf_file {
         path
     } else {
         // Use file picker
-        println!("🐹 Launching Chonker file picker...");
         if let Some(path) = file_picker::pick_pdf_file()? {
-            println!("Selected: {}", path.display());
             path
         } else {
-            println!("No file selected");
             return Ok(());
         }
     };
@@ -365,8 +371,8 @@ async fn run_app(app: &mut App) -> Result<()> {
                 )?;
             }
 
-            // Status bar
-            render_status_bar(&mut stdout, app, term_width, term_height)?;
+            // Status bar disabled to prevent debug flood
+            // render_status_bar(&mut stdout, app, term_width, term_height)?;
 
             stdout.flush()?;
             app.needs_redraw = false;

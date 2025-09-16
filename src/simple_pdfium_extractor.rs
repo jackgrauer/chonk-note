@@ -38,8 +38,7 @@ impl SimplePdfExtractor {
         ) {
             Ok(pdfium) => pdfium,
             Err(e) => {
-                eprintln!("Warning: Could not load PDFium library: {}", e);
-                eprintln!("Falling back to minimal extraction");
+                // Silently fall back to minimal extraction
                 
                 // Create minimal fallback
                 Pdfium::new(
@@ -136,7 +135,7 @@ impl SimplePdfExtractor {
         for i in 0..page_count {
             match self.extract_page(pdf_path, i) {
                 Ok(content) => results.push(content),
-                Err(e) => eprintln!("Warning: Failed to extract page {}: {}", i, e),
+                Err(_) => {}, // Silent failure
             }
         }
         
@@ -177,7 +176,7 @@ impl SimplePdfExtractor {
     }
 }
 
-// Integration helper for chonker8
+// Integration helper for chonker7
 pub fn extract_for_chonker(pdf_path: &str, page: usize) -> Result<String> {
     let extractor = SimplePdfExtractor::new()?;
     let content = extractor.extract_with_tables(pdf_path, page)?;

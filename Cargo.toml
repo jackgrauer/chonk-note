@@ -1,6 +1,6 @@
 [package]
-name = "chonker8"
-version = "8.0.0"
+name = "chonker7"
+version = "7.0.0"
 edition = "2021"
 
 [dependencies]
@@ -30,6 +30,7 @@ copypasta = "0.10"
 lazy_static = "1.4"
 chrono = "0.4"
 unicode-width = "0.1"
+libc = "0.2"
 
 # OCR
 leptess = "0.14"

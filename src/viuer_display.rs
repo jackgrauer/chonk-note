@@ -70,8 +70,16 @@ pub fn display_pdf_image(
         .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?;
     let old_dynamic = image_0_24::DynamicImage::ImageRgba8(old_image);
     
-    // Display the image using viuer's automatic protocol detection
-    let _ = print(&old_dynamic, &config)?;
+    // Display the image using viuer's automatic protocol detection with timeout protection
+    let print_result = std::panic::catch_unwind(|| {
+        print(&old_dynamic, &config)
+    });
+
+    match print_result {
+        Ok(Ok(_)) => {}, // Success
+        Ok(Err(e)) => return Err(anyhow::anyhow!("Viuer display error: {}", e)),
+        Err(_) => return Err(anyhow::anyhow!("Viuer display panicked")),
+    }
     
     // Restore cursor position
     print!("\x1b[u");

@@ -20,7 +20,7 @@ pub fn pick_pdf_file() -> Result<Option<PathBuf>> {
     let pdf_files = find_pdf_files()?;
     
     if pdf_files.is_empty() {
-        println!("No PDF files found in /Users/jack/Documents");
+        // Silently return None if no PDFs found
         return Ok(None);
     }
     
