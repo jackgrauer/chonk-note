@@ -7,6 +7,7 @@ use crossterm::{
     style::{Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+// TODO: Replace above with kitty_native::KittyTerminal
 use std::{io::{self, Write}, path::PathBuf, time::{Duration, Instant}};
 use image::DynamicImage;
 use clap::Parser;
@@ -18,6 +19,7 @@ mod file_picker;
 mod theme;
 mod viuer_display;
 mod keyboard;
+mod kitty_native;
 
 use edit_renderer::EditPanelRenderer;
 use theme::ChonkerTheme;
@@ -112,7 +114,7 @@ impl App {
 
     pub async fn extract_current_page(&mut self) -> Result<()> {
         // Use current terminal size for dual pane extraction
-        let (term_width, term_height) = terminal::size().unwrap_or((120, 40));
+        let (term_width, term_height) = terminal::size().unwrap_or((120, 40));  // TODO: Replace with KittyTerminal::size()
         let text_width = term_width / 2; // Always dual pane mode
         let text_height = term_height.saturating_sub(2);
 
@@ -300,7 +302,8 @@ async fn main() -> Result<()> {
 fn setup_terminal() -> Result<()> {
     enable_raw_mode()?;
 
-    // Kitty-specific banner override
+    // TODO: Replace with KittyTerminal::enter_fullscreen()
+    // Hybrid: Kitty detection with crossterm fallback for now
     if std::env::var("KITTY_WINDOW_ID").is_ok() ||
        std::env::var("TERM_PROGRAM").unwrap_or_default().contains("kitty") {
         // Use Kitty fullscreen mode to hide banner
@@ -322,7 +325,8 @@ fn setup_terminal() -> Result<()> {
 fn restore_terminal() -> Result<()> {
     let _ = viuer_display::clear_graphics();
 
-    // Kitty-specific banner restoration
+    // TODO: Replace with KittyTerminal::exit_fullscreen()
+    // Hybrid: Kitty detection with crossterm fallback for now
     if std::env::var("KITTY_WINDOW_ID").is_ok() ||
        std::env::var("TERM_PROGRAM").unwrap_or_default().contains("kitty") {
         execute!(io::stdout(),
@@ -350,7 +354,7 @@ async fn run_app(app: &mut App) -> Result<()> {
     app.needs_redraw = true;
     
     loop {
-        let (term_width, term_height) = terminal::size()?;
+        let (term_width, term_height) = terminal::size()?;  // TODO: Replace with KittyTerminal::size()
         let split_x = term_width / 2;
         
         // Check if terminal was resized
@@ -381,7 +385,8 @@ async fn run_app(app: &mut App) -> Result<()> {
         let frame_time = now.duration_since(last_render_time);
 
         if app.needs_redraw && frame_time.as_millis() >= 50 { // Max 20 FPS - nuclear anti-flicker
-            // NUCLEAR: Never clear screen, just position and overwrite
+            // TODO: Replace with KittyTerminal::move_to(0, 0)
+            execute!(stdout, MoveTo(0, 0))?;
             last_render_time = now;
 
             // Always dual pane mode: PDF on left, text editor on right

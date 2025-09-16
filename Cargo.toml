@@ -10,7 +10,7 @@ clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "fs", "time"] }
 
 # Terminal UI
-crossterm = "0.28"
+crossterm = "0.28"  # TODO: Replace with Kitty-native
 
 # PDF
 pdfium-render = { version = "0.8", features = ["thread_safe"] }
@@ -21,10 +21,10 @@ viuer = { version = "0.7.1", default-features = false }
 image_0_24 = { package = "image", version = "0.24" }
 
 # File picker
-nucleo = "0.5"
+nucleo = "0.5"  # TODO: Replace with Kitty-native
 
 # FAST clipboard
-copypasta = "0.10"
+copypasta = "0.10"  # TODO: Replace with direct pbcopy/pbpaste
 
 # Basic utilities
 lazy_static = "1.4"
