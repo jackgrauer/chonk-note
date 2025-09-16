@@ -1,0 +1,46 @@
+# Alternative Cargo.toml for chonker8 without Ferrules ML dependencies
+# Save this as Cargo_no_ml.toml and use with: cargo build --manifest-path Cargo_no_ml.toml
+
+[package]
+name = "chonker8"
+version = "8.0.0"
+edition = "2021"
+
+[dependencies]
+# Core
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "fs"] }
+
+# Terminal UI
+crossterm = "0.28"
+
+# PDF - PDFium only, no ML
+pdfium-render = { version = "0.8.31", features = ["thread_safe", "sync"] }
+image = "0.25"
+
+# Image display in terminal
+viuer = { version = "0.7.1", default-features = false }
+image_0_24 = { package = "image", version = "0.24" }
+
+# File picker
+nucleo = "0.5"
+
+# Clipboard
+copypasta = "0.10"
+
+# Basic utilities
+lazy_static = "1.4"
+
+# Spatial analysis (pure Rust, no ML)
+ndarray = "0.16"
+kmeans = "1.1.0"
+
+[features]
+default = ["pdfium-extraction"]
+pdfium-extraction = []
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

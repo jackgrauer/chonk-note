@@ -32,8 +32,8 @@ pub struct EditPanelRenderer {
     buffer: Vec<Vec<char>>,      // The full extracted content
     viewport_width: u16,          // Display panel width (terminal constrained)
     viewport_height: u16,         // Display panel height (terminal constrained)
-    scroll_x: u16,               // Horizontal scroll offset
-    scroll_y: u16,               // Vertical scroll offset
+    pub scroll_x: u16,               // Horizontal scroll offset
+    pub scroll_y: u16,               // Vertical scroll offset
 }
 
 impl EditPanelRenderer {

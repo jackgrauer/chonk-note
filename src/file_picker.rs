@@ -28,13 +28,15 @@ pub fn pick_pdf_file() -> Result<Option<PathBuf>> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
-    
-    // Enable mouse events for trackpad scrolling
+
+    // Hide cursor and enable mouse events
+    execute!(stdout, crossterm::cursor::Hide)?;
     execute!(stdout, crossterm::event::EnableMouseCapture)?;
     
     let result = run_fuzzy_picker(&pdf_files);
     
     // Cleanup
+    execute!(stdout, crossterm::cursor::Show)?;
     execute!(stdout, crossterm::event::DisableMouseCapture)?;
     terminal::disable_raw_mode()?;
     execute!(stdout, LeaveAlternateScreen)?;
@@ -45,6 +47,9 @@ pub fn pick_pdf_file() -> Result<Option<PathBuf>> {
 /// Run the interactive fuzzy picker
 fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
     let mut stdout = io::stdout();
+
+    // Ensure cursor is hidden throughout the picker
+    execute!(stdout, crossterm::cursor::Hide)?;
     
     // Initialize nucleo
     let mut nucleo = Nucleo::<Arc<str>>::new(
@@ -67,13 +72,28 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
     let mut query = String::new();
     let mut selected_index = 0usize;
     let mut scroll_offset = 0usize;
-    
+    let mut needs_redraw = true; // Force initial render
+
     loop {
-        // Clear screen
-        execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
-        
+        // Get filtered results and calculate display parameters (always needed)
+        let snapshot = nucleo.snapshot();
+        let all_matches = snapshot.matched_items(..).collect::<Vec<_>>();
+        let (term_width, term_height) = terminal::size().unwrap_or((80, 24));
+        let max_path_width = (term_width as usize).saturating_sub(5);
+        let max_display_items = (term_height as usize).saturating_sub(9).min(15);
+
+        // Update scroll offset to keep selected item visible
+        if selected_index >= scroll_offset + max_display_items {
+            scroll_offset = selected_index.saturating_sub(max_display_items - 1);
+        } else if selected_index < scroll_offset {
+            scroll_offset = selected_index;
+        }
+
+        if needs_redraw {
+            // NUCLEAR: Absolutely no clearing, just overwrite everything in place
+            needs_redraw = false;
+
         // Draw uniform header matching other tabs
-        let (term_width, _) = terminal::size().unwrap_or((80, 24));
         
         // First header line with tab styling and version
         let header_text = format!("🐹 Chonker {}", env!("CARGO_PKG_VERSION"));
@@ -106,27 +126,10 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
             Print("  Search: "),
             SetForegroundColor(ChonkerTheme::text_primary()),
             Print(&query),
-            SetForegroundColor(ChonkerTheme::text_dim()),
-            Print("_"),
             ResetColor,
             Print("\n\n")
         )?;
         
-        // Get filtered results
-        let snapshot = nucleo.snapshot();
-        let all_matches = snapshot.matched_items(..).collect::<Vec<_>>();
-        
-        // Calculate display parameters
-        let (term_width, term_height) = terminal::size().unwrap_or((80, 24));
-        let max_path_width = (term_width as usize).saturating_sub(5);
-        let max_display_items = (term_height as usize).saturating_sub(9).min(15); // Reserve space for header/footer (now 9 lines)
-        
-        // Update scroll offset to keep selected item visible
-        if selected_index >= scroll_offset + max_display_items {
-            scroll_offset = selected_index.saturating_sub(max_display_items - 1);
-        } else if selected_index < scroll_offset {
-            scroll_offset = selected_index;
-        }
         
         // Get visible matches with scrolling
         let visible_matches = all_matches
@@ -237,11 +240,16 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
             Print("  ↑/↓ Navigate  •  Scroll/Trackpad  •  Enter Select  •  Esc Cancel  •  Type to search"),
             ResetColor
         )?;
-        
+
+
+        // Ensure cursor stays hidden and positioned off-screen
+        execute!(stdout, crossterm::cursor::Hide, crossterm::cursor::MoveTo(0, 0))?;
         stdout.flush()?;
+
+        } // End of needs_redraw block
         
-        // Handle input
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // Handle input with reduced polling
+        if event::poll(std::time::Duration::from_millis(33))? { // ~30 FPS
             match event::read()? {
                 Event::Key(key) => {
                     // Handle Ctrl commands first
@@ -272,29 +280,36 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
                             KeyCode::Up => {
                                 if selected_index > 0 {
                                     selected_index -= 1;
+                                    needs_redraw = true;
                                 }
                             }
                             KeyCode::Down => {
                                 if selected_index < all_matches.len().saturating_sub(1) {
                                     selected_index += 1;
+                                    needs_redraw = true;
                                 }
                             }
                             KeyCode::PageUp => {
                                 selected_index = selected_index.saturating_sub(max_display_items);
+                                needs_redraw = true;
                             }
                             KeyCode::PageDown => {
                                 selected_index = (selected_index + max_display_items).min(all_matches.len().saturating_sub(1));
+                                needs_redraw = true;
                             }
                             KeyCode::Home => {
                                 selected_index = 0;
+                                needs_redraw = true;
                             }
                             KeyCode::End => {
                                 selected_index = all_matches.len().saturating_sub(1);
+                                needs_redraw = true;
                             }
                             KeyCode::Backspace => {
                                 query.pop();
                                 selected_index = 0;
                                 scroll_offset = 0;
+                                needs_redraw = true;
                                 // Update nucleo pattern
                                 nucleo.pattern.reparse(
                                     0,
@@ -308,6 +323,7 @@ fn run_fuzzy_picker(files: &[String]) -> Result<Option<PathBuf>> {
                                 query.push(c);
                                 selected_index = 0;
                                 scroll_offset = 0;
+                                needs_redraw = true;
                                 // Update nucleo pattern
                                 nucleo.pattern.reparse(
                                     0,

@@ -4,14 +4,6 @@ use pdfium_render::prelude::*;
 use std::path::Path;
 use crate::ExtractionMethod;
 
-pub async fn extract_to_matrix(
-    pdf_path: &Path,
-    page_num: usize,
-    width: usize,
-    height: usize,
-) -> Result<Vec<Vec<char>>> {
-    extract_to_matrix_with_method(pdf_path, page_num, width, height, ExtractionMethod::Segments).await
-}
 
 pub async fn extract_to_matrix_with_method(
     pdf_path: &Path,
@@ -207,7 +199,7 @@ async fn extract_pdfalto_method(
     let segments = text_page.segments();
     let mut word_elements = Vec::new();
 
-    for (segment_idx, segment) in segments.iter().enumerate() {
+    for (_segment_idx, segment) in segments.iter().enumerate() {
         let segment_text = segment.text();
         let bounds = segment.bounds();
 
@@ -329,11 +321,14 @@ async fn extract_leptess_ocr_method(
     width: usize,
     height: usize,
 ) -> Result<Vec<Vec<char>>> {
-    // Fallback if Leptess fails - use simple text extraction
-    match try_leptess_ocr(pdf_path, page_num, width, height).await {
-        Ok(result) => Ok(result),
-        Err(_) => {
-            // Fallback to simple text extraction if OCR fails
+    // Add timeout to prevent hanging and reduce hiccup
+    let ocr_future = try_leptess_ocr(pdf_path, page_num, width, height);
+    let timeout_duration = std::time::Duration::from_secs(3); // 3 second timeout
+
+    match tokio::time::timeout(timeout_duration, ocr_future).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(_)) | Err(_) => {
+            // Fast fallback to simple text extraction if OCR fails or times out
             let pdfium = Pdfium::new(
                 Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))?
             );
@@ -374,31 +369,32 @@ async fn try_leptess_ocr(
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
 
-    // Optimal OCR resolution: 300 DPI minimum for clear text recognition
+    // Balanced OCR resolution: Good quality but faster processing
     let bitmap = page.render_with_config(
         &PdfRenderConfig::new()
-            .set_target_size(2400, 3200) // Higher resolution for better OCR (300+ DPI)
+            .set_target_size(1200, 1600) // Reduced resolution for speed while maintaining quality
             .rotate_if_landscape(PdfPageRenderRotation::None, false)
     )?;
 
     let image = bitmap.as_image();
 
-    // Convert to grayscale for better OCR (research recommendation)
-    let gray_image = image.to_luma8();
+    // Convert to RGB8 format that Leptess can handle reliably
+    let rgb_image = image.to_rgb8();
 
     // Initialize Tesseract with optimal settings
     let mut leptess = LepTess::new(None, "eng")?;
 
-    // OCR optimization settings based on research
-    leptess.set_variable(Variable::TesseditPagesegMode, "3")?; // PSM 3: Fully auto page segmentation (better than PSM 1)
+    // Optimized OCR settings for speed and reliability
+    leptess.set_variable(Variable::TesseditPagesegMode, "6")?; // PSM 6: Single uniform block (faster)
     leptess.set_variable(Variable::TesseditOcrEngineMode, "1")?; // Neural nets LSTM only
-    leptess.set_variable(Variable::TesseditCharWhitelist, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?()-\"'[]{}/@#$%^&*+=_|\\`~<>")?;
 
-    // Quality improvements
+    // Speed optimizations
     leptess.set_variable(Variable::TesseditWriteImages, "0")?; // Don't write debug images
 
-    // Set the grayscale image for OCR (better than RGB)
-    leptess.set_image_from_mem(&gray_image)?;
+    // Set the RGB image for OCR with error handling
+    if let Err(e) = leptess.set_image_from_mem(&rgb_image) {
+        return Err(anyhow::anyhow!("OCR image format error: {}", e));
+    }
 
     // Get OCR text
     let ocr_text = leptess.get_utf8_text()?;
@@ -452,10 +448,6 @@ async fn try_leptess_ocr(
     Ok(grid)
 }
 
-pub async fn extract_with_ml(_pdf_path: &Path, _page_num: usize, width: usize, height: usize) -> Result<Vec<Vec<char>>> {
-    // ML removed - just return empty grid
-    Ok(vec![vec![' '; width]; height])
-}
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
     let pdfium = Pdfium::new(

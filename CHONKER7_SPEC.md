@@ -1,5 +1,16 @@
 # Chonker7 v7.64.0 - Terminal PDF Viewer/Editor Specification
 
+## ⚠️ CRITICAL ARCHITECTURAL CLARIFICATION
+
+**Chonker7 uses PURE PDFium for PDF processing, NOT Ferrules.**
+
+Despite the presence of `/ferrules` directory in the codebase:
+- All PDF text extraction uses `pdfium-render` v0.8 directly
+- The ferrules directory is **dormant/reference code only**
+- No imports from ferrules in any active source files
+- Ships with `libpdfium.dylib` in `/lib/` for direct PDFium access
+- ML features mentioned below are **stubbed/removed** in current implementation
+
 ## Core Purpose
 A terminal-based PDF viewer/editor that extracts text from PDFs and displays it in an editable character grid, supporting both text editing and markdown rendering modes.
 
@@ -29,19 +40,19 @@ PDF File → PDFium Extraction → Character Grid (width×height) → Display
 ```
 
 ### Key Modules
-- `content_extractor.rs` - Main PDF text extraction using PDFium
-- `two_pass.rs` - Two-pass architecture with caching
+- `content_extractor.rs` - Main PDF text extraction using **pure PDFium** (NOT ferrules)
+- `simple_pdfium_extractor.rs` - Alternative PDFium extractor with basic table detection
 - `edit_renderer.rs` - Text editing UI with cursor, selection, clipboard
-- `markdown_renderer.rs` - Markdown formatting for reader mode
-- `pdf_renderer.rs` - PDF page rendering to images
+- `pdf_renderer.rs` - PDF page rendering to images via PDFium
 - `viuer_display.rs` - Terminal image display (fallback when text fails)
+- `two_pass.rs` - **REMOVED** (was for ML caching)
+- `markdown_renderer.rs` - **REMOVED** in current version
 
-### ML Features (Optional)
-- `ml/` - LayoutLM v3 for document understanding
-  - Entity recognition (titles, headers, paragraphs)
-  - Table structure detection
-  - Layout region classification
-- `ocr/` - OCR support for scanned PDFs (ocrs/rten)
+### ML Features (REMOVED/STUBBED)
+- `ml/` - **NOT PRESENT** - No ML models in use
+- `ocr/` - **NOT ACTIVE** - No OCR functionality
+- `/ferrules` directory - **DORMANT** - Not imported or used
+- All ML-related functions return empty grids or stub responses
 
 ## Text Extraction Strategy
 
@@ -73,11 +84,12 @@ PDF File → PDFium Extraction → Character Grid (width×height) → Display
 - `euclid` - 2D geometry calculations
 - `ordered-float` - Float ordering for spatial sorting
 
-### ML/OCR (Optional)
-- `candle-*` - Neural network inference
-- `tokenizers` - Text tokenization for ML models
-- `ocrs` - Pure Rust OCR engine
-- `rten` - Neural network runtime for OCR
+### ML/OCR (NOT USED)
+- ~~`candle-*`~~ - Not in dependencies
+- ~~`tokenizers`~~ - Not in dependencies  
+- ~~`ocrs`~~ - Not in dependencies
+- ~~`rten`~~ - Not in dependencies
+- ~~`ort`~~ - Not needed (avoids v1→v2 breaking changes)
 
 ### Utilities
 - `nucleo` - Fuzzy file finder
@@ -88,14 +100,26 @@ PDF File → PDFium Extraction → Character Grid (width×height) → Display
 1. Text extraction produces garbled/incorrect output
 2. Clipboard commands don't work properly
 3. Selection/cursor positioning is broken
-4. Performance degradation with ML features
+4. ~~Performance degradation with ML features~~ - RESOLVED by removing ML
 5. Screen jittering during updates
 
+## PDFium vs Ferrules Trade-offs
+
+| Aspect | Current (PDFium) | Ferrules (if integrated) |
+|--------|------------------|-------------------------|
+| Startup | <100ms | 2-5 seconds (model load) |
+| Memory | ~50MB | 500MB+ |
+| Accuracy | Basic spatial | Advanced semantic |
+| Tables | No detection | ML-powered detection |
+| Dependencies | Just libpdfium.dylib | ONNX runtime + models |
+| Maintenance | Simple | Complex (ort version issues) |
+
 ## Key Design Decisions
-1. **No Ratatui** - Direct crossterm to avoid screen tearing
-2. **Character Grid** - Fixed-size grid (typically 200×60) for spatial layout
-3. **Two-Pass Caching** - Expensive ML operations cached between renders
-4. **Spatial Preservation** - Maintains PDF layout in terminal grid
+1. **Pure PDFium over Ferrules** - Chose simplicity/speed over ML accuracy
+2. **No Ratatui** - Direct crossterm to avoid screen tearing
+3. **Character Grid** - Fixed-size grid (typically 200×100) for spatial layout
+4. **No ML/Caching** - Removed two-pass system, instant page loads
+5. **Spatial Preservation** - Direct coordinate mapping from PDF to grid
 
 ## File Structure
 ```

@@ -66,6 +66,8 @@ pub struct App {
     pub dual_pane_mode: bool,
     // Extraction method
     pub extraction_method: ExtractionMethod,
+    // Viewport tracking for flicker prevention
+    pub last_viewport_scroll: (u16, u16),
 }
 
 impl App {
@@ -92,6 +94,7 @@ impl App {
             key_repeat_count: 0,
             dual_pane_mode: true,
             extraction_method: ExtractionMethod::Segments,
+            last_viewport_scroll: (0, 0),
         })
     }
 
@@ -214,16 +217,46 @@ impl App {
             ExtractionMethod::LeptessOCR => ExtractionMethod::Segments,
         };
 
-        // Re-extract with new method
-        self.extract_current_page().await?;
-        self.needs_redraw = true;
-
-        // Update status message
+        // Show immediate feedback before processing
         let method_name = match self.extraction_method {
             ExtractionMethod::Segments => "Segments",
             ExtractionMethod::PdfAlto => "PDFAlto",
             ExtractionMethod::LeptessOCR => "OCR",
         };
+
+        // Re-extract with new method
+        if self.extraction_method == ExtractionMethod::LeptessOCR {
+            // NUCLEAR: For OCR, disable redraws completely during processing
+            self.status_message = "Processing OCR...".to_string();
+
+            // Process OCR in background without updating display
+            let ocr_result = content_extractor::extract_to_matrix_with_method(
+                &self.pdf_path,
+                self.current_page,
+                400, // Fixed size for OCR
+                200,
+                self.extraction_method
+            ).await;
+
+            // Only update if OCR succeeded, otherwise keep current text
+            if let Ok(data) = ocr_result {
+                self.edit_data = Some(data);
+                if let Some(edit_data) = &self.edit_data {
+                    if let Some(renderer) = &mut self.edit_display {
+                        renderer.update_buffer(edit_data);
+                    }
+                }
+            }
+
+            self.status_message = "OCR complete".to_string();
+        } else {
+            // For other methods, extract normally
+            self.extract_current_page().await?;
+        }
+
+        self.needs_redraw = true;
+
+        // Update final status message
         self.status_message = format!("Switched to {} extraction", method_name);
 
         Ok(())
@@ -275,7 +308,8 @@ fn restore_terminal() -> Result<()> {
 async fn run_app(app: &mut App) -> Result<()> {
     let mut stdout = io::stdout();
     let mut last_term_size = (0, 0);
-    
+    let mut last_render_time = std::time::Instant::now();
+
     // Initial render
     app.needs_redraw = true;
     
@@ -306,9 +340,13 @@ async fn run_app(app: &mut App) -> Result<()> {
             app.needs_redraw = true;
         }
         
-        // Only redraw when necessary
-        if app.needs_redraw {
-            execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+        // NUCLEAR ANTI-FLICKER: Only redraw when absolutely necessary
+        let now = std::time::Instant::now();
+        let frame_time = now.duration_since(last_render_time);
+
+        if app.needs_redraw && frame_time.as_millis() >= 50 { // Max 20 FPS - nuclear anti-flicker
+            // NUCLEAR: Never clear screen, just position and overwrite
+            last_render_time = now;
 
             // Always dual pane mode: PDF on left, text editor on right
             if let Some(image) = &app.current_page_image {
@@ -334,8 +372,8 @@ async fn run_app(app: &mut App) -> Result<()> {
             app.needs_redraw = false;
         }
         
-        // Handle input
-        if event::poll(Duration::from_millis(50))? {
+        // Handle input with reduced polling to prevent flickering
+        if event::poll(Duration::from_millis(16))? { // ~60 FPS max
             if let Event::Key(key) = event::read()? {
                 let old_cursor = app.cursor;
                 let old_selection = (app.selection_start, app.selection_end);
@@ -347,24 +385,24 @@ async fn run_app(app: &mut App) -> Result<()> {
                     break;
                 }
                 
-                // Only redraw if something visual changed
-                // Don't redraw for simple cursor movements or selections
-                let cursor_or_selection_changed = app.cursor != old_cursor || 
-                    (app.selection_start, app.selection_end) != old_selection;
-                
-                if cursor_or_selection_changed {
-                    // Only update the text area, not the whole screen
-                    if let Some(renderer) = &app.edit_display {
-                        renderer.render_with_cursor_and_selection(
-                            split_x, 0, term_width - split_x, term_height - 2,
-                            app.cursor,
-                            app.selection_start,
-                            app.selection_end
-                        )?;
-                        stdout.flush()?;
-                    }
+                // Check if viewport has scrolled by comparing scroll positions
+                let current_viewport_scroll = if let Some(renderer) = &app.edit_display {
+                    (renderer.scroll_x, renderer.scroll_y)
                 } else {
-                    // For other changes, do full redraw
+                    (0, 0)
+                };
+
+                let viewport_scrolled = current_viewport_scroll != app.last_viewport_scroll;
+                let cursor_moved = app.cursor != old_cursor;
+                let selection_changed = (app.selection_start, app.selection_end) != old_selection;
+
+                if viewport_scrolled {
+                    // Viewport scrolled - need full redraw to prevent flicker
+                    app.needs_redraw = true;
+                    app.last_viewport_scroll = current_viewport_scroll;
+                } else if cursor_moved || selection_changed {
+                    // NUCLEAR: Skip partial updates, they cause flicker
+                    // Just mark for full redraw but throttled
                     app.needs_redraw = true;
                 }
             }

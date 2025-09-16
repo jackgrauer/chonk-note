@@ -1,10 +1,12 @@
 # Chonker7
 
-A terminal PDF viewer that combines **fancy-cat** inspired terminal display with **Ferrules** AI-powered text extraction into a spatial text matrix.
+⚠️ **IMPORTANT ARCHITECTURAL NOTE**: Despite the presence of a `/ferrules` directory, Chonker7 does **NOT** use Ferrules for PDF processing. It uses **pure PDFium** directly via `pdfium-render` crate for all text extraction. The Ferrules directory is dormant/reference code only.
+
+A terminal PDF viewer that combines **fancy-cat** inspired terminal display with **direct PDFium** text extraction into a spatial text matrix.
 
 ## ✨ Features
 
-- 🤖 **AI-Powered Text Extraction** - Uses Ferrules for intelligent document parsing
+- 📄 **Direct PDFium Text Extraction** - Pure PDFium without ML overhead (NOT Ferrules)
 - 📊 **Text Matrix Display** - Preserves spatial layout of extracted text
 - 🖼️ **Split View** - Side-by-side PDF image and EDIT panel
 - ⚡ **Fast Navigation** - Quick page switching with keyboard shortcuts
@@ -13,9 +15,9 @@ A terminal PDF viewer that combines **fancy-cat** inspired terminal display with
 
 ## Concept
 
-Chonker7 bridges the gap between visual PDF display and intelligent text extraction by:
+Chonker7 bridges the gap between visual PDF display and text extraction by:
 1. Using fancy-cat's approach for PDF image display in terminal
-2. Leveraging ferrules for AI-powered text extraction
+2. **Using direct PDFium bindings** for lightweight text extraction (no Ferrules/ML)
 3. Presenting extracted text in a preserved spatial matrix layout
 
 ## Architecture
@@ -84,19 +86,36 @@ chonker7 document.pdf -m edit
 
 ## 🎯 Why Chonker7?
 
-- **Simplicity**: Pure Rust implementation, easy to build and extend
-- **Intelligence**: Ferrules AI understands document structure semantically
+- **Simplicity**: Pure PDFium implementation without ML complexity
+- **Lightweight**: No ONNX runtime, no model loading, instant startup
 - **Terminal-First**: Designed for terminal workflows
 - **Spatial Preservation**: Text matrix maintains document layout
-- **Fast**: Instant page navigation and mode switching
+- **Fast**: No ML inference overhead = instant page navigation
+
+## 📋 PDFium vs Ferrules Decision
+
+| Aspect | Chonker7 (PDFium) | Ferrules |
+|--------|-------------------|----------|
+| PDF Library | Direct PDFium bindings | PDFium + ML wrapper |
+| ML/Layout Detection | None | LayoutLM v3, YOLO |
+| Dependencies | Minimal | Heavy (ort, candle) |
+| Startup Time | Instant | Model loading delay |
+| Memory Usage | ~50MB | ~500MB+ |
+| Text Accuracy | Basic | Advanced with entity recognition |
+| Table Detection | None | ML-powered |
+
+**Why PDFium only?** Chonker7 prioritizes speed and simplicity for terminal editing over advanced document understanding.
 
 ## 🛠️ Technical Details
 
 - **Language**: Rust
-- **PDF Extraction**: Ferrules (AI-powered document parser)
-- **Terminal UI**: Ratatui + Crossterm
-- **Image Display**: Kitty graphics protocol support (planned)
-- **Text Layout**: Custom matrix renderer preserving spatial relationships
+- **PDF Extraction**: Pure PDFium via `pdfium-render` v0.8 (NOT Ferrules)
+  - Ships with `libpdfium.dylib` in `/lib/` directory
+  - No ML/AI models, no ONNX runtime dependencies
+  - Direct character-to-grid spatial mapping
+- **Terminal UI**: Crossterm only (no Ratatui to avoid tearing)
+- **Image Display**: Viuer for fallback display
+- **Text Layout**: Custom 200×100 character grid preserving spatial relationships
 
 ## 📝 License
 

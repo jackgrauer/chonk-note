@@ -3,14 +3,6 @@ use image::DynamicImage;
 use pdfium_render::prelude::*;
 use std::path::Path;
 
-/// Get a PDFium instance for use across the application
-pub fn get_pdfium_instance() -> Pdfium {
-    Pdfium::new(
-        Pdfium::bind_to_library(
-            Pdfium::pdfium_platform_library_name_at_path("./lib/")
-        ).expect("Failed to bind to PDFium library")
-    )
-}
 
 /// Render a PDF page to an image
 pub fn render_pdf_page(pdf_path: &Path, page_num: usize, width: u32, height: u32) -> Result<DynamicImage> {
@@ -51,14 +43,3 @@ pub fn render_pdf_page(pdf_path: &Path, page_num: usize, width: u32, height: u32
     Ok(image)
 }
 
-/// Get the total number of pages in a PDF
-pub fn get_pdf_page_count(pdf_path: &Path) -> Result<usize> {
-    let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(
-            Pdfium::pdfium_platform_library_name_at_path("./lib/")
-        )?
-    );
-    
-    let document = pdfium.load_pdf_from_file(pdf_path, None)?;
-    Ok(document.pages().len() as usize)
-}
