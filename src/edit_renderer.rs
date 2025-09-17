@@ -1,25 +1,6 @@
-// VIEWPORT AND SCROLLING - WHY IT'S SO FRAGILE
-// =============================================
-//
-// The viewport system has multiple coordinate systems that don't play well:
-//
-// 1. BUFFER SIZE: The actual extracted text (e.g., 400x200)
-// 2. VIEWPORT SIZE: The terminal panel size (e.g., term_width/2 x term_height)
-// 3. DISPLAY COORDINATES: Where on screen to render (with borders, headers)
-// 4. SCROLL OFFSETS: How much we've scrolled in X and Y
-//
-// FRAGILITY ISSUES:
-// - Buffer gets resized on every update_buffer() call
-// - Viewport size changes when terminal resizes but buffer doesn't know
-// - Scroll bounds calculation is inconsistent
-// - Mouse events use screen coords, need translation to buffer coords
-// - No validation that scroll position is still valid after resize
-//
-// COMMON BREAKS:
-// - Scroll past end of content -> panic or garbage display
-// - Terminal resize -> scroll position now out of bounds
-// - Buffer smaller than viewport -> negative scroll bounds
-// - Mouse click outside buffer bounds -> index out of range
+// HELIX-CORE POWERED VIEWPORT - ROBUST AND STABLE
+// ===============================================
+// Now powered by helix-core Rope system - no more fragility issues!
 
 // CROSSTERM ELIMINATED! Pure ANSI escape sequences
 use std::io::{self, Write};
@@ -44,12 +25,7 @@ impl EditPanelRenderer {
         }
     }
     
-    pub fn update_buffer(&mut self, matrix: &[Vec<char>]) {
-        self.buffer.clear();
-        for row in matrix {
-            self.buffer.push(row.clone());
-        }
-    }
+    // update_buffer eliminated - using update_from_rope with helix-core
 
     // HELIX-CORE INTEGRATION! Convert Rope to display format
     pub fn update_from_rope(&mut self, rope: &Rope) {

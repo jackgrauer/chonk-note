@@ -10,7 +10,7 @@ use clap::Parser;
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{
     Rope, Selection, Transaction,
-    history::History,  // It's in a module now
+    history::{History, State},  // Need State for history
 };
 
 mod content_extractor;
@@ -70,10 +70,7 @@ pub struct App {
     pub needs_redraw: bool,
     pub open_file_picker: bool,
 
-    // Cursor acceleration (keep for helix integration)
-    pub last_key_time: Option<Instant>,
-    pub last_key_code: Option<kitty_native::KeyCode>,
-    pub key_repeat_count: u32,
+    // Cursor acceleration eliminated - helix-core handles movement better
 
     // Viewport tracking for flicker prevention
     pub last_viewport_scroll: (u16, u16),
@@ -106,10 +103,7 @@ impl App {
             needs_redraw: true,
             open_file_picker: false,
 
-            // Cursor acceleration
-            last_key_time: None,
-            last_key_code: None,
-            key_repeat_count: 0,
+            // Cursor acceleration eliminated
 
             // Viewport tracking
             last_viewport_scroll: (0, 0),
@@ -196,35 +190,7 @@ impl App {
         }
     }
 
-    // Calculate movement speed based on key repeat
-    pub fn update_key_repeat(&mut self, key_code: kitty_native::KeyCode) -> usize {
-        let now = Instant::now();
-
-        // Check if this is the same key as last time
-        if let (Some(last_time), Some(last_key)) = (self.last_key_time, self.last_key_code) {
-            let time_since_last = now.duration_since(last_time);
-
-            // If same key and within repeat threshold (200ms), increment count
-            if key_code == last_key && time_since_last < Duration::from_millis(200) {
-                self.key_repeat_count += 1;
-            } else {
-                self.key_repeat_count = 1;
-            }
-        } else {
-            self.key_repeat_count = 1;
-        }
-
-        self.last_key_time = Some(now);
-        self.last_key_code = Some(key_code);
-
-        // Calculate movement speed: 1 for first press, then accelerate
-        match self.key_repeat_count {
-            1..=3 => 1,           // Normal speed for first few presses
-            4..=8 => 3,           // 3x speed after holding briefly
-            9..=15 => 6,          // 6x speed for sustained holding
-            _ => 10,              // Max 10x speed for long holds
-        }
-    }
+    // Key repeat system eliminated - helix-core handles movement
 
     // Force re-extraction (always dual pane mode now)
     pub async fn refresh_extraction(&mut self) -> Result<()> {
@@ -264,11 +230,15 @@ impl App {
 
             // Only update if OCR succeeded, otherwise keep current text
             if let Ok(data) = ocr_result {
-                self.edit_data = Some(data);
-                if let Some(edit_data) = &self.edit_data {
-                    if let Some(renderer) = &mut self.edit_display {
-                        renderer.update_buffer(edit_data);
-                    }
+                // HELIX-CORE: Convert OCR result to rope
+                let text = data.iter()
+                    .map(|row| row.iter().collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.rope = Rope::from_str(&text);
+                // HELIX-CORE: Update renderer from rope
+                if let Some(renderer) = &mut self.edit_display {
+                    renderer.update_from_rope(&self.rope);
                 }
             }
 
@@ -410,11 +380,32 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render text editor on right
             if let Some(renderer) = &app.edit_display {
+                // HELIX-CORE: Convert selection to old format for renderer
+                let cursor_pos = app.selection.primary().head;
+                let cursor_line = app.rope.byte_to_line(cursor_pos);
+                let line_start = app.rope.line_to_byte(cursor_line);
+                let cursor = (cursor_pos - line_start, cursor_line);
+
+                // Handle selection
+                let (sel_start, sel_end) = if app.selection.len() > 1 {
+                    let range = app.selection.primary();
+                    let start_line = app.rope.byte_to_line(range.from());
+                    let end_line = app.rope.byte_to_line(range.to());
+                    let start_line_byte = app.rope.line_to_byte(start_line);
+                    let end_line_byte = app.rope.line_to_byte(end_line);
+                    (
+                        Some((range.from() - start_line_byte, start_line)),
+                        Some((range.to() - end_line_byte, end_line))
+                    )
+                } else {
+                    (None, None)
+                };
+
                 renderer.render_with_cursor_and_selection(
                     split_x, 0, term_width - split_x, term_height - 2,
-                    app.cursor,
-                    app.selection_start,
-                    app.selection_end
+                    cursor,
+                    sel_start,
+                    sel_end
                 )?;
             }
 
@@ -428,8 +419,8 @@ async fn run_app(app: &mut App) -> Result<()> {
         // CROSSTERM ELIMINATED! Direct Kitty input
         if KittyTerminal::poll_input()? {
             if let Some(key) = KittyTerminal::read_key()? {
-                let old_cursor = app.cursor;
-                let old_selection = (app.selection_start, app.selection_end);
+                // HELIX-CORE: Track selection changes
+                let old_selection = app.selection.clone();
                 
                 if !keyboard::handle_input(app, key).await? {
                     break;
@@ -438,24 +429,11 @@ async fn run_app(app: &mut App) -> Result<()> {
                     break;
                 }
                 
-                // Check if viewport has scrolled by comparing scroll positions
-                let current_viewport_scroll = if let Some(renderer) = &app.edit_display {
-                    (renderer.scroll_x, renderer.scroll_y)
-                } else {
-                    (0, 0)
-                };
+                // HELIX-CORE: Check for changes
+                let selection_changed = app.selection != old_selection;
 
-                let viewport_scrolled = current_viewport_scroll != app.last_viewport_scroll;
-                let cursor_moved = app.cursor != old_cursor;
-                let selection_changed = (app.selection_start, app.selection_end) != old_selection;
-
-                if viewport_scrolled {
-                    // Viewport scrolled - need full redraw to prevent flicker
-                    app.needs_redraw = true;
-                    app.last_viewport_scroll = current_viewport_scroll;
-                } else if cursor_moved || selection_changed {
-                    // NUCLEAR: Skip partial updates, they cause flicker
-                    // Just mark for full redraw but throttled
+                if selection_changed {
+                    // Any selection change triggers redraw
                     app.needs_redraw = true;
                 }
             }

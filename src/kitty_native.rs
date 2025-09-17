@@ -32,6 +32,7 @@ impl KeyModifiers {
     pub const CONTROL: Self = KeyModifiers { ctrl: true, alt: false, shift: false, cmd: false };
     pub const SUPER: Self = KeyModifiers { ctrl: false, alt: false, shift: false, cmd: true };
     pub const SHIFT: Self = KeyModifiers { ctrl: false, alt: false, shift: true, cmd: false };
+    pub const ALT: Self = KeyModifiers { ctrl: false, alt: true, shift: false, cmd: false };
 
     pub fn contains(&self, other: KeyModifiers) -> bool {
         (!other.ctrl || self.ctrl) &&
