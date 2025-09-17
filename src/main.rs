@@ -1,7 +1,7 @@
 // MINIMAL CHONKER - Just PDF text extraction to editable grid
 use anyhow::Result;
 // CROSSTERM ELIMINATED! Pure Kitty-native PDF viewer
-use kitty_native::KittyTerminal;
+use kitty_native::{KittyTerminal, KeyCode};
 // All crossterm eliminated - pure Kitty ANSI
 use std::{io::{self, Write}, path::PathBuf, time::{Duration, Instant}};
 use image::DynamicImage;
@@ -75,7 +75,10 @@ pub struct App {
     pub needs_redraw: bool,
     pub open_file_picker: bool,
 
-    // Cursor acceleration eliminated - helix-core handles movement better
+    // Cursor acceleration for arrow keys
+    pub last_arrow_key: Option<KeyCode>,
+    pub arrow_key_count: usize,
+    pub last_arrow_time: Option<std::time::Instant>,
 
     // Viewport tracking for flicker prevention
     pub last_viewport_scroll: (u16, u16),
@@ -109,7 +112,10 @@ impl App {
             needs_redraw: true,
             open_file_picker: false,
 
-            // Cursor acceleration eliminated
+            // Cursor acceleration
+            last_arrow_key: None,
+            arrow_key_count: 0,
+            last_arrow_time: None,
 
             // Viewport tracking
             last_viewport_scroll: (0, 0),

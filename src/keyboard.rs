@@ -4,9 +4,47 @@ use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{movement, Transaction, Selection, Range, textobject, history::State};
+
+// Arrow key acceleration helper
+fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
+    let now = Instant::now();
+
+    // Check if it's the same arrow key being held
+    if let Some(last_key) = app.last_arrow_key {
+        if last_key == key {
+            // Check if it's within the acceleration window (300ms)
+            if let Some(last_time) = app.last_arrow_time {
+                if now.duration_since(last_time) < Duration::from_millis(300) {
+                    app.arrow_key_count += 1;
+                } else {
+                    // Reset if too much time has passed
+                    app.arrow_key_count = 1;
+                }
+            }
+        } else {
+            // Different arrow key, reset counter
+            app.arrow_key_count = 1;
+        }
+    } else {
+        // First arrow press
+        app.arrow_key_count = 1;
+    }
+
+    app.last_arrow_key = Some(key);
+    app.last_arrow_time = Some(now);
+
+    // Calculate acceleration based on key count
+    match app.arrow_key_count {
+        1..=3 => 1,           // Normal speed for first few presses
+        4..=8 => 3,           // 3x speed after holding briefly
+        9..=15 => 6,          // 6x speed for sustained holding
+        _ => 10,              // Max 10x speed for long holds
+    }
+}
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     let rope = app.rope.slice(..);
@@ -331,12 +369,17 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        // BASIC MOVEMENT - Arrow keys (simple implementation)
-        (KeyCode::Up, mods) => {
+        // BASIC MOVEMENT - Arrow keys with acceleration
+        (KeyCode::Up, _mods) => {
+            // Update acceleration state
+            let accel = update_arrow_acceleration(app, KeyCode::Up);
+
             let pos = app.selection.primary().head;
             let line = app.rope.byte_to_line(pos);
-            if line > 0 {
-                let new_line = line - 1;
+            let lines_to_move = accel.min(line);  // Don't go past start
+
+            if lines_to_move > 0 {
+                let new_line = line - lines_to_move;
                 let line_start = app.rope.line_to_byte(new_line);
                 let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
                 let col = pos - app.rope.line_to_byte(line);
@@ -345,11 +388,17 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        (KeyCode::Down, mods) => {
+        (KeyCode::Down, _mods) => {
+            // Update acceleration state
+            let accel = update_arrow_acceleration(app, KeyCode::Down);
+
             let pos = app.selection.primary().head;
             let line = app.rope.byte_to_line(pos);
-            if line < app.rope.len_lines() - 1 {
-                let new_line = line + 1;
+            let max_line = app.rope.len_lines() - 1;
+            let lines_to_move = accel.min(max_line - line);  // Don't go past end
+
+            if lines_to_move > 0 {
+                let new_line = line + lines_to_move;
                 let line_start = app.rope.line_to_byte(new_line);
                 let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
                 let col = pos - app.rope.line_to_byte(line);
@@ -359,16 +408,25 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Left, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
+            // Update acceleration state
+            let accel = update_arrow_acceleration(app, KeyCode::Left);
+
             let pos = app.selection.primary().head;
-            if pos > 0 {
-                app.selection = Selection::point(pos - 1);
+            let chars_to_move = accel.min(pos);  // Don't go past start
+            if chars_to_move > 0 {
+                app.selection = Selection::point(pos - chars_to_move);
             }
         }
 
         (KeyCode::Right, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
+            // Update acceleration state
+            let accel = update_arrow_acceleration(app, KeyCode::Right);
+
             let pos = app.selection.primary().head;
-            if pos < app.rope.len_chars() {
-                app.selection = Selection::point(pos + 1);
+            let max_pos = app.rope.len_chars();
+            let chars_to_move = accel.min(max_pos - pos);  // Don't go past end
+            if chars_to_move > 0 {
+                app.selection = Selection::point(pos + chars_to_move);
             }
         }
 

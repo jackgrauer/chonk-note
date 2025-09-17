@@ -130,8 +130,9 @@ impl App {
         let text_x = x - split_x;
 
         if let Some(renderer) = &self.edit_display {
-            // Account for viewport scrolling - y is 0-based from top of screen
-            let actual_y = (y as usize).saturating_sub(1) + renderer.viewport_y; // -1 for 0-based indexing
+            // Account for viewport scrolling - y is 1-based from terminal coordinates
+            // No adjustment needed - y directly maps to the line
+            let actual_y = (y as usize) + renderer.viewport_y;
             let actual_x = text_x as usize + renderer.viewport_x;
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
