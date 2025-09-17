@@ -444,6 +444,11 @@ async fn run_app(app: &mut App) -> Result<()> {
                         }
                     }
                     kitty_native::InputEvent::Mouse(mouse_event) => {
+                        // Debug log mouse event received
+                        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                            use std::io::Write;
+                            writeln!(file, "[MAIN] Received mouse event").ok();
+                        }
                         // Handle mouse events
                         mouse::handle_mouse(app, mouse_event, &mut mouse_state).await?;
                     }

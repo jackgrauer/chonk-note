@@ -3,6 +3,8 @@ use crate::{App, kitty_native::MouseEvent};
 use anyhow::Result;
 use helix_core::{Selection, Range, movement, Transaction, history::State};
 use std::time::{Duration, Instant};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 pub struct MouseState {
     pub last_click: Option<Instant>,
@@ -31,7 +33,16 @@ impl App {
         let (term_width, _) = crate::kitty_native::KittyTerminal::size().ok()?;
         let split_x = term_width / 2;
 
+        // Debug log conversion attempt
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            writeln!(file, "[SCREEN_TO_TEXT] x={}, y={}, term_width={}, split_x={}",
+                x, y, term_width, split_x).ok();
+        }
+
         if x < split_x {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[SCREEN_TO_TEXT] Click in PDF pane, ignoring").ok();
+            }
             return None; // Click is in PDF pane
         }
 
@@ -66,10 +77,25 @@ impl App {
 }
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
+    // Debug log all mouse events
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+        writeln!(file, "[MOUSE] Event: button={:?}, x={}, y={}, press={}, drag={}",
+            event.button, event.x, event.y, event.is_press, event.is_drag).ok();
+    }
+
     match event {
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, x, y, .. } => {
+            // Debug log click position
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[MOUSE] Left click at ({}, {})", x, y).ok();
+            }
+
             // Left click - set cursor position
             if let Some(pos) = app.screen_to_text_pos(x, y) {
+                // Debug log text position
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[MOUSE] Converted to text position: {}", pos).ok();
+                }
                 let now = Instant::now();
 
                 // Check for double-click
@@ -99,6 +125,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     mouse_state.last_click = None; // Reset to avoid triple-click
                 } else {
                     // Single click: move cursor
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[MOUSE] Single click - moving cursor to pos {}", pos).ok();
+                    }
                     app.selection = Selection::point(pos);
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));
@@ -111,6 +140,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
 
                 app.needs_redraw = true;
+            } else {
+                // Debug log when click is outside text area
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[MOUSE] Click at ({}, {}) is outside text area or couldn't convert", x, y).ok();
+                }
             }
         }
 

@@ -84,12 +84,26 @@ impl KittyTerminal {
         print!("\x1b[2J");      // Clear screen
         print!("\x1b[H");       // Move to top-left
         print!("\x1b[?25l");    // Hide cursor
-        print!("\x1b[?1000h");  // Enable mouse tracking
+
+        // Enable mouse tracking
+        print!("\x1b[?1000h");  // Enable mouse tracking (this should grab the mouse)
+        print!("\x1b[?1002h");  // Enable mouse drag tracking
+        print!("\x1b[?1006h");  // Enable SGR mouse mode (extended coordinates)
+
         io::stdout().flush()?;
+
+        // Debug log that mouse mode was enabled
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[TERMINAL] Mouse tracking enabled with SGR mode").ok();
+        }
+
         Ok(())
     }
 
     pub fn exit_fullscreen() -> Result<(), io::Error> {
+        print!("\x1b[?1006l");  // Disable SGR mouse mode
+        print!("\x1b[?1002l");  // Disable mouse drag tracking
         print!("\x1b[?1000l");  // Disable mouse tracking
         print!("\x1b[?25h");    // Show cursor
         print!("\x1b[2J");      // Clear screen
@@ -208,7 +222,7 @@ impl KittyTerminal {
 
     // Raw input parsing (keyboard and mouse)
     pub fn read_input() -> Result<Option<InputEvent>, io::Error> {
-        let mut buffer = [0u8; 16];
+        let mut buffer = [0u8; 64];  // Increased for SGR mouse sequences
         let mut stdin = io::stdin();
 
         // Check if input is available
@@ -241,6 +255,12 @@ impl KittyTerminal {
             return Ok(None);
         }
 
+        // Debug log bytes read
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[READ_INPUT] Read {} bytes: {:?}", bytes_read, &buffer[..bytes_read]).ok();
+        }
+
         // Parse escape sequences
         Self::parse_input(&buffer[..bytes_read])
     }
@@ -258,8 +278,18 @@ impl KittyTerminal {
             return Ok(None);
         }
 
+        // Debug log raw input bytes
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[PARSE_INPUT] Raw bytes: {:?}", bytes).ok();
+        }
+
         // Check for SGR mouse sequence first: CSI < button ; x ; y M/m
         if bytes.len() >= 6 && bytes[0] == 27 && bytes[1] == b'[' && bytes[2] == b'<' {
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                use std::io::Write;
+                writeln!(file, "[PARSE_INPUT] Detected SGR mouse sequence").ok();
+            }
             return Self::parse_sgr_mouse(bytes);
         }
 
@@ -342,6 +372,12 @@ impl KittyTerminal {
 
     // Parse SGR mouse events: CSI < button ; x ; y M/m
     fn parse_sgr_mouse(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
+        // Debug log SGR parsing
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[SGR_PARSE] Parsing bytes: {:?}", bytes).ok();
+        }
+
         // Skip ESC [ <
         let data = &bytes[3..];
 
@@ -403,14 +439,23 @@ impl KittyTerminal {
             _ => None,
         };
 
-        Ok(Some(InputEvent::Mouse(MouseEvent {
+        let event = MouseEvent {
             button,
             x,
             y,
             modifiers,
             is_press,
             is_drag,
-        })))
+        };
+
+        // Debug log parsed mouse event
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[SGR_PARSE] Parsed mouse event: button={:?}, x={}, y={}, press={}, drag={}",
+                button, x, y, is_press, is_drag).ok();
+        }
+
+        Ok(Some(InputEvent::Mouse(event)))
     }
 
     // Non-blocking input check
