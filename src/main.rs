@@ -23,6 +23,8 @@ mod viuer_display;
 mod keyboard;
 mod kitty_native;
 mod mouse;
+mod macos_services;
+mod spotlight_indexer;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -51,6 +53,7 @@ struct Args {
 pub struct App {
     // PDF-related fields (keep unchanged)
     pub pdf_path: PathBuf,
+    pub current_pdf_path: Option<PathBuf>,  // For spotlight indexing
     pub current_page: usize,
     pub total_pages: usize,
     pub current_page_image: Option<DynamicImage>,
@@ -83,7 +86,8 @@ impl App {
         let total_pages = content_extractor::get_page_count(&pdf_path)?;
         Ok(Self {
             // PDF-related fields
-            pdf_path,
+            pdf_path: pdf_path.clone(),
+            current_pdf_path: Some(pdf_path),
             current_page: start_page.saturating_sub(1),
             total_pages,
             current_page_image: None,
@@ -335,6 +339,10 @@ async fn run_app(app: &mut App) -> Result<()> {
     let mut last_render_time = std::time::Instant::now();
     let mut mouse_state = MouseState::default();
 
+    // Enable macOS services and spotlight
+    app.enable_macos_services().ok();
+    app.enable_spotlight_integration().ok();
+
     // Initial render
     app.needs_redraw = true;
     
@@ -417,6 +425,12 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             stdout.flush()?;
             app.needs_redraw = false;
+        }
+
+        // Check for momentum-based scrolling updates
+        if mouse_state.scroll_momentum.velocity_y.abs() > 0.1 ||
+           mouse_state.scroll_momentum.velocity_x.abs() > 0.1 {
+            mouse::apply_smooth_scroll(app, &mut mouse_state);
         }
 
         // CROSSTERM ELIMINATED! Direct Kitty input

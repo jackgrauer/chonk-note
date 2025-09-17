@@ -6,12 +6,38 @@ use std::time::{Duration, Instant};
 use std::fs::OpenOptions;
 use std::io::Write;
 
+// Smooth scrolling state for trackpad gestures
+pub struct ScrollMomentum {
+    pub velocity_y: f32,
+    pub velocity_x: f32,
+    pub last_update: Instant,
+    pub friction: f32,
+    pub min_velocity: f32,
+}
+
+impl Default for ScrollMomentum {
+    fn default() -> Self {
+        Self {
+            velocity_y: 0.0,
+            velocity_x: 0.0,
+            last_update: Instant::now(),
+            friction: 0.95,  // Momentum decay factor
+            min_velocity: 0.1, // Minimum velocity before stopping
+        }
+    }
+}
+
 pub struct MouseState {
     pub last_click: Option<Instant>,
     pub last_click_pos: Option<(u16, u16)>,
     pub drag_start: Option<(usize, usize)>, // (char_pos, line)
     pub is_dragging: bool,
     pub double_click_threshold: Duration,
+    pub scroll_momentum: ScrollMomentum,
+    pub last_scroll_time: Option<Instant>,
+    pub scroll_accumulator_y: f32,  // For sub-line precision
+    pub scroll_accumulator_x: f32,
+    pub pinch_scale: f32,  // For zoom gestures
 }
 
 impl Default for MouseState {
@@ -22,7 +48,62 @@ impl Default for MouseState {
             drag_start: None,
             is_dragging: false,
             double_click_threshold: Duration::from_millis(500),
+            scroll_momentum: ScrollMomentum::default(),
+            last_scroll_time: None,
+            scroll_accumulator_y: 0.0,
+            scroll_accumulator_x: 0.0,
+            pinch_scale: 1.0,
         }
+    }
+}
+
+impl MouseState {
+    // Update momentum and apply friction
+    pub fn update_momentum(&mut self) -> (f32, f32) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.scroll_momentum.last_update).as_secs_f32();
+
+        if dt > 0.0 {
+            // Apply friction
+            self.scroll_momentum.velocity_y *= self.scroll_momentum.friction.powf(dt * 60.0);
+            self.scroll_momentum.velocity_x *= self.scroll_momentum.friction.powf(dt * 60.0);
+
+            // Stop if velocity is too small
+            if self.scroll_momentum.velocity_y.abs() < self.scroll_momentum.min_velocity {
+                self.scroll_momentum.velocity_y = 0.0;
+            }
+            if self.scroll_momentum.velocity_x.abs() < self.scroll_momentum.min_velocity {
+                self.scroll_momentum.velocity_x = 0.0;
+            }
+
+            self.scroll_momentum.last_update = now;
+        }
+
+        (self.scroll_momentum.velocity_x * dt, self.scroll_momentum.velocity_y * dt)
+    }
+
+    // Add velocity from a scroll event
+    pub fn add_scroll_velocity(&mut self, dx: f32, dy: f32) {
+        let now = Instant::now();
+
+        // If this is a continuation of scrolling, add to momentum
+        if let Some(last_time) = self.last_scroll_time {
+            if now.duration_since(last_time) < Duration::from_millis(50) {
+                // Smooth blending of velocities
+                self.scroll_momentum.velocity_y = self.scroll_momentum.velocity_y * 0.7 + dy * 10.0 * 0.3;
+                self.scroll_momentum.velocity_x = self.scroll_momentum.velocity_x * 0.7 + dx * 10.0 * 0.3;
+            } else {
+                // Reset momentum if scrolling stopped
+                self.scroll_momentum.velocity_y = dy * 10.0;
+                self.scroll_momentum.velocity_x = dx * 10.0;
+            }
+        } else {
+            self.scroll_momentum.velocity_y = dy * 10.0;
+            self.scroll_momentum.velocity_x = dx * 10.0;
+        }
+
+        self.last_scroll_time = Some(now);
+        self.scroll_momentum.last_update = now;
     }
 }
 
@@ -72,6 +153,54 @@ impl App {
             Some(line_start + char_pos.min(line_str.len_bytes()))
         } else {
             None
+        }
+    }
+}
+
+// Apply smooth scrolling with sub-line precision
+pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
+    if let Some(renderer) = &mut app.edit_display {
+        let (dx, dy) = mouse_state.update_momentum();
+
+        // Accumulate fractional scrolling for smooth motion
+        mouse_state.scroll_accumulator_y += dy;
+        mouse_state.scroll_accumulator_x += dx;
+
+        // Convert accumulated scroll to lines
+        let lines_to_scroll_y = mouse_state.scroll_accumulator_y as i32;
+        let lines_to_scroll_x = mouse_state.scroll_accumulator_x as i32;
+
+        // Keep fractional part for next frame
+        mouse_state.scroll_accumulator_y -= lines_to_scroll_y as f32;
+        mouse_state.scroll_accumulator_x -= lines_to_scroll_x as f32;
+
+        // Apply vertical scrolling
+        if lines_to_scroll_y != 0 {
+            let max_y = app.rope.len_lines().saturating_sub(20);
+            let new_y = if lines_to_scroll_y > 0 {
+                (renderer.viewport_y + lines_to_scroll_y as usize).min(max_y)
+            } else {
+                renderer.viewport_y.saturating_sub((-lines_to_scroll_y) as usize)
+            };
+
+            if new_y != renderer.viewport_y {
+                renderer.viewport_y = new_y;
+                app.needs_redraw = true;
+            }
+        }
+
+        // Apply horizontal scrolling if needed
+        if lines_to_scroll_x != 0 {
+            let new_x = if lines_to_scroll_x > 0 {
+                renderer.viewport_x + lines_to_scroll_x as usize
+            } else {
+                renderer.viewport_x.saturating_sub((-lines_to_scroll_x) as usize)
+            };
+
+            if new_x != renderer.viewport_x {
+                renderer.viewport_x = new_x.min(200); // Max horizontal scroll
+                app.needs_redraw = true;
+            }
         }
     }
 }
@@ -166,24 +295,15 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), .. } => {
-            // Scroll up
-            if let Some(renderer) = &mut app.edit_display {
-                if renderer.viewport_y > 0 {
-                    renderer.viewport_y = renderer.viewport_y.saturating_sub(3);
-                    app.needs_redraw = true;
-                }
-            }
+            // Smooth scroll up with momentum
+            mouse_state.add_scroll_velocity(0.0, -3.0);
+            apply_smooth_scroll(app, mouse_state);
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), .. } => {
-            // Scroll down
-            if let Some(renderer) = &mut app.edit_display {
-                let max_y = app.rope.len_lines().saturating_sub(20); // Keep some lines visible
-                if renderer.viewport_y < max_y {
-                    renderer.viewport_y = (renderer.viewport_y + 3).min(max_y);
-                    app.needs_redraw = true;
-                }
-            }
+            // Smooth scroll down with momentum
+            mouse_state.add_scroll_velocity(0.0, 3.0);
+            apply_smooth_scroll(app, mouse_state);
         }
 
         _ => {}
