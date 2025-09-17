@@ -22,8 +22,10 @@ mod theme;
 mod viuer_display;
 mod keyboard;
 mod kitty_native;
+mod mouse;
 
 use edit_renderer::EditPanelRenderer;
+use mouse::MouseState;
 // Theme eliminated - using direct ANSI
 
 #[cfg(target_os = "macos")]
@@ -331,6 +333,7 @@ async fn run_app(app: &mut App) -> Result<()> {
     let mut stdout = io::stdout();
     let mut last_term_size = (0, 0);
     let mut last_render_time = std::time::Instant::now();
+    let mut mouse_state = MouseState::default();
 
     // Initial render
     app.needs_redraw = true;
@@ -415,26 +418,35 @@ async fn run_app(app: &mut App) -> Result<()> {
             stdout.flush()?;
             app.needs_redraw = false;
         }
-        
+
         // CROSSTERM ELIMINATED! Direct Kitty input
         if KittyTerminal::poll_input()? {
-            if let Some(key) = KittyTerminal::read_key()? {
-                // HELIX-CORE: Track selection changes
-                let old_selection = app.selection.clone();
-                
-                if !keyboard::handle_input(app, key).await? {
-                    break;
-                }
-                if app.exit_requested {
-                    break;
-                }
-                
-                // HELIX-CORE: Check for changes
-                let selection_changed = app.selection != old_selection;
+            // Use new unified input API
+            if let Some(input) = KittyTerminal::read_input()? {
+                match input {
+                    kitty_native::InputEvent::Key(key) => {
+                        // HELIX-CORE: Track selection changes
+                        let old_selection = app.selection.clone();
 
-                if selection_changed {
-                    // Any selection change triggers redraw
-                    app.needs_redraw = true;
+                        if !keyboard::handle_input(app, key).await? {
+                            break;
+                        }
+                        if app.exit_requested {
+                            break;
+                        }
+
+                        // HELIX-CORE: Check for changes
+                        let selection_changed = app.selection != old_selection;
+
+                        if selection_changed {
+                            // Any selection change triggers redraw
+                            app.needs_redraw = true;
+                        }
+                    }
+                    kitty_native::InputEvent::Mouse(mouse_event) => {
+                        // Handle mouse events
+                        mouse::handle_mouse(app, mouse_event, &mut mouse_state).await?;
+                    }
                 }
             }
         }

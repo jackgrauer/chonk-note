@@ -2,7 +2,7 @@
 // Direct escape sequences, no crossterm abstraction
 use std::io::{self, Write, Read};
 
-// Kitty-native key definitions
+// Kitty-native input definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCode {
     Char(char),
@@ -18,6 +18,33 @@ pub enum KeyCode {
     End,
     PageUp,
     PageDown,
+}
+
+// Mouse events support
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    ScrollUp,
+    ScrollDown,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MouseEvent {
+    pub button: Option<MouseButton>,
+    pub x: u16,
+    pub y: u16,
+    pub modifiers: KeyModifiers,
+    pub is_press: bool,  // true = press, false = release
+    pub is_drag: bool,
+}
+
+// Unified input event
+#[derive(Debug)]
+pub enum InputEvent {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,8 +206,8 @@ impl KittyTerminal {
         }
     }
 
-    // Raw keyboard input parsing
-    pub fn read_key() -> Result<Option<KeyEvent>, io::Error> {
+    // Raw input parsing (keyboard and mouse)
+    pub fn read_input() -> Result<Option<InputEvent>, io::Error> {
         let mut buffer = [0u8; 16];
         let mut stdin = io::stdin();
 
@@ -218,9 +245,22 @@ impl KittyTerminal {
         Self::parse_input(&buffer[..bytes_read])
     }
 
-    fn parse_input(bytes: &[u8]) -> Result<Option<KeyEvent>, io::Error> {
+    // Compatibility wrapper for existing code
+    pub fn read_key() -> Result<Option<KeyEvent>, io::Error> {
+        match Self::read_input()? {
+            Some(InputEvent::Key(key_event)) => Ok(Some(key_event)),
+            _ => Ok(None), // Ignore mouse events in legacy API
+        }
+    }
+
+    fn parse_input(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
         if bytes.is_empty() {
             return Ok(None);
+        }
+
+        // Check for SGR mouse sequence first: CSI < button ; x ; y M/m
+        if bytes.len() >= 6 && bytes[0] == 27 && bytes[1] == b'[' && bytes[2] == b'<' {
+            return Self::parse_sgr_mouse(bytes);
         }
 
         let mut modifiers = KeyModifiers {
@@ -232,72 +272,145 @@ impl KittyTerminal {
 
         match bytes {
             // Special keys FIRST (before control character parsing)
-            [13] => Ok(Some(KeyEvent { code: KeyCode::Enter, modifiers })),
-            [127] => Ok(Some(KeyEvent { code: KeyCode::Backspace, modifiers })),
-            [9] => Ok(Some(KeyEvent { code: KeyCode::Tab, modifiers })),
-            [27] if bytes.len() == 1 => Ok(Some(KeyEvent { code: KeyCode::Esc, modifiers })),
+            [13] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Enter, modifiers }))),
+            [127] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Backspace, modifiers }))),
+            [9] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Tab, modifiers }))),
+            [27] if bytes.len() == 1 => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Esc, modifiers }))),
 
             // Simple characters
             [b] if *b >= 32 && *b <= 126 => {
-                Ok(Some(KeyEvent {
+                Ok(Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(*b as char),
                     modifiers,
-                }))
+                })))
             }
 
             // Control characters (excluding Enter=13, Tab=9 which are handled above)
             [b] if *b >= 1 && *b <= 26 && *b != 13 && *b != 9 => {
                 modifiers.ctrl = true;
                 let ch = (*b - 1 + b'a') as char;
-                Ok(Some(KeyEvent {
+                Ok(Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(ch),
                     modifiers,
-                }))
+                })))
             }
 
             // Command key on macOS (Cmd+char)
             [226, 140, 152, b] => {
                 modifiers.cmd = true;
-                Ok(Some(KeyEvent {
+                Ok(Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(*b as char),
                     modifiers,
-                }))
+                })))
             }
 
             // Arrow keys
-            [27, 91, 65] => Ok(Some(KeyEvent { code: KeyCode::Up, modifiers })),
-            [27, 91, 66] => Ok(Some(KeyEvent { code: KeyCode::Down, modifiers })),
-            [27, 91, 68] => Ok(Some(KeyEvent { code: KeyCode::Left, modifiers })),
-            [27, 91, 67] => Ok(Some(KeyEvent { code: KeyCode::Right, modifiers })),
+            [27, 91, 65] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers }))),
+            [27, 91, 66] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers }))),
+            [27, 91, 68] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers }))),
+            [27, 91, 67] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers }))),
 
             // Shift+Arrow keys (for selection)
             [27, 91, 49, 59, 50, 65] => {
                 modifiers.shift = true;
-                Ok(Some(KeyEvent { code: KeyCode::Up, modifiers }))
+                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })))
             }
             [27, 91, 49, 59, 50, 66] => {
                 modifiers.shift = true;
-                Ok(Some(KeyEvent { code: KeyCode::Down, modifiers }))
+                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })))
             }
             [27, 91, 49, 59, 50, 68] => {
                 modifiers.shift = true;
-                Ok(Some(KeyEvent { code: KeyCode::Left, modifiers }))
+                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })))
             }
             [27, 91, 49, 59, 50, 67] => {
                 modifiers.shift = true;
-                Ok(Some(KeyEvent { code: KeyCode::Right, modifiers }))
+                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })))
             }
 
             // Home/End
-            [27, 91, 72] => Ok(Some(KeyEvent { code: KeyCode::Home, modifiers })),
-            [27, 91, 70] => Ok(Some(KeyEvent { code: KeyCode::End, modifiers })),
+            [27, 91, 72] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Home, modifiers }))),
+            [27, 91, 70] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::End, modifiers }))),
 
             // Page Up/Down
-            [27, 91, 53, 126] => Ok(Some(KeyEvent { code: KeyCode::PageUp, modifiers })),
-            [27, 91, 54, 126] => Ok(Some(KeyEvent { code: KeyCode::PageDown, modifiers })),
+            [27, 91, 53, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageUp, modifiers }))),
+            [27, 91, 54, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageDown, modifiers }))),
 
             _ => Ok(None), // Unknown sequence
         }
+    }
+
+    // Parse SGR mouse events: CSI < button ; x ; y M/m
+    fn parse_sgr_mouse(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
+        // Skip ESC [ <
+        let data = &bytes[3..];
+
+        // Find the M or m at the end
+        let end_idx = match data.iter().position(|&b| b == b'M' || b == b'm') {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
+        let is_press = data[end_idx] == b'M';
+
+        // Parse the numbers
+        let nums_str = match std::str::from_utf8(&data[..end_idx]) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+        let parts: Vec<&str> = nums_str.split(';').collect();
+
+        if parts.len() != 3 {
+            return Ok(None);
+        }
+
+        let button_code = match parts[0].parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => return Ok(None),
+        };
+        let x = match parts[1].parse::<u16>() {
+            Ok(n) => n.saturating_sub(1), // Convert to 0-based
+            Err(_) => return Ok(None),
+        };
+        let y = match parts[2].parse::<u16>() {
+            Ok(n) => n.saturating_sub(1), // Convert to 0-based
+            Err(_) => return Ok(None),
+        };
+
+        // Decode button and modifiers from button_code
+        let mut modifiers = KeyModifiers {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            cmd: false,
+        };
+
+        // Extract modifier bits
+        if button_code & 4 != 0 { modifiers.shift = true; }
+        if button_code & 8 != 0 { modifiers.alt = true; }
+        if button_code & 16 != 0 { modifiers.ctrl = true; }
+
+        // Extract button (lower 2 bits for press, bit 6 for drag)
+        let is_drag = button_code & 32 != 0;
+        let button_num = button_code & 3;
+
+        let button = match button_num {
+            0 => Some(MouseButton::Left),
+            1 => Some(MouseButton::Middle),
+            2 => Some(MouseButton::Right),
+            3 if !is_press => None, // Release with no button specified
+            64 => Some(MouseButton::ScrollUp),   // Wheel up
+            65 => Some(MouseButton::ScrollDown), // Wheel down
+            _ => None,
+        };
+
+        Ok(Some(InputEvent::Mouse(MouseEvent {
+            button,
+            x,
+            y,
+            modifiers,
+            is_press,
+            is_drag,
+        })))
     }
 
     // Non-blocking input check

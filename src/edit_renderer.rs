@@ -12,6 +12,8 @@ pub struct EditPanelRenderer {
     viewport_height: u16,         // Display panel height (terminal constrained)
     pub scroll_x: u16,               // Horizontal scroll offset
     pub scroll_y: u16,               // Vertical scroll offset
+    pub viewport_x: usize,           // Current viewport X position for mouse mapping
+    pub viewport_y: usize,           // Current viewport Y position for mouse mapping
 }
 
 impl EditPanelRenderer {
@@ -22,6 +24,8 @@ impl EditPanelRenderer {
             viewport_height: height,
             scroll_x: 0,
             scroll_y: 0,
+            viewport_x: 0,
+            viewport_y: 0,
         }
     }
     
@@ -47,11 +51,13 @@ impl EditPanelRenderer {
     
     pub fn scroll_up(&mut self, lines: u16) {
         self.scroll_y = self.scroll_y.saturating_sub(lines);
+        self.viewport_y = self.viewport_y.saturating_sub(lines as usize);
     }
     
     pub fn scroll_down(&mut self, lines: u16) {
         let max_scroll = self.buffer.len().saturating_sub(self.viewport_height as usize) as u16;
         self.scroll_y = (self.scroll_y + lines).min(max_scroll);
+        self.viewport_y = self.scroll_y as usize;
     }
     
     pub fn scroll_left(&mut self, cols: u16) {
