@@ -1,16 +1,22 @@
 // MINIMAL CHONKER - Just PDF text extraction to editable grid
 use anyhow::Result;
-// Hybrid: Kitty-native + crossterm (TODO: eliminate crossterm completely)
+// CROSSTERM ELIMINATED! Pure Kitty-native PDF viewer
 use kitty_native::KittyTerminal;
-use crossterm::{execute, style::{Print, ResetColor, SetBackgroundColor, SetForegroundColor}, cursor::MoveTo};
+// All crossterm eliminated - pure Kitty ANSI
 use std::{io::{self, Write}, path::PathBuf, time::{Duration, Instant}};
 use image::DynamicImage;
 use clap::Parser;
 
+// HELIX-CORE INTEGRATION! Professional text editing
+use helix_core::{
+    Rope, Selection, Transaction,
+    history::History,  // It's in a module now
+};
+
 mod content_extractor;
 mod edit_renderer;
 mod pdf_renderer;
-mod file_picker;          // TODO: Remove when fully replaced
+// mod file_picker;          // ELIMINATED - using kitty_file_picker
 mod kitty_file_picker;    // Kitty-native replacement
 mod theme;
 mod viuer_display;
@@ -18,7 +24,7 @@ mod keyboard;
 mod kitty_native;
 
 use edit_renderer::EditPanelRenderer;
-use theme::ChonkerTheme;
+// Theme eliminated - using direct ANSI
 
 #[cfg(target_os = "macos")]
 const MOD_KEY: kitty_native::KeyModifiers = kitty_native::KeyModifiers::SUPER;
@@ -41,29 +47,34 @@ struct Args {
 }
 
 pub struct App {
+    // PDF-related fields (keep unchanged)
     pub pdf_path: PathBuf,
     pub current_page: usize,
     pub total_pages: usize,
-    pub edit_data: Option<Vec<Vec<char>>>,
-    pub edit_display: Option<EditPanelRenderer>,
     pub current_page_image: Option<DynamicImage>,
-    pub cursor: (usize, usize),
-    pub selection_start: Option<(usize, usize)>,
-    pub selection_end: Option<(usize, usize)>,
-    pub is_selecting: bool,
+    pub extraction_method: ExtractionMethod,
+    pub dual_pane_mode: bool,
+
+    // HELIX-CORE INTEGRATION! Professional text editing
+    pub rope: Rope,                    // Text buffer (replaces edit_data)
+    pub selection: Selection,          // Cursor + selections (replaces all cursor fields)
+    pub history: History,              // Undo/redo for free!
+
+    // Rendering
+    pub edit_display: Option<EditPanelRenderer>,
+
+    // App state (keep unchanged)
     pub status_message: String,
     pub dark_mode: bool,
     pub exit_requested: bool,
     pub needs_redraw: bool,
     pub open_file_picker: bool,
-    // Cursor acceleration
+
+    // Cursor acceleration (keep for helix integration)
     pub last_key_time: Option<Instant>,
     pub last_key_code: Option<kitty_native::KeyCode>,
     pub key_repeat_count: u32,
-    // Display mode
-    pub dual_pane_mode: bool,
-    // Extraction method
-    pub extraction_method: ExtractionMethod,
+
     // Viewport tracking for flicker prevention
     pub last_viewport_scroll: (u16, u16),
 }
@@ -72,26 +83,35 @@ impl App {
     pub fn new(pdf_path: PathBuf, start_page: usize) -> Result<Self> {
         let total_pages = content_extractor::get_page_count(&pdf_path)?;
         Ok(Self {
+            // PDF-related fields
             pdf_path,
             current_page: start_page.saturating_sub(1),
             total_pages,
-            edit_data: None,
-            edit_display: None,
             current_page_image: None,
-            cursor: (0, 0),
-            selection_start: None,
-            selection_end: None,
-            is_selecting: false,
+            extraction_method: ExtractionMethod::Segments,
+            dual_pane_mode: true,
+
+            // HELIX-CORE INTEGRATION!
+            rope: Rope::from(""),                    // Empty rope initially
+            selection: Selection::point(0),          // Cursor at position 0
+            history: History::default(),             // Empty history
+
+            // Rendering
+            edit_display: None,
+
+            // App state
             status_message: String::new(),
             dark_mode: true,
             exit_requested: false,
             needs_redraw: true,
             open_file_picker: false,
+
+            // Cursor acceleration
             last_key_time: None,
             last_key_code: None,
             key_repeat_count: 0,
-            dual_pane_mode: true,
-            extraction_method: ExtractionMethod::Segments,
+
+            // Viewport tracking
             last_viewport_scroll: (0, 0),
         })
     }
@@ -114,25 +134,33 @@ impl App {
         let text_width = term_width / 2; // Always dual pane mode
         let text_height = term_height.saturating_sub(2);
 
-        self.edit_data = Some(
-            content_extractor::extract_to_matrix_with_method(
-                &self.pdf_path,
-                self.current_page,
-                text_width.max(400) as usize,  // Minimum 400 columns
-                text_height.max(200) as usize, // Minimum 200 rows
-                self.extraction_method
-            ).await?
-        );
+        // HELIX-CORE INTEGRATION! Extract to Rope
+        let matrix = content_extractor::extract_to_matrix_with_method(
+            &self.pdf_path,
+            self.current_page,
+            text_width.max(400) as usize,  // Minimum 400 columns
+            text_height.max(200) as usize, // Minimum 200 rows
+            self.extraction_method
+        ).await?;
 
-        if let Some(data) = &self.edit_data {
-            if let Some(renderer) = &mut self.edit_display {
-                renderer.update_buffer(data);
-            } else {
-                let mut renderer = EditPanelRenderer::new(text_width, text_height);
-                renderer.update_buffer(data);
-                self.edit_display = Some(renderer);
-            }
+        // Convert matrix to Rope
+        let text = matrix.iter()
+            .map(|row| row.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.rope = Rope::from_str(&text);
+        self.selection = Selection::point(0);  // Reset cursor
+
+        // Update renderer from rope
+        if let Some(renderer) = &mut self.edit_display {
+            renderer.update_from_rope(&self.rope);
+        } else {
+            let mut renderer = EditPanelRenderer::new(text_width, text_height);
+            renderer.update_from_rope(&self.rope);
+            self.edit_display = Some(renderer);
         }
+
         let method_name = match self.extraction_method {
             ExtractionMethod::Segments => "Segments",
             ExtractionMethod::PdfAlto => "PDFAlto",
@@ -146,12 +174,11 @@ impl App {
         if self.current_page < self.total_pages - 1 {
             let _ = viuer_display::clear_graphics();
             self.current_page += 1;
-            self.edit_data = None;
+            // HELIX-CORE: Clear rope and reset
+            self.rope = Rope::from("");
+            self.selection = Selection::point(0);
             self.edit_display = None;
             self.current_page_image = None;
-            self.cursor = (0, 0);
-            self.selection_start = None;
-            self.selection_end = None;
             self.needs_redraw = true;
         }
     }
@@ -160,12 +187,11 @@ impl App {
         if self.current_page > 0 {
             let _ = viuer_display::clear_graphics();
             self.current_page -= 1;
-            self.edit_data = None;
+            // HELIX-CORE: Clear rope and reset
+            self.rope = Rope::from("");
+            self.selection = Selection::point(0);
             self.edit_display = None;
             self.current_page_image = None;
-            self.cursor = (0, 0);
-            self.selection_start = None;
-            self.selection_end = None;
             self.needs_redraw = true;
         }
     }
@@ -277,11 +303,17 @@ async fn main() -> Result<()> {
     let pdf_path = if let Some(path) = args.pdf_file {
         path
     } else {
-        // Use file picker
-        if let Some(path) = kitty_file_picker::pick_pdf_file()? {
+        // Try to find a default PDF in Documents
+        if let Some(path) = find_default_pdf() {
             path
         } else {
-            return Ok(());
+            // Fallback to file picker if no default found
+            if let Some(path) = kitty_file_picker::pick_pdf_file()? {
+                path
+            } else {
+                eprintln!("No PDF file specified and none found");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -293,6 +325,20 @@ async fn main() -> Result<()> {
     restore_terminal()?;
     
     result
+}
+
+fn find_default_pdf() -> Option<PathBuf> {
+    let docs_path = PathBuf::from("/Users/jack/Documents");
+    if let Ok(entries) = std::fs::read_dir(&docs_path) {
+        for entry in entries.flatten() {
+            if let Some(ext) = entry.path().extension() {
+                if ext.to_string_lossy().to_lowercase() == "pdf" {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn setup_terminal() -> Result<()> {
@@ -334,7 +380,7 @@ async fn run_app(app: &mut App) -> Result<()> {
             app.open_file_picker = false;
             restore_terminal()?;
             
-            if let Some(new_path) = file_picker::pick_pdf_file()? {
+            if let Some(new_path) = kitty_file_picker::pick_pdf_file()? {
                 app.pdf_path = new_path;
                 app.current_page = 0;
                 app.total_pages = content_extractor::get_page_count(&app.pdf_path)?;
@@ -419,29 +465,4 @@ async fn run_app(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn render_status_bar(stdout: &mut io::Stdout, app: &App, width: u16, height: u16) -> Result<()> {
-    execute!(stdout, MoveTo(0, height - 1))?;
-    execute!(stdout, SetBackgroundColor(ChonkerTheme::bg_status_dark()))?;
-    execute!(stdout, SetForegroundColor(ChonkerTheme::text_status_dark()))?;
-    
-    let method_name = match app.extraction_method {
-        ExtractionMethod::Segments => "SEG",
-        ExtractionMethod::PdfAlto => "ALTO",
-        ExtractionMethod::LeptessOCR => "OCR",
-    };
-
-    let status = format!(
-        " Page {}/{} | Method: {} | {} | T:Switch-Method O:Open N/P:Page ↑↓←→:Move C/V:Copy/Paste Q:Quit ",
-        app.current_page + 1,
-        app.total_pages,
-        method_name,
-        if app.status_message.is_empty() { "Ready" } else { &app.status_message }
-    );
-    
-    let status_len = status.len();
-    execute!(stdout, Print(status))?;
-    execute!(stdout, Print(" ".repeat((width as usize).saturating_sub(status_len))))?;
-    execute!(stdout, ResetColor)?;
-    
-    Ok(())
-}
+// Status bar function removed - disabled in main rendering loop

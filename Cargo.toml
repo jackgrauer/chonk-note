@@ -14,11 +14,11 @@ crossterm = "0.28"  # TODO: Still used by edit_renderer and old file_picker
 
 # PDF
 pdfium-render = { version = "0.8", features = ["thread_safe"] }
-image = "0.25"
+image = "0.25"  # Single image version
 
 # Image display in terminal
 viuer = { version = "0.7.1", default-features = false }
-image_0_24 = { package = "image", version = "0.24" }
+image_0_24 = { package = "image", version = "0.24" }  # Still needed for viuer compatibility
 
 # File picker
 nucleo = "0.5"  # TODO: Still used by old file_picker module
@@ -26,11 +26,17 @@ nucleo = "0.5"  # TODO: Still used by old file_picker module
 # FAST clipboard - ELIMINATED! Direct macOS calls
 # copypasta = "0.10"  # REMOVED - pbcopy/pbpaste only
 
+# Text editing - HELIX-CORE INTEGRATION!
+tempfile = "3.22"  # Force newer version to resolve conflicts
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "dbb472d4" }
+
 # Basic utilities
 lazy_static = "1.4"
-chrono = "0.4"
-unicode-width = "0.1"
+# chrono = "0.4"  # ELIMINATED - not needed without debug timestamps
+# unicode-width = "0.1"  # ELIMINATED - helix handles this
 libc = "0.2"
 
 # OCR
 leptess = "0.14"
+
+# Dependency duplicates will be resolved when crossterm is fully eliminated

@@ -1,29 +1,51 @@
-use crossterm::style::Color;
+// CROSSTERM ELIMINATED! Pure Kitty RGB theming
+use crate::kitty_native::KittyTerminal;
 
-// Ghostty-inspired color theme for pure crossterm
-pub struct ChonkerTheme;
+pub struct KittyTheme;
 
-impl ChonkerTheme {
-    // Status bar theme
-    pub fn bg_status_dark() -> Color { Color::Rgb { r: 0, g: 0, b: 0 } }
-    pub fn text_status_dark() -> Color { Color::Rgb { r: 197, g: 200, b: 198 } }
+impl KittyTheme {
+    // RGB color values (no crossterm Color enum)
 
-    // Used accent colors
-    pub fn accent_text() -> Color { Color::Rgb { r: 143, g: 161, b: 179 } }  // #8FA1B3 - Muted cyan
-    pub fn accent_load_file() -> Color { Color::Rgb { r: 169, g: 133, b: 202 } } // #A985CA - Soft purple
+    // Text colors
+    pub const ACCENT_TEXT: (u8, u8, u8) = (143, 161, 179);      // #8FA1B3 - Muted cyan
+    pub const ACCENT_LOAD_FILE: (u8, u8, u8) = (169, 133, 202); // #A985CA - Soft purple
+    pub const TEXT_PRIMARY: (u8, u8, u8) = (197, 200, 198);     // Light gray
+    pub const TEXT_SECONDARY: (u8, u8, u8) = (150, 152, 150);   // Medium gray
+    pub const TEXT_DIM: (u8, u8, u8) = (96, 99, 102);           // Dark gray
+    pub const TEXT_HEADER: (u8, u8, u8) = (255, 255, 255);      // White
+    pub const SUCCESS: (u8, u8, u8) = (181, 189, 104);          // #B5BD68 - Green
 
-    // Text colors for dark mode
-    pub fn text_primary_dark() -> Color { Color::Rgb { r: 197, g: 200, b: 198 } }
-    pub fn text_secondary_dark() -> Color { Color::Rgb { r: 150, g: 152, b: 150 } }
-    pub fn text_dim_dark() -> Color { Color::Rgb { r: 96, g: 99, b: 102 } }
-    pub fn text_header_dark() -> Color { Color::Rgb { r: 255, g: 255, b: 255 } }
+    // Background colors
+    pub const BG_STATUS: (u8, u8, u8) = (0, 0, 0);              // Black
+    pub const BG_CURSOR: (u8, u8, u8) = (143, 161, 179);        // Muted cyan
+    pub const BG_SELECTION: (u8, u8, u8) = (0, 0, 139);         // Dark blue
 
-    // Functional colors
-    pub fn success() -> Color { Color::Rgb { r: 181, g: 189, b: 104 } }      // #B5BD68 - Green
+    // Helper functions for direct Kitty color setting
+    pub fn set_accent_text_fg() -> std::io::Result<()> {
+        KittyTerminal::set_fg_rgb(Self::ACCENT_TEXT.0, Self::ACCENT_TEXT.1, Self::ACCENT_TEXT.2)
+    }
 
-    // For backwards compatibility - default to dark mode
-    pub fn text_primary() -> Color { Self::text_primary_dark() }
-    pub fn text_secondary() -> Color { Self::text_secondary_dark() }
-    pub fn text_dim() -> Color { Self::text_dim_dark() }
-    pub fn text_header() -> Color { Self::text_header_dark() }
+    pub fn set_accent_load_file_bg() -> std::io::Result<()> {
+        KittyTerminal::set_bg_rgb(Self::ACCENT_LOAD_FILE.0, Self::ACCENT_LOAD_FILE.1, Self::ACCENT_LOAD_FILE.2)
+    }
+
+    pub fn set_text_primary_fg() -> std::io::Result<()> {
+        KittyTerminal::set_fg_rgb(Self::TEXT_PRIMARY.0, Self::TEXT_PRIMARY.1, Self::TEXT_PRIMARY.2)
+    }
+
+    pub fn set_text_header_fg() -> std::io::Result<()> {
+        KittyTerminal::set_fg_rgb(Self::TEXT_HEADER.0, Self::TEXT_HEADER.1, Self::TEXT_HEADER.2)
+    }
+
+    pub fn set_success_fg() -> std::io::Result<()> {
+        KittyTerminal::set_fg_rgb(Self::SUCCESS.0, Self::SUCCESS.1, Self::SUCCESS.2)
+    }
+
+    pub fn set_text_dim_fg() -> std::io::Result<()> {
+        KittyTerminal::set_fg_rgb(Self::TEXT_DIM.0, Self::TEXT_DIM.1, Self::TEXT_DIM.2)
+    }
+
+    pub fn reset_colors() -> std::io::Result<()> {
+        KittyTerminal::reset_colors()
+    }
 }

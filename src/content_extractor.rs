@@ -19,6 +19,12 @@ pub async fn extract_to_matrix_with_method(
     }
 }
 
+// Shared coordinate validation to eliminate duplication
+fn validate_coordinates(x: f32, y: f32, w: f32, h: f32) -> bool {
+    x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() &&
+    x >= 0.0 && y >= 0.0 && w >= 0.0 && h >= 0.0
+}
+
 async fn extract_segments_method(
     pdf_path: &Path,
     page_num: usize,
@@ -28,7 +34,6 @@ async fn extract_segments_method(
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))?
     );
-
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
 
@@ -50,15 +55,9 @@ async fn extract_segments_method(
             let w = bounds.width().value;
             let h = bounds.height().value;
 
-            // Safety check: ensure all coordinates are valid numbers
-            if x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() {
-                text_blocks.push((
-                    segment_text,
-                    x,
-                    y,
-                    w,
-                    h,
-                ));
+            // Use shared coordinate validation
+            if validate_coordinates(x, y, w, h) {
+                text_blocks.push((segment_text, x, y, w, h));
             }
         }
     }
@@ -188,7 +187,6 @@ async fn extract_pdfalto_method(
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))?
     );
-
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
 
@@ -209,18 +207,12 @@ async fn extract_pdfalto_method(
             let w = bounds.width().value;
             let h = bounds.height().value;
 
-            // Safety check: ensure all coordinates are valid numbers
-            if x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() {
+            // Use shared coordinate validation
+            if validate_coordinates(x, y, w, h) {
                 // Split segment into words but focus on reading flow
                 for word in segment_text.split_whitespace() {
                     if !word.is_empty() {
-                        word_elements.push((
-                            word.to_string(),
-                            x,
-                            y,
-                            w,
-                            h,
-                        ));
+                        word_elements.push((word.to_string(), x, y, w, h));
                     }
                 }
             }
@@ -361,11 +353,10 @@ async fn try_leptess_ocr(
 ) -> Result<Vec<Vec<char>>> {
     use leptess::{LepTess, Variable};
 
-    // Render PDF page to optimized image for OCR
+    // Use shared PDF loading
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))?
     );
-
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
 
@@ -450,6 +441,7 @@ async fn try_leptess_ocr(
 
 
 pub fn get_page_count(pdf_path: &Path) -> Result<usize> {
+    // Use shared PDFium instance for consistency
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))?
     );

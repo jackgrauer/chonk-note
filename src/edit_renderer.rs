@@ -21,12 +21,9 @@
 // - Buffer smaller than viewport -> negative scroll bounds
 // - Mouse click outside buffer bounds -> index out of range
 
-use crossterm::{
-    cursor::MoveTo,
-    execute,
-    style::{Color, Print, SetForegroundColor, SetBackgroundColor, ResetColor},
-};
+// CROSSTERM ELIMINATED! Pure ANSI escape sequences
 use std::io::{self, Write};
+use helix_core::Rope;
 
 pub struct EditPanelRenderer {
     buffer: Vec<Vec<char>>,      // The full extracted content
@@ -51,6 +48,24 @@ impl EditPanelRenderer {
         self.buffer.clear();
         for row in matrix {
             self.buffer.push(row.clone());
+        }
+    }
+
+    // HELIX-CORE INTEGRATION! Convert Rope to display format
+    pub fn update_from_rope(&mut self, rope: &Rope) {
+        self.buffer.clear();
+
+        // Convert Rope back to rendering format
+        for line in rope.lines() {
+            let mut row: Vec<char> = line.chars()
+                .filter(|&ch| ch != '\n' && ch != '\r')
+                .collect();
+
+            // Pad to width if needed
+            while row.len() < self.viewport_width as usize {
+                row.push(' ');
+            }
+            self.buffer.push(row);
         }
     }
     
@@ -135,7 +150,8 @@ impl EditPanelRenderer {
             let buffer_y = (self.scroll_y + y) as usize;
             
             // Move cursor to start of line
-            execute!(stdout, MoveTo(start_x, start_y + y))?;
+            // ANSI: Move cursor to position
+            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -179,7 +195,8 @@ impl EditPanelRenderer {
         
         for y in 0..self.viewport_height {
             let buffer_y = (self.scroll_y + y) as usize;
-            execute!(stdout, MoveTo(start_x, start_y + y))?;
+            // ANSI: Move cursor to position
+            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -193,13 +210,8 @@ impl EditPanelRenderer {
                     });
                     
                     if is_highlighted {
-                        execute!(
-                            stdout,
-                            SetBackgroundColor(Color::DarkBlue),
-                            SetForegroundColor(Color::White),
-                            Print(row[x]),
-                            ResetColor
-                        )?;
+                        // ANSI: Selection highlighting
+                        print!("\x1b[48;2;0;0;139m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
                     } else {
                         write!(stdout, "{}", row[x])?;
                     }
@@ -245,7 +257,6 @@ impl EditPanelRenderer {
         selection_end: Option<(usize, usize)>,
     ) -> io::Result<()> {
         let mut stdout = io::stdout();
-        use crate::theme::ChonkerTheme;
         
         // Clamp rendering to the specified bounds
         let render_width = self.viewport_width.min(max_width);
@@ -270,7 +281,8 @@ impl EditPanelRenderer {
             let buffer_y = (self.scroll_y + y) as usize;
             
             // Move cursor to start of line
-            execute!(stdout, MoveTo(start_x, start_y + y))?;
+            // ANSI: Move cursor to position
+            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -291,23 +303,11 @@ impl EditPanelRenderer {
                     let ch = row.get(x).copied().unwrap_or(' ');
                     
                     if is_cursor {
-                        // Cursor - bright background
-                        execute!(
-                            stdout,
-                            SetBackgroundColor(ChonkerTheme::accent_text()),
-                            SetForegroundColor(Color::Black),
-                            Print(ch),
-                            ResetColor
-                        )?;
+                        // ANSI: Cursor highlighting
+                        print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_selected {
-                        // Selection - dimmer background
-                        execute!(
-                            stdout,
-                            SetBackgroundColor(Color::DarkBlue),
-                            SetForegroundColor(Color::White),
-                            Print(ch),
-                            ResetColor
-                        )?;
+                        // ANSI: Selection highlighting
+                        print!("\x1b[48;2;0;0;139m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -322,13 +322,8 @@ impl EditPanelRenderer {
                                          row.len() >= start_col && row.len() < end_col;
                     
                     if is_cursor_at_eol {
-                        // Show cursor at end of line
-                        execute!(
-                            stdout,
-                            SetBackgroundColor(ChonkerTheme::accent_text()),
-                            Print(" "),
-                            ResetColor
-                        )?;
+                        // ANSI: Cursor at end of line
+                        print!("\x1b[48;2;143;161;179m \x1b[m");
                         
                         // Fill remaining space
                         if chars_written + 1 < render_width as usize {
@@ -344,13 +339,8 @@ impl EditPanelRenderer {
                 let is_cursor_at_empty_line = cursor == (0, buffer_y);
                 
                 if is_cursor_at_empty_line {
-                    // Show cursor on empty line
-                    execute!(
-                        stdout,
-                        SetBackgroundColor(ChonkerTheme::accent_text()),
-                        Print(" "),
-                        ResetColor
-                    )?;
+                    // ANSI: Cursor on empty line
+                    print!("\x1b[48;2;143;161;179m \x1b[m");
                     
                     // Fill remaining space
                     if render_width > 1 {

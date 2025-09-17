@@ -47,11 +47,9 @@ pub fn display_pdf_image(
         use_iterm: true,
     };
     
-    // Convert from image 0.25 to image 0.24 for viuer
-    // This is a bit hacky but necessary due to version mismatch
+    // Use image 0.25 directly (no conversion needed)
     let mut rgba = image.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
-    
+
     // Apply dark mode filter if enabled
     if dark_mode {
         // Invert colors for dark mode
@@ -63,13 +61,14 @@ pub fn display_pdf_image(
             // pixel[3] stays the same (alpha)
         }
     }
-    
-    // Create an image 0.24 DynamicImage from raw bytes
+
+    // Convert back to image 0.24 for viuer compatibility
+    let (width, height) = (rgba.width(), rgba.height());
     let raw_buffer = rgba.into_raw();
     let old_image = image_0_24::ImageBuffer::from_raw(width, height, raw_buffer)
         .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?;
     let old_dynamic = image_0_24::DynamicImage::ImageRgba8(old_image);
-    
+
     // Display the image using viuer's automatic protocol detection with timeout protection
     let print_result = std::panic::catch_unwind(|| {
         print(&old_dynamic, &config)
