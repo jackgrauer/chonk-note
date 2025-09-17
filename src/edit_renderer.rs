@@ -5,6 +5,7 @@
 // CROSSTERM ELIMINATED! Pure ANSI escape sequences
 use std::io::{self, Write};
 use helix_core::Rope;
+use crate::block_selection::BlockSelection;
 
 pub struct EditPanelRenderer {
     buffer: Vec<Vec<char>>,      // The full extracted content
@@ -227,6 +228,95 @@ impl EditPanelRenderer {
         (self.viewport_width, self.viewport_height)
     }
     
+    /// Render with block selection (rectangular selection)
+    pub fn render_with_block_selection(
+        &self,
+        start_x: u16,
+        start_y: u16,
+        max_width: u16,
+        max_height: u16,
+        cursor: (usize, usize),
+        block_selection: Option<&BlockSelection>,
+    ) -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Clamp rendering to the specified bounds
+        let render_width = self.viewport_width.min(max_width);
+        let render_height = self.viewport_height.min(max_height);
+
+        // Process block selection bounds if present
+        let block_bounds = if let Some(block_sel) = block_selection {
+            let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
+            Some((min_col, min_line, max_col, max_line))
+        } else {
+            None
+        };
+
+        for y in 0..render_height {
+            let buffer_y = (self.scroll_y + y) as usize;
+
+            // Move cursor to start of line
+            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+
+            if buffer_y < self.buffer.len() {
+                let row = &self.buffer[buffer_y];
+                let start_col = self.scroll_x as usize;
+                let end_col = (start_col + render_width as usize).min(row.len());
+
+                for x in start_col..end_col {
+                    let is_cursor = cursor.1 == buffer_y && cursor.0 == x;
+
+                    // Check if position is in block selection
+                    let is_in_block = if let Some((min_col, min_line, max_col, max_line)) = block_bounds {
+                        buffer_y >= min_line && buffer_y <= max_line &&
+                        x >= min_col && x <= max_col
+                    } else {
+                        false
+                    };
+
+                    let ch = row.get(x).copied().unwrap_or(' ');
+
+                    if is_cursor {
+                        // ANSI: Cursor highlighting
+                        print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
+                    } else if is_in_block {
+                        // ANSI: Block selection highlighting (distinct color for block mode)
+                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                    } else {
+                        // Normal character
+                        write!(stdout, "{}", ch)?;
+                    }
+                }
+
+                // Clear rest of line if needed
+                let chars_written = end_col - start_col;
+                if chars_written < render_width as usize {
+                    // Check if cursor is at end of line
+                    let is_cursor_at_eol = cursor == (row.len(), buffer_y) &&
+                                         row.len() >= start_col && row.len() < end_col;
+
+                    if is_cursor_at_eol {
+                        // ANSI: Cursor at end of line
+                        print!("\x1b[48;2;143;161;179m \x1b[m");
+
+                        // Fill remaining space
+                        if chars_written + 1 < render_width as usize {
+                            write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written - 1))?;
+                        }
+                    } else {
+                        write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written))?;
+                    }
+                }
+            } else {
+                // Clear the rest of the viewport
+                write!(stdout, "{:width$}", "", width = render_width as usize)?;
+            }
+        }
+
+        stdout.flush()?;
+        Ok(())
+    }
+
     /// Render with cursor and selection highlighting
     pub fn render_with_cursor_and_selection(
         &self,

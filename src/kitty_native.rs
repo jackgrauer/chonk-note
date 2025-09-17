@@ -425,18 +425,47 @@ impl KittyTerminal {
         if button_code & 8 != 0 { modifiers.alt = true; }
         if button_code & 16 != 0 { modifiers.ctrl = true; }
 
-        // Extract button (lower 2 bits for press, bit 6 for drag)
+        // Extract button (lower 2 bits for press, bit 5 (value 32) for drag/motion)
+        // During drag, the button code is 32 + button number (0,1,2)
         let is_drag = button_code & 32 != 0;
-        let button_num = button_code & 3;
+        let button_num = if is_drag {
+            button_code & 3  // Extract button from drag code
+        } else {
+            button_code & 3  // Extract button from normal code
+        };
 
-        let button = match button_num {
-            0 => Some(MouseButton::Left),
-            1 => Some(MouseButton::Middle),
-            2 => Some(MouseButton::Right),
-            3 if !is_press => None, // Release with no button specified
-            64 => Some(MouseButton::ScrollUp),   // Wheel up
-            65 => Some(MouseButton::ScrollDown), // Wheel down
-            _ => None,
+        // Debug log the button code
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[SGR_PARSE] button_code={}, is_drag={}, button_num={}, is_press={}",
+                button_code, is_drag, button_num, is_press).ok();
+        }
+
+        let button = if is_drag {
+            // During drag, button number tells us which button is held
+            match button_num {
+                0 => Some(MouseButton::Left),
+                1 => Some(MouseButton::Middle),
+                2 => Some(MouseButton::Right),
+                _ => None,
+            }
+        } else {
+            match button_num {
+                0 => Some(MouseButton::Left),
+                1 => Some(MouseButton::Middle),
+                2 => Some(MouseButton::Right),
+                3 if !is_press => None, // Release with no button specified
+                _ => None,
+            }
+        };
+
+        // Handle scroll separately (these have different codes)
+        let button = if !is_drag && button_code == 64 {
+            Some(MouseButton::ScrollUp)
+        } else if !is_drag && button_code == 65 {
+            Some(MouseButton::ScrollDown)
+        } else {
+            button
         };
 
         let event = MouseEvent {

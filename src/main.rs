@@ -25,9 +25,11 @@ mod kitty_native;
 mod mouse;
 mod macos_services;
 mod spotlight_indexer;
+mod block_selection;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
+use block_selection::BlockSelection;
 // Theme eliminated - using direct ANSI
 
 #[cfg(target_os = "macos")]
@@ -64,6 +66,7 @@ pub struct App {
     pub rope: Rope,                    // Text buffer (replaces edit_data)
     pub selection: Selection,          // Cursor + selections (replaces all cursor fields)
     pub history: History,              // Undo/redo for free!
+    pub block_selection: Option<BlockSelection>,  // Proper block selection with visual columns
 
     // Rendering
     pub edit_display: Option<EditPanelRenderer>,
@@ -101,6 +104,7 @@ impl App {
             rope: Rope::from(""),                    // Empty rope initially
             selection: Selection::point(0),          // Cursor at position 0
             history: History::default(),             // Empty history
+            block_selection: None,                   // No block selection initially
 
             // Rendering
             edit_display: None,
@@ -401,29 +405,43 @@ async fn run_app(app: &mut App) -> Result<()> {
                 let cursor_pos = app.selection.primary().head;
                 let cursor_line = app.rope.byte_to_line(cursor_pos);
                 let line_start = app.rope.line_to_byte(cursor_line);
-                let cursor = (cursor_pos - line_start, cursor_line);
+                let cursor_col = cursor_pos - line_start;
 
-                // Handle selection
-                let (sel_start, sel_end) = if app.selection.len() > 1 {
-                    let range = app.selection.primary();
-                    let start_line = app.rope.byte_to_line(range.from());
-                    let end_line = app.rope.byte_to_line(range.to());
-                    let start_line_byte = app.rope.line_to_byte(start_line);
-                    let end_line_byte = app.rope.line_to_byte(end_line);
-                    (
-                        Some((range.from() - start_line_byte, start_line)),
-                        Some((range.to() - end_line_byte, end_line))
-                    )
+                // IMPORTANT: Adjust cursor position for viewport offset
+                // The renderer expects viewport-relative coordinates, not absolute document coordinates
+                let viewport_relative_cursor = (cursor_col, cursor_line);
+
+                // Check if we have block selection mode active
+                if app.block_selection.is_some() {
+                    // Use block selection renderer
+                    renderer.render_with_block_selection(
+                        split_x, 0, term_width - split_x, term_height - 2,
+                        viewport_relative_cursor,
+                        app.block_selection.as_ref()
+                    )?;
                 } else {
-                    (None, None)
-                };
+                    // Use normal selection renderer
+                    let (sel_start, sel_end) = if app.selection.primary().len() > 0 {
+                        let range = app.selection.primary();
+                        let start_line = app.rope.byte_to_line(range.from());
+                        let end_line = app.rope.byte_to_line(range.to());
+                        let start_line_byte = app.rope.line_to_byte(start_line);
+                        let end_line_byte = app.rope.line_to_byte(end_line);
+                        (
+                            Some((range.from() - start_line_byte, start_line)),
+                            Some((range.to() - end_line_byte, end_line))
+                        )
+                    } else {
+                        (None, None)
+                    };
 
-                renderer.render_with_cursor_and_selection(
-                    split_x, 0, term_width - split_x, term_height - 2,
-                    cursor,
-                    sel_start,
-                    sel_end
-                )?;
+                    renderer.render_with_cursor_and_selection(
+                        split_x, 0, term_width - split_x, term_height - 2,
+                        viewport_relative_cursor,
+                        sel_start,
+                        sel_end
+                    )?;
+                }
             }
 
             // Status bar disabled to prevent debug flood

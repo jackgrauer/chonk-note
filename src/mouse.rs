@@ -1,5 +1,6 @@
 // MOUSE INTERACTION HANDLER
 use crate::{App, kitty_native::MouseEvent};
+use crate::block_selection::{BlockSelection, char_idx_to_visual_col};
 use anyhow::Result;
 use helix_core::{Selection, Range, movement, Transaction, history::State};
 use std::time::{Duration, Instant};
@@ -30,7 +31,6 @@ impl Default for ScrollMomentum {
 pub struct MouseState {
     pub last_click: Option<Instant>,
     pub last_click_pos: Option<(u16, u16)>,
-    pub drag_start: Option<(usize, usize)>, // (char_pos, line)
     pub is_dragging: bool,
     pub double_click_threshold: Duration,
     pub scroll_momentum: ScrollMomentum,
@@ -45,7 +45,6 @@ impl Default for MouseState {
         Self {
             last_click: None,
             last_click_pos: None,
-            drag_start: None,
             is_dragging: false,
             double_click_threshold: Duration::from_millis(500),
             scroll_momentum: ScrollMomentum::default(),
@@ -227,17 +226,59 @@ pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
 }
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
-    // Debug log all mouse events
+    // Debug log all mouse events with more detail
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-        writeln!(file, "[MOUSE] Event: button={:?}, x={}, y={}, press={}, drag={}",
-            event.button, event.x, event.y, event.is_press, event.is_drag).ok();
+        writeln!(file, "[MOUSE] Event: button={:?}, x={}, y={}, press={}, drag={}, shift={}, alt={}, ctrl={}",
+            event.button, event.x, event.y, event.is_press, event.is_drag,
+            event.modifiers.shift, event.modifiers.alt, event.modifiers.ctrl).ok();
+        writeln!(file, "[MOUSE] State: is_dragging={}, block_selection={:?}",
+            mouse_state.is_dragging, app.block_selection.is_some()).ok();
     }
 
     match event {
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, x, y, .. } => {
+        // Handle drag events FIRST before regular clicks
+        MouseEvent { is_drag: true, x, y, .. } => {
+            // Mouse drag - always block selection
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[MOUSE] DRAG EVENT MATCHED! x={}, y={}", x, y).ok();
+            }
+            if let Some(end_pos) = app.screen_to_text_pos(x, y) {
+                let end_line = app.rope.byte_to_line(end_pos);
+                let end_line_start = app.rope.line_to_byte(end_line);
+                let end_col = end_pos - end_line_start;
+
+                // Calculate visual column for proper handling of tabs/wide chars
+                let rope_slice = app.rope.slice(..);
+                let line_slice = rope_slice.line(end_line);
+                let visual_col = char_idx_to_visual_col(line_slice, end_col);
+
+                if let Some(block_sel) = &mut app.block_selection {
+                    // Extend existing block selection
+                    block_sel.extend_to(end_line, end_col, visual_col);
+
+                    // Update helix selection to match block selection
+                    app.selection = block_sel.to_selection(&app.rope);
+
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
+                        writeln!(file, "[MOUSE] Block selection: lines {}-{}, cols {}-{}",
+                            min_line, max_line, min_col, max_col).ok();
+                    }
+                } else {
+                    // This shouldn't happen if click properly starts a block selection
+                    // but handle it gracefully
+                    app.block_selection = Some(BlockSelection::new(end_line, end_col));
+                }
+
+                mouse_state.is_dragging = true;
+                app.needs_redraw = true;
+            }
+        }
+
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, modifiers, .. } => {
             // Debug log click position
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[MOUSE] Left click at ({}, {})", x, y).ok();
+                writeln!(file, "[MOUSE] Left click at ({}, {}) with modifiers: alt={}", x, y, modifiers.alt).ok();
             }
 
             // Left click - set cursor position
@@ -274,10 +315,31 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.selection = Selection::single(word_start, range.head);
                     mouse_state.last_click = None; // Reset to avoid triple-click
                 } else {
-                    // Single click: move cursor
+                    // Single click: move cursor and start block selection
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                         writeln!(file, "[MOUSE] Single click - moving cursor to pos {}", pos).ok();
                         writeln!(file, "[MOUSE] Old selection: {:?}", app.selection).ok();
+                    }
+
+                    // Always start block selection on click
+                    let line = app.rope.byte_to_line(pos);
+                    let line_start = app.rope.line_to_byte(line);
+                    let col = pos - line_start;
+
+                    // Calculate visual column for proper handling of tabs/wide chars
+                    let rope_slice = app.rope.slice(..);
+                    let line_slice = rope_slice.line(line);
+                    let visual_col = char_idx_to_visual_col(line_slice, col);
+
+                    // Start a new block selection
+                    app.block_selection = Some(BlockSelection::new(line, col));
+                    if let Some(block_sel) = &mut app.block_selection {
+                        block_sel.anchor_visual_col = visual_col;
+                        block_sel.cursor_visual_col = visual_col;
+                    }
+
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[MOUSE] Starting block selection at col={}, line={}, visual_col={}", col, line, visual_col).ok();
                     }
 
                     app.selection = Selection::point(pos);
@@ -289,11 +351,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));
 
-                    // Start potential drag
-                    let line = app.rope.byte_to_line(pos);
-                    let line_start = app.rope.line_to_byte(line);
-                    mouse_state.drag_start = Some((pos, line));
-                    mouse_state.is_dragging = false;
+                    // Set dragging to prepare for potential drag
+                    mouse_state.is_dragging = true;  // Set to true to catch motion events
                 }
 
                 app.needs_redraw = true;
@@ -314,21 +373,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: false, .. } => {
-            // Left button release - end drag
-            mouse_state.drag_start = None;
+            // Left button release - end drag but keep the block selection visible
             mouse_state.is_dragging = false;
+            // Block selection remains in app.block_selection
         }
 
-        MouseEvent { is_drag: true, x, y, .. } if mouse_state.drag_start.is_some() => {
-            // Mouse drag - extend selection
-            if let Some(end_pos) = app.screen_to_text_pos(x, y) {
-                if let Some((start_pos, _)) = mouse_state.drag_start {
-                    mouse_state.is_dragging = true;
-                    app.selection = Selection::single(start_pos, end_pos);
-                    app.needs_redraw = true;
-                }
-            }
-        }
+        // Remove the old motion handler - we handle drag with is_drag now
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), .. } => {
             // Smooth scroll up with momentum
@@ -342,6 +392,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             apply_smooth_scroll(app, mouse_state);
         }
 
+        // Ignore other mouse events
         _ => {}
     }
 
