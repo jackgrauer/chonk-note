@@ -90,13 +90,27 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         // DELETION - macOS style
         // Option+Backspace = delete word (simplified)
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => {
-            // TODO: Implement word deletion properly
             let pos = app.selection.primary().head;
             if pos > 0 {
+                // Save state before transaction for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
                 // For now, delete 5 characters (basic word approximation)
                 let start = pos.saturating_sub(5);
-                app.rope.remove(start..pos);
-                app.selection = Selection::point(start);
+                let transaction = Transaction::delete(&app.rope, std::iter::once((start, pos)));
+
+                // Apply transaction
+                let success = transaction.apply(&mut app.rope);
+
+                if success {
+                    app.selection = Selection::point(start);
+
+                    // Commit to history for undo/redo
+                    app.history.commit_revision(&transaction, &state);
+                }
             }
         }
 
@@ -106,8 +120,23 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let line = app.rope.byte_to_line(pos);
             let line_start = app.rope.line_to_byte(line);
             if pos > line_start {
-                app.rope.remove(line_start..pos);
-                app.selection = Selection::point(line_start);
+                // Save state before transaction for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
+                let transaction = Transaction::delete(&app.rope, std::iter::once((line_start, pos)));
+
+                // Apply transaction
+                let success = transaction.apply(&mut app.rope);
+
+                if success {
+                    app.selection = Selection::point(line_start);
+
+                    // Commit to history for undo/redo
+                    app.history.commit_revision(&transaction, &state);
+                }
             }
         }
 
@@ -118,11 +147,31 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char('x'), mods) if mods.contains(KeyModifiers::SUPER) => {
-            // Cut (simplified)
+            // Cut - copy to clipboard then delete selection
             let text = extract_selection_from_rope(app);
             if !text.is_empty() {
                 copy_to_clipboard(&text)?;
-                // TODO: Implement proper cut with transactions
+
+                // Save state before deletion for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
+                // Delete the selected text
+                let transaction = Transaction::delete(&app.rope, app.selection.ranges().into_iter().map(|r| (r.from(), r.to())));
+
+                // Apply transaction
+                let success = transaction.apply(&mut app.rope);
+
+                if success {
+                    // Map selection through changes
+                    app.selection = app.selection.clone().map(transaction.changes());
+
+                    // Commit to history for undo/redo
+                    app.history.commit_revision(&transaction, &state);
+                    app.status_message = "Cut".to_string();
+                }
             }
         }
 
@@ -166,18 +215,26 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::SUPER) => {
             // FULL HELIX: Professional paste with transactions
             if let Ok(text) = paste_from_clipboard() {
+                // Save state before transaction for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
                 // CORRECT HELIX: Paste with Ferrari engine!
                 let transaction = Transaction::insert(&app.rope, &app.selection, text.into());
 
                 // Apply and get new rope
                 let success = transaction.apply(&mut app.rope);
 
-                // Map selection through changes
-                app.selection = app.selection.clone().map(transaction.changes());
+                if success {
+                    // Map selection through changes
+                    app.selection = app.selection.clone().map(transaction.changes());
 
-                // Rope already updated by apply()
-                // TODO: Fix commit_revision API - needs &State not &Rope
-                app.status_message = "Pasted".to_string();
+                    // Commit to history for undo/redo
+                    app.history.commit_revision(&transaction, &state);
+                    app.status_message = "Pasted".to_string();
+                }
             }
         }
 
@@ -251,6 +308,12 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // TEXT OPERATIONS
         (KeyCode::Backspace, mods) if !mods.contains(KeyModifiers::ALT) && !mods.contains(KeyModifiers::SUPER) => {
+            // Save state before transaction for history
+            let state = State {
+                doc: app.rope.clone(),
+                selection: app.selection.clone(),
+            };
+
             // CORRECT HELIX: Professional backspace with Ferrari engine!
             let transaction = if app.selection.len() > 1 {
                 // Delete selection
@@ -269,11 +332,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if success {
                 // Map selection through changes
                 app.selection = app.selection.clone().map(transaction.changes());
+
+                // Commit to history for undo/redo
+                app.history.commit_revision(&transaction, &state);
             }
-            // TODO: Fix commit_revision API - needs &State not &Rope
         }
 
         (KeyCode::Enter, _) => {
+            // Save state before transaction for history
+            let state = State {
+                doc: app.rope.clone(),
+                selection: app.selection.clone(),
+            };
+
             // CORRECT HELIX: Professional newline with Ferrari engine!
             let transaction = Transaction::insert(&app.rope, &app.selection, "\n".into());
 
@@ -283,11 +354,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if success {
                 // Map selection through changes
                 app.selection = app.selection.clone().map(transaction.changes());
+
+                // Commit to history for undo/redo
+                app.history.commit_revision(&transaction, &state);
             }
-            // TODO: Fix commit_revision API - needs &State not &Rope
         }
 
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
+            // Save state before transaction for history
+            let state = State {
+                doc: app.rope.clone(),
+                selection: app.selection.clone(),
+            };
+
             // CORRECT HELIX: The real Ferrari engine!
             let transaction = Transaction::insert(&app.rope, &app.selection, c.to_string().into());
 
@@ -297,8 +376,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if success {
                 // Map selection through changes (CRITICAL!)
                 app.selection = app.selection.clone().map(transaction.changes());
+
+                // Commit to history for undo/redo
+                app.history.commit_revision(&transaction, &state);
             }
-            // TODO: Fix commit_revision API - needs &State not &Rope
         }
 
         _ => {
