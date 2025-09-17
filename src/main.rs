@@ -269,7 +269,7 @@ async fn main() -> Result<()> {
     }
 
     let args = Args::parse();
-    
+
     let pdf_path = if let Some(path) = args.pdf_file {
         path
     } else {

@@ -2,6 +2,8 @@
 use crate::{App, MOD_KEY};
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{movement, Transaction, Selection, Range, textobject, history::State};
@@ -184,9 +186,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::SHIFT) => {
+        // On macOS, Cmd key is being reported as CONTROL by Kitty
+        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[UNDO] History rev: {}, at_root: {}",
+                    app.history.current_revision(),
+                    app.history.at_root()).ok();
+            }
+
             // CORRECT HELIX: Undo with proper API!
             if let Some(transaction) = app.history.undo() {
+                // Clone the transaction since we get a reference from history
+                let transaction = transaction.clone();
                 // Apply undo transaction (in-place)
                 let success = transaction.apply(&mut app.rope);
 
@@ -194,13 +206,44 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     // Map selection through changes
                     app.selection = app.selection.clone().map(transaction.changes());
                     app.status_message = "Undo".to_string();
+
+                    // CRITICAL: Trigger redraw after undo!
+                    app.needs_redraw = true;
+
+                    // Update the edit display renderer
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.update_from_rope(&app.rope);
+                    }
+
+                    // Debug to file
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[UNDO] Success! New rev: {}", app.history.current_revision()).ok();
+                    }
+                } else {
+                    app.status_message = "Undo failed".to_string();
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[UNDO] Failed to apply transaction").ok();
+                    }
+                }
+            } else {
+                app.status_message = "Nothing to undo".to_string();
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[UNDO] No transaction available (at root)").ok();
                 }
             }
         }
 
-        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::SUPER) && mods.contains(KeyModifiers::SHIFT) => {
+        // On macOS, Cmd key is being reported as CONTROL by Kitty
+        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::CONTROL) && mods.contains(KeyModifiers::SHIFT) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[REDO] History rev: {}", app.history.current_revision()).ok();
+            }
+
             // CORRECT HELIX: Redo with proper API!
             if let Some(transaction) = app.history.redo() {
+                // Clone the transaction since we get a reference from history
+                let transaction = transaction.clone();
                 // Apply redo transaction (in-place)
                 let success = transaction.apply(&mut app.rope);
 
@@ -208,6 +251,29 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     // Map selection through changes
                     app.selection = app.selection.clone().map(transaction.changes());
                     app.status_message = "Redo".to_string();
+
+                    // CRITICAL: Trigger redraw after redo!
+                    app.needs_redraw = true;
+
+                    // Update the edit display renderer
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.update_from_rope(&app.rope);
+                    }
+
+                    // Debug to file
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[REDO] Success! New rev: {}", app.history.current_revision()).ok();
+                    }
+                } else {
+                    app.status_message = "Redo failed".to_string();
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[REDO] Failed to apply transaction").ok();
+                    }
+                }
+            } else {
+                app.status_message = "Nothing to redo".to_string();
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[REDO] No transaction available").ok();
                 }
             }
         }
