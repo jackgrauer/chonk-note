@@ -130,14 +130,24 @@ impl App {
         let text_x = x - split_x;
 
         if let Some(renderer) = &self.edit_display {
-            // Account for viewport scrolling
-            let actual_y = y as usize + renderer.viewport_y;
+            // Account for viewport scrolling - y is 0-based from top of screen
+            let actual_y = (y as usize).saturating_sub(1) + renderer.viewport_y; // -1 for 0-based indexing
             let actual_x = text_x as usize + renderer.viewport_x;
+
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[SCREEN_TO_TEXT] text_x={}, actual_x={}, actual_y={}, viewport_y={}",
+                    text_x, actual_x, actual_y, renderer.viewport_y).ok();
+            }
 
             // Convert to character position in rope
             let line = actual_y.min(self.rope.len_lines().saturating_sub(1));
             let line_start = self.rope.line_to_byte(line);
             let line_str = self.rope.line(line);
+
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[SCREEN_TO_TEXT] line={}, line_start={}, line_len={}",
+                    line, line_start, line_str.len_bytes()).ok();
+            }
 
             // Find character at x position (simple approach, assumes monospace)
             let mut char_pos = 0;
@@ -150,8 +160,18 @@ impl App {
                 display_x += 1; // Simplified - assumes 1 char = 1 column
             }
 
-            Some(line_start + char_pos.min(line_str.len_bytes()))
+            let final_pos = line_start + char_pos.min(line_str.len_bytes());
+
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[SCREEN_TO_TEXT] final_pos={} (line_start={} + char_pos={})",
+                    final_pos, line_start, char_pos).ok();
+            }
+
+            Some(final_pos)
         } else {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[SCREEN_TO_TEXT] No edit_display available!").ok();
+            }
             None
         }
     }
@@ -256,8 +276,15 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     // Single click: move cursor
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                         writeln!(file, "[MOUSE] Single click - moving cursor to pos {}", pos).ok();
+                        writeln!(file, "[MOUSE] Old selection: {:?}", app.selection).ok();
                     }
+
                     app.selection = Selection::point(pos);
+
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[MOUSE] New selection: {:?}", app.selection).ok();
+                    }
+
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));
 
@@ -269,6 +296,14 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
 
                 app.needs_redraw = true;
+
+                // Force update of the edit display
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.update_from_rope(&app.rope);
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[MOUSE] Updated renderer after cursor move").ok();
+                    }
+                }
             } else {
                 // Debug log when click is outside text area
                 if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
