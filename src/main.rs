@@ -463,6 +463,12 @@ async fn run_app(app: &mut App) -> Result<()> {
             if let Some(input) = KittyTerminal::read_input()? {
                 match input {
                     kitty_native::InputEvent::Key(key) => {
+                        // Debug log key event
+                        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                            use std::io::Write;
+                            writeln!(file, "[MAIN] Received key event: {:?}", key).ok();
+                        }
+
                         // HELIX-CORE: Track selection changes
                         let old_selection = app.selection.clone();
 

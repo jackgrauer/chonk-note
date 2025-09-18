@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{movement, Transaction, Selection, Range, textobject, history::State};
+// HELIX-VIEW INTEGRATION! Clipboard and register system
+use helix_view::clipboard::{ClipboardProvider, ClipboardType};
 
 // Arrow key acceleration helper
 fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
@@ -342,6 +344,160 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
+        // Select All - Ctrl+A
+        (KeyCode::Char('a'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[KEYBOARD] Ctrl+A - Select All triggered").ok();
+            }
+
+            // Select entire document
+            let doc_len = app.rope.len_chars();
+            if doc_len > 0 {
+                // Create a selection from start to end of document
+                app.selection = Selection::single(0, doc_len);
+
+                // Clear block selection since we're doing regular selection
+                app.block_selection = None;
+
+                app.needs_redraw = true;
+                app.status_message = "Selected all".to_string();
+
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[KEYBOARD] Selected entire document: 0 to {} chars", doc_len).ok();
+                }
+            }
+        }
+
+        // Cut - Ctrl+X (in addition to Cmd+X)
+        (KeyCode::Char('x'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[KEYBOARD] Ctrl+X - Cut triggered").ok();
+            }
+
+            // Extract selected text
+            let text = extract_selection_from_rope(app);
+            if !text.is_empty() {
+                // Copy to clipboard
+                copy_to_clipboard(&text)?;
+
+                // Save state before deletion for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
+                // Get the selection to use for deletion (block or regular)
+                let selection = if let Some(block_sel) = &app.block_selection {
+                    block_sel.to_selection(&app.rope)
+                } else {
+                    app.selection.clone()
+                };
+
+                // Delete the selected text using Transaction
+                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
+                    (range.from(), range.to(), None)
+                });
+
+                // Apply transaction
+                transaction.apply(&mut app.rope);
+
+                // Update selection to collapsed position at deletion point
+                let new_pos = selection.primary().from();
+                app.selection = Selection::point(new_pos);
+
+                // Clear any block selection
+                app.block_selection = None;
+
+                // Add to history for undo support
+                app.history.commit_revision(&transaction, &state);
+
+                // Force re-render
+                app.needs_redraw = true;
+                app.status_message = format!("Cut {} characters", text.len());
+
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[KEYBOARD] Cut {} characters to clipboard: {:?}", text.len(), &text[..text.len().min(50)]).ok();
+                }
+            } else {
+                app.status_message = "Nothing to cut".to_string();
+                app.needs_redraw = true;
+            }
+        }
+
+        // Copy - Ctrl+C
+        (KeyCode::Char('c'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[KEYBOARD] Ctrl+C - Copy triggered").ok();
+            }
+
+            // Copy selected text to clipboard
+            let text = extract_selection_from_rope(app);
+            if !text.is_empty() {
+                copy_to_clipboard(&text)?;
+                app.status_message = format!("Copied {} characters", text.len());
+                app.needs_redraw = true;  // Force redraw to show status
+
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[KEYBOARD] Copied {} characters to clipboard: {:?}", text.len(), &text[..text.len().min(50)]).ok();
+                }
+            } else {
+                app.status_message = "Nothing to copy".to_string();
+                app.needs_redraw = true;
+            }
+        }
+
+        // Paste - Ctrl+V
+        (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Debug to file
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                writeln!(file, "[KEYBOARD] Ctrl+V - Paste triggered").ok();
+            }
+
+            if let Ok(text) = paste_from_clipboard() {
+                // Save state before transaction for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
+                // Get the selection to use for paste (block or regular)
+                let selection = if let Some(block_sel) = &app.block_selection {
+                    block_sel.to_selection(&app.rope)
+                } else {
+                    app.selection.clone()
+                };
+
+                // Create paste transaction
+                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
+                    (range.from(), range.to(), Some(text.clone().into()))
+                });
+
+                // Apply and get new rope
+                transaction.apply(&mut app.rope);
+
+                // Move cursor to end of pasted text
+                let paste_end = selection.primary().from() + text.len();
+                app.selection = Selection::point(paste_end);
+
+                // Clear any block selection
+                app.block_selection = None;
+
+                // Add to history
+                app.history.commit_revision(&transaction, &state);
+
+                // Force update
+                app.needs_redraw = true;
+                app.status_message = "Pasted".to_string();
+
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[KEYBOARD] Pasted {} characters from clipboard", text.len()).ok();
+                }
+            }
+        }
+
         // PDF-specific shortcuts (keep unchanged)
         (KeyCode::Char('q'), mods) if mods.contains(KeyModifiers::CONTROL) => {
             app.exit_requested = true;
@@ -519,8 +675,25 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(true)
 }
 
-// HELIX-CORE: Extract selection from rope (much simpler!)
+// HELIX-CORE: Extract selection from rope (handles both regular and block selection)
 fn extract_selection_from_rope(app: &App) -> String {
+    // First check if we have block selection
+    if let Some(block_sel) = &app.block_selection {
+        // Convert block selection to regular selection and extract text
+        let selection = block_sel.to_selection(&app.rope);
+        let mut result = String::new();
+        for range in selection.ranges() {
+            if range.len() > 0 {
+                if !result.is_empty() {
+                    result.push('\n');  // Separate lines in block selection
+                }
+                result.push_str(&app.rope.slice(range.from()..range.to()).to_string());
+            }
+        }
+        return result;
+    }
+
+    // Regular selection
     if app.selection.len() > 1 {
         let range = app.selection.primary();
         app.rope.slice(range.from()..range.to()).to_string()
@@ -530,28 +703,15 @@ fn extract_selection_from_rope(app: &App) -> String {
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
-    // KITTY-NATIVE: Direct pbcopy, no copypasta
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin.write_all(text.as_bytes())?;
-    }
-
-    child.wait()?;
-    Ok(())
+    // Use Helix's clipboard provider - Pasteboard on macOS
+    let mut clipboard = ClipboardProvider::default();
+    clipboard.set_contents(text, ClipboardType::Clipboard)
+        .map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
 }
 
 fn paste_from_clipboard() -> Result<String> {
-    // KITTY-NATIVE: Direct pbpaste, no copypasta
-    let output = std::process::Command::new("pbpaste")
-        .output()?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(anyhow::anyhow!("pbpaste failed"))
-    }
+    // Use Helix's clipboard provider - Pasteboard on macOS
+    let mut clipboard = ClipboardProvider::default();
+    clipboard.get_contents(&ClipboardType::Clipboard)
+        .map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
 }

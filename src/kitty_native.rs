@@ -319,6 +319,14 @@ impl KittyTerminal {
             [b] if *b >= 1 && *b <= 26 && *b != 13 && *b != 9 => {
                 modifiers.ctrl = true;
                 let ch = (*b - 1 + b'a') as char;
+
+                // Debug log control character parsing
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[PARSE_INPUT] Control char: byte={}, char='{}', ctrl={}",
+                        b, ch, modifiers.ctrl).ok();
+                }
+
                 Ok(Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(ch),
                     modifiers,
