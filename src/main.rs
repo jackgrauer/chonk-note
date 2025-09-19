@@ -67,6 +67,7 @@ pub struct App {
     pub selection: Selection,          // Cursor + selections (replaces all cursor fields)
     pub history: History,              // Undo/redo for free!
     pub block_selection: Option<BlockSelection>,  // Proper block selection with visual columns
+    pub virtual_cursor_col: Option<usize>,  // Virtual cursor column for navigating past line ends
 
     // Rendering
     pub edit_display: Option<EditPanelRenderer>,
@@ -105,6 +106,7 @@ impl App {
             selection: Selection::point(0),          // Cursor at position 0
             history: History::default(),             // Empty history
             block_selection: None,                   // No block selection initially
+            virtual_cursor_col: None,                // No virtual cursor position initially
 
             // Rendering
             edit_display: None,
@@ -405,7 +407,14 @@ async fn run_app(app: &mut App) -> Result<()> {
                 let cursor_pos = app.selection.primary().head;
                 let cursor_line = app.rope.byte_to_line(cursor_pos);
                 let line_start = app.rope.line_to_byte(cursor_line);
-                let cursor_col = cursor_pos - line_start;
+                let actual_col = cursor_pos - line_start;
+
+                // Use virtual cursor column if set (for positioning past line end)
+                let cursor_col = if let Some(vc) = app.virtual_cursor_col {
+                    vc
+                } else {
+                    actual_col
+                };
 
                 // IMPORTANT: Adjust cursor position for viewport offset
                 // The renderer expects viewport-relative coordinates, not absolute document coordinates

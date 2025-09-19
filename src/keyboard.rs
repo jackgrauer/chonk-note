@@ -526,7 +526,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         // BASIC MOVEMENT - Arrow keys with acceleration
-        (KeyCode::Up, _mods) => {
+        (KeyCode::Up, mods) => {
+            // Clear any block selection when using arrow keys
+            app.block_selection = None;
+
             // Update acceleration state
             let accel = update_arrow_acceleration(app, KeyCode::Up);
 
@@ -535,16 +538,40 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let lines_to_move = accel.min(line);  // Don't go past start
 
             if lines_to_move > 0 {
+                // Preserve virtual column if set, otherwise calculate from current position
+                let virtual_col = if let Some(vc) = app.virtual_cursor_col {
+                    vc
+                } else {
+                    let line_start = app.rope.line_to_byte(line);
+                    pos - line_start
+                };
+
                 let new_line = line - lines_to_move;
                 let line_start = app.rope.line_to_byte(new_line);
                 let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
-                let col = pos - app.rope.line_to_byte(line);
-                let new_pos = line_start + col.min(line_len);
-                app.selection = Selection::point(new_pos);
+
+                // Position cursor at virtual column, allowing it to go past line end
+                // The selection will be at the actual line position, but we remember the virtual column
+                let new_pos = line_start + virtual_col.min(line_len);
+
+                if mods.contains(KeyModifiers::SHIFT) {
+                    // Extend selection - keep anchor, move head
+                    let anchor = app.selection.primary().anchor;
+                    app.selection = Selection::single(anchor, new_pos);
+                } else {
+                    // Just move cursor
+                    app.selection = Selection::point(new_pos);
+                }
+
+                // Clear virtual column when moving up/down - let Right arrow recalculate it
+                app.virtual_cursor_col = None;
             }
         }
 
-        (KeyCode::Down, _mods) => {
+        (KeyCode::Down, mods) => {
+            // Clear any block selection when using arrow keys
+            app.block_selection = None;
+
             // Update acceleration state
             let accel = update_arrow_acceleration(app, KeyCode::Down);
 
@@ -554,36 +581,103 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let lines_to_move = accel.min(max_line - line);  // Don't go past end
 
             if lines_to_move > 0 {
+                // Preserve virtual column if set, otherwise calculate from current position
+                let virtual_col = if let Some(vc) = app.virtual_cursor_col {
+                    vc
+                } else {
+                    let line_start = app.rope.line_to_byte(line);
+                    pos - line_start
+                };
+
                 let new_line = line + lines_to_move;
                 let line_start = app.rope.line_to_byte(new_line);
                 let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
-                let col = pos - app.rope.line_to_byte(line);
-                let new_pos = line_start + col.min(line_len);
-                app.selection = Selection::point(new_pos);
+
+                // Position cursor at virtual column, allowing it to go past line end
+                // The selection will be at the actual line position, but we remember the virtual column
+                let new_pos = line_start + virtual_col.min(line_len);
+
+                if mods.contains(KeyModifiers::SHIFT) {
+                    // Extend selection - keep anchor, move head
+                    let anchor = app.selection.primary().anchor;
+                    app.selection = Selection::single(anchor, new_pos);
+                } else {
+                    // Just move cursor
+                    app.selection = Selection::point(new_pos);
+                }
+
+                // Clear virtual column when moving up/down - let Right arrow recalculate it
+                app.virtual_cursor_col = None;
             }
         }
 
         (KeyCode::Left, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
+            // Clear any block selection when using arrow keys
+            app.block_selection = None;
+
             // Update acceleration state
             let accel = update_arrow_acceleration(app, KeyCode::Left);
 
             let pos = app.selection.primary().head;
-            let chars_to_move = accel.min(pos);  // Don't go past start
-            if chars_to_move > 0 {
-                app.selection = Selection::point(pos - chars_to_move);
+
+            // Simple approach: just move left by bytes if we can
+            if pos >= accel {
+                let new_pos = pos - accel;
+
+                // Update virtual cursor column based on new position
+                let line = app.rope.byte_to_line(new_pos);
+                let line_start = app.rope.line_to_byte(line);
+                app.virtual_cursor_col = Some(new_pos - line_start);
+
+                if mods.contains(KeyModifiers::SHIFT) {
+                    // Extend selection - keep anchor, move head
+                    let anchor = app.selection.primary().anchor;
+                    app.selection = Selection::single(anchor, new_pos);
+                } else {
+                    // Just move cursor
+                    app.selection = Selection::point(new_pos);
+                }
             }
         }
 
         (KeyCode::Right, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
+            // Clear any block selection when using arrow keys
+            app.block_selection = None;
+
             // Update acceleration state
             let accel = update_arrow_acceleration(app, KeyCode::Right);
 
             let pos = app.selection.primary().head;
-            let max_pos = app.rope.len_chars();
-            let chars_to_move = accel.min(max_pos - pos);  // Don't go past end
-            if chars_to_move > 0 {
-                app.selection = Selection::point(pos + chars_to_move);
+            let line = app.rope.byte_to_line(pos);
+            let line_start = app.rope.line_to_byte(line);
+            let current_col = pos - line_start;
+
+            // For Right arrow, always use virtual column if set, otherwise current
+            // This maintains virtual space position across lines
+            let virtual_col = app.virtual_cursor_col.unwrap_or(current_col);
+
+            // Now increment from the virtual position
+            let new_virtual_col = virtual_col + accel;
+            app.virtual_cursor_col = Some(new_virtual_col);
+
+            // Get the line length to stay within document bounds
+            let line_slice = app.rope.line(line);
+            let line_len = line_slice.len_bytes().saturating_sub(1); // Exclude newline
+
+            // Document position tracks virtual position when possible, but caps at line end
+            let new_pos = line_start + new_virtual_col.min(line_len);
+
+            if mods.contains(KeyModifiers::SHIFT) {
+                // Extend selection - keep anchor, move head
+                let anchor = app.selection.primary().anchor;
+                app.selection = Selection::single(anchor, new_pos);
+            } else {
+                // Just move cursor
+                app.selection = Selection::point(new_pos);
             }
+
+            // Force redraw to show virtual cursor movement
+            app.needs_redraw = true;
         }
 
         // TEXT OPERATIONS
@@ -595,7 +689,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             };
 
             // CORRECT HELIX: Professional backspace with Ferrari engine!
-            let transaction = if app.selection.len() > 1 {
+            let transaction = if app.selection.primary().len() > 0 {
                 // Delete selection
                 Transaction::delete(&app.rope, app.selection.ranges().into_iter().map(|r| (r.from(), r.to())))
             } else {
@@ -619,14 +713,27 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Enter, _) => {
+            // Save the current virtual column before creating new line
+            let pos = app.selection.primary().head;
+            let line = app.rope.byte_to_line(pos);
+            let line_start = app.rope.line_to_byte(line);
+            let current_col = pos - line_start;
+
+            // Preserve virtual column if set, otherwise use current column
+            let virtual_col = app.virtual_cursor_col.unwrap_or(current_col);
+
             // Save state before transaction for history
             let state = State {
                 doc: app.rope.clone(),
                 selection: app.selection.clone(),
             };
 
+            // Insert newline plus spaces to reach the virtual column position
+            let padding = " ".repeat(virtual_col);
+            let new_line_content = format!("\n{}", padding);
+
             // CORRECT HELIX: Professional newline with Ferrari engine!
-            let transaction = Transaction::insert(&app.rope, &app.selection, "\n".into());
+            let transaction = Transaction::insert(&app.rope, &app.selection, new_line_content.into());
 
             // Apply transaction (modifies rope in-place)
             let success = transaction.apply(&mut app.rope);
@@ -634,6 +741,16 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if success {
                 // Map selection through changes
                 app.selection = app.selection.clone().map(transaction.changes());
+
+                // After Enter, we're at the END of the spaces on the new line
+                // We need to explicitly set the virtual column to be at that position
+                let new_pos = app.selection.primary().head;
+                let new_line = app.rope.byte_to_line(new_pos);
+                let new_line_start = app.rope.line_to_byte(new_line);
+                let new_col = new_pos - new_line_start;
+
+                // Set virtual column to where we actually are (at the end of spaces)
+                app.virtual_cursor_col = Some(new_col);
 
                 // Commit to history for undo/redo
                 app.history.commit_revision(&transaction, &state);
@@ -659,6 +776,9 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 // Commit to history for undo/redo
                 app.history.commit_revision(&transaction, &state);
+
+                // Clear virtual column when typing
+                app.virtual_cursor_col = None;
             }
         }
 
@@ -694,8 +814,8 @@ fn extract_selection_from_rope(app: &App) -> String {
     }
 
     // Regular selection
-    if app.selection.len() > 1 {
-        let range = app.selection.primary();
+    let range = app.selection.primary();
+    if range.len() > 0 {
         app.rope.slice(range.from()..range.to()).to_string()
     } else {
         String::new()

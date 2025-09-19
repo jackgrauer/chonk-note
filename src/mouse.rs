@@ -160,7 +160,14 @@ impl App {
                 display_x += 1; // Simplified - assumes 1 char = 1 column
             }
 
-            let final_pos = line_start + char_pos.min(line_str.len_bytes());
+            // For virtual space: don't clamp to line length
+            // Store the desired column separately if it's past end of line
+            let final_pos = if actual_x > display_x && display_x == line_str.len_chars() {
+                // Clicked past end of line - position at line end
+                line_start + line_str.len_bytes().saturating_sub(1).max(0)
+            } else {
+                line_start + char_pos.min(line_str.len_bytes())
+            };
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[SCREEN_TO_TEXT] final_pos={} (line_start={} + char_pos={})",
@@ -266,7 +273,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     }
                 } else {
                     // This shouldn't happen if click properly starts a block selection
-                    // but handle it gracefully
+                    // but handle it gracefully - for drag we always create block selection
                     app.block_selection = Some(BlockSelection::new(end_line, end_col));
                 }
 
@@ -321,28 +328,51 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         writeln!(file, "[MOUSE] Old selection: {:?}", app.selection).ok();
                     }
 
-                    // Always start block selection on click
+                    // Only start block selection if Alt is held
                     let line = app.rope.byte_to_line(pos);
                     let line_start = app.rope.line_to_byte(line);
                     let col = pos - line_start;
 
-                    // Calculate visual column for proper handling of tabs/wide chars
-                    let rope_slice = app.rope.slice(..);
-                    let line_slice = rope_slice.line(line);
-                    let visual_col = char_idx_to_visual_col(line_slice, col);
+                    if modifiers.alt {
+                        // Calculate visual column for proper handling of tabs/wide chars
+                        let rope_slice = app.rope.slice(..);
+                        let line_slice = rope_slice.line(line);
+                        let visual_col = char_idx_to_visual_col(line_slice, col);
 
-                    // Start a new block selection
-                    app.block_selection = Some(BlockSelection::new(line, col));
-                    if let Some(block_sel) = &mut app.block_selection {
-                        block_sel.anchor_visual_col = visual_col;
-                        block_sel.cursor_visual_col = visual_col;
+                        // Start a new block selection only with Alt modifier
+                        app.block_selection = Some(BlockSelection::new(line, col));
+                        if let Some(block_sel) = &mut app.block_selection {
+                            block_sel.anchor_visual_col = visual_col;
+                            block_sel.cursor_visual_col = visual_col;
+                        }
+                    } else {
+                        // Normal click without Alt - clear any block selection
+                        app.block_selection = None;
                     }
 
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] Starting block selection at col={}, line={}, visual_col={}", col, line, visual_col).ok();
+                        if modifiers.alt {
+                            writeln!(file, "[MOUSE] Starting block selection at col={}, line={}", col, line).ok();
+                        } else {
+                            writeln!(file, "[MOUSE] Regular click at col={}, line={}", col, line).ok();
+                        }
                     }
 
                     app.selection = Selection::point(pos);
+
+                    // Check if we clicked past end of line to set virtual cursor column
+                    let (term_width, _) = crate::kitty_native::KittyTerminal::size().unwrap_or((80, 24));
+                    let split_x = term_width / 2;
+                    let actual_col = (x as usize).saturating_sub(split_x as usize);
+                    let line = app.rope.byte_to_line(pos);
+                    let line_str = app.rope.line(line);
+                    let line_chars = line_str.len_chars();
+
+                    // Always store the virtual cursor column to maintain consistency
+                    app.virtual_cursor_col = Some(actual_col);
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[MOUSE] Set virtual_cursor_col={} (line_chars={})", actual_col, line_chars).ok();
+                    }
 
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                         writeln!(file, "[MOUSE] New selection: {:?}", app.selection).ok();

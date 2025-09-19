@@ -263,6 +263,7 @@ impl EditPanelRenderer {
                 let start_col = self.scroll_x as usize;
                 let end_col = (start_col + render_width as usize).min(row.len());
 
+                // Render characters that exist in the line
                 for x in start_col..end_col {
                     let is_cursor = cursor.1 == buffer_y && cursor.0 == x;
 
@@ -277,10 +278,10 @@ impl EditPanelRenderer {
                     let ch = row.get(x).copied().unwrap_or(' ');
 
                     if is_cursor {
-                        // ANSI: Cursor highlighting
+                        // ANSI: Cursor highlighting (light color)
                         print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_in_block {
-                        // ANSI: Block selection highlighting (distinct color for block mode)
+                        // ANSI: Block selection highlighting
                         print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
@@ -288,23 +289,20 @@ impl EditPanelRenderer {
                     }
                 }
 
-                // Clear rest of line if needed
+                // Handle the rest of the line (including virtual cursor position)
                 let chars_written = end_col - start_col;
                 if chars_written < render_width as usize {
-                    // Check if cursor is at end of line
-                    let is_cursor_at_eol = cursor == (row.len(), buffer_y) &&
-                                         row.len() >= start_col && row.len() < end_col;
+                    let remaining_space = render_width as usize - chars_written;
 
-                    if is_cursor_at_eol {
-                        // ANSI: Cursor at end of line
-                        print!("\x1b[48;2;143;161;179m \x1b[m");
-
-                        // Fill remaining space
-                        if chars_written + 1 < render_width as usize {
-                            write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written - 1))?;
+                    // Check if cursor is in the virtual space (past line end)
+                    for offset in 0..remaining_space {
+                        let virtual_x = end_col + offset;
+                        if cursor.1 == buffer_y && cursor.0 == virtual_x {
+                            // Render cursor in virtual space
+                            print!("\x1b[48;2;143;161;179m \x1b[m");
+                        } else {
+                            write!(stdout, " ")?;
                         }
-                    } else {
-                        write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written))?;
                     }
                 }
             } else {
@@ -312,6 +310,7 @@ impl EditPanelRenderer {
                 write!(stdout, "{:width$}", "", width = render_width as usize)?;
             }
         }
+
 
         stdout.flush()?;
         Ok(())
@@ -375,56 +374,46 @@ impl EditPanelRenderer {
                     let ch = row.get(x).copied().unwrap_or(' ');
                     
                     if is_cursor {
-                        // ANSI: Cursor highlighting
+                        // ANSI: Cursor highlighting (light color)
                         print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_selected {
-                        // ANSI: Selection highlighting
-                        print!("\x1b[48;2;0;0;139m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // ANSI: Selection highlighting (same blue as block selection)
+                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
                     }
                 }
                 
-                // Clear rest of line if needed
+                // Clear rest of line if needed and handle virtual cursor
                 let chars_written = end_col - start_col;
                 if chars_written < render_width as usize {
-                    // Check if cursor is at end of line
-                    let is_cursor_at_eol = cursor == (row.len(), buffer_y) && 
-                                         row.len() >= start_col && row.len() < end_col;
-                    
-                    if is_cursor_at_eol {
-                        // ANSI: Cursor at end of line
-                        print!("\x1b[48;2;143;161;179m \x1b[m");
-                        
-                        // Fill remaining space
-                        if chars_written + 1 < render_width as usize {
-                            write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written - 1))?;
+                    let remaining_space = render_width as usize - chars_written;
+                    // Check if cursor is past line end (virtual position)
+                    for offset in 0..remaining_space {
+                        let virtual_x = end_col + offset;
+                        if cursor.1 == buffer_y && cursor.0 == virtual_x {
+                            // Render cursor in virtual space
+                            print!("\x1b[48;2;143;161;179m \x1b[m");
+                        } else {
+                            write!(stdout, " ")?;
                         }
-                    } else {
-                        // Fill with spaces
-                        write!(stdout, "{:width$}", "", width = (render_width as usize - chars_written))?;
                     }
                 }
             } else {
                 // Empty line - check if cursor is here
-                let is_cursor_at_empty_line = cursor == (0, buffer_y);
-                
-                if is_cursor_at_empty_line {
-                    // ANSI: Cursor on empty line
-                    print!("\x1b[48;2;143;161;179m \x1b[m");
-                    
-                    // Fill remaining space
-                    if render_width > 1 {
-                        write!(stdout, "{:width$}", "", width = (render_width as usize - 1))?;
+                for x in 0..render_width as usize {
+                    if cursor.1 == buffer_y && cursor.0 == x {
+                        // Render cursor on empty line
+                        print!("\x1b[48;2;143;161;179m \x1b[m");
+                    } else {
+                        write!(stdout, " ")?;
                     }
-                } else {
-                    // Fill entire line with spaces
-                    write!(stdout, "{:width$}", "", width = render_width as usize)?;
                 }
             }
         }
-        
+
+
         stdout.flush()?;
         Ok(())
     }
