@@ -399,9 +399,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // For block selections, replace with spaces to preserve layout
                 let transaction = if let Some(_) = &app.block_selection {
                     Transaction::change_by_selection(&app.rope, &selection, |range| {
+                        // Replace the selected text with the exact same number of spaces
                         let len = range.to() - range.from();
-                        let spaces = " ".repeat(len);
-                        (range.from(), range.to(), Some(spaces.into()))
+                        if len > 0 {
+                            let spaces = " ".repeat(len);
+                            (range.from(), range.to(), Some(spaces.into()))
+                        } else {
+                            (range.from(), range.to(), None)
+                        }
                     })
                 } else {
                     Transaction::change_by_selection(&app.rope, &selection, |range| {
@@ -702,9 +707,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Block selection - replace with spaces to preserve layout
                 let selection = block_sel.to_selection(&app.rope);
                 let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
+                    // Replace the selected text with the exact same number of spaces
                     let len = range.to() - range.from();
-                    let spaces = " ".repeat(len);
-                    (range.from(), range.to(), Some(spaces.into()))
+                    if len > 0 {
+                        let spaces = " ".repeat(len);
+                        (range.from(), range.to(), Some(spaces.into()))
+                    } else {
+                        (range.from(), range.to(), None)
+                    }
                 });
                 (transaction, true)
             } else if app.selection.primary().len() > 0 {
