@@ -147,8 +147,14 @@ impl App {
     }
 
     pub async fn load_pdf_page(&mut self) -> Result<()> {
-        // Render page at full size (not limited by viewport)
-        let image = pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, 1200, 1600)?;
+        // Apply zoom to the base size when rendering (reduced by 25% for better text alignment)
+        let base_width = 900;  // Was 1200, reduced by 25%
+        let base_height = 1200; // Was 1600, reduced by 25%
+        let zoomed_width = (base_width as f32 * self.pdf_zoom) as u32;
+        let zoomed_height = (base_height as f32 * self.pdf_zoom) as u32;
+
+        // Render page at zoomed size
+        let image = pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, zoomed_width, zoomed_height)?;
 
         // Update PDF dimensions
         self.pdf_full_width = image.width() as u16;
@@ -624,8 +630,11 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         let content_x = x + 2;
         let content_y = y + 1;
-        let content_width = width.saturating_sub(4);
-        let content_height = height.saturating_sub(3);
+        // Apply zoom to content dimensions (zoom in = less visible, zoom out = more visible)
+        let base_width = width.saturating_sub(4);
+        let base_height = height.saturating_sub(3);
+        let content_width = (base_width as f32 / app.text_zoom).round() as u16;
+        let content_height = (base_height as f32 / app.text_zoom).round() as u16;
 
         if app.block_selection.is_some() {
             renderer.render_with_block_selection(

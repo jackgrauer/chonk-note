@@ -692,6 +692,32 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // TEXT OPERATIONS
         (KeyCode::Backspace, mods) if !mods.contains(KeyModifiers::ALT) && !mods.contains(KeyModifiers::SUPER) => {
+            // Special handling: if cursor is on a space/empty and no selection, just move left
+            let pos = app.selection.primary().head;
+            let is_on_space = if pos < app.rope.len_chars() {
+                let ch = app.rope.char(pos);
+                ch == ' ' || ch == '\t'
+            } else {
+                true  // End of document counts as empty
+            };
+
+            // If on empty space with no selection, just move left instead of deleting
+            if is_on_space && app.selection.primary().len() == 0 && app.block_selection.is_none() {
+                // Just move cursor left like pressing left arrow
+                if pos > 0 {
+                    let new_pos = pos - 1;
+                    app.selection = Selection::point(new_pos);
+
+                    // Update virtual cursor column
+                    let line = app.rope.char_to_line(new_pos);
+                    let line_start = app.rope.line_to_char(line);
+                    app.virtual_cursor_col = Some(new_pos - line_start);
+                }
+                // No deletion happens - just cursor movement
+                app.needs_redraw = true;
+                return Ok(true);  // Continue running
+            }
+
             // Save state before transaction for history
             let state = State {
                 doc: app.rope.clone(),

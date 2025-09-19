@@ -319,12 +319,16 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 // PDF zoom minus button
                 if x >= pdf_pane_width - 12 && x <= pdf_pane_width - 10 {
                     app.pdf_zoom = (app.pdf_zoom - 0.1).max(0.5);  // Min 50%
+                    // Reload PDF at new zoom level
+                    let _ = app.load_pdf_page().await;
                     app.needs_redraw = true;
                     return Ok(());
                 }
                 // PDF zoom plus button
                 if x >= pdf_pane_width - 3 && x <= pdf_pane_width - 1 {
                     app.pdf_zoom = (app.pdf_zoom + 0.1).min(3.0);  // Max 300%
+                    // Reload PDF at new zoom level
+                    let _ = app.load_pdf_page().await;
                     app.needs_redraw = true;
                     return Ok(());
                 }
