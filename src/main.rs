@@ -372,6 +372,10 @@ async fn run_app(app: &mut App) -> Result<()> {
             KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
+            // Clear the entire screen to prevent artifacts when resizing
+            // More efficient than selective clearing and ensures no remnants
+            print!("\x1b[2J");
+
             // Always dual pane mode: PDF on left, text editor on right
             if let Some(image) = &app.current_page_image {
                 let _ = viuer_display::display_pdf_image(
