@@ -621,10 +621,12 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
             let pos = app.selection.primary().head;
 
-            // Simple approach: just move left by bytes if we can
-            if pos >= accel {
-                let new_pos = pos - accel;
+            // BOUNDARY CHECK: Ensure we never go below 0, even with acceleration
+            // Use saturating_sub to prevent underflow
+            let new_pos = pos.saturating_sub(accel);
 
+            // Only move if we're not already at the boundary
+            if new_pos != pos || pos > 0 {
                 // Update virtual cursor column based on new position
                 let line = app.rope.char_to_line(new_pos);
                 let line_start = app.rope.line_to_char(line);
@@ -653,12 +655,15 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let line_start = app.rope.line_to_char(line);
             let current_col = pos - line_start;
 
+            // Get the maximum valid position in the document
+            let max_pos = app.rope.len_chars().saturating_sub(1);
+
             // For Right arrow, always use virtual column if set, otherwise current
             // This maintains virtual space position across lines
             let virtual_col = app.virtual_cursor_col.unwrap_or(current_col);
 
-            // Now increment from the virtual position
-            let new_virtual_col = virtual_col + accel;
+            // Now increment from the virtual position with boundary check
+            let new_virtual_col = virtual_col.saturating_add(accel);
             app.virtual_cursor_col = Some(new_virtual_col);
 
             // Get the line length to stay within document bounds
@@ -666,7 +671,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let line_len = line_slice.len_chars().saturating_sub(1); // Exclude newline
 
             // Document position tracks virtual position when possible, but caps at line end
-            let new_pos = line_start + new_virtual_col.min(line_len);
+            // BOUNDARY CHECK: Also ensure we never exceed the document's maximum position
+            let new_pos = (line_start + new_virtual_col.min(line_len)).min(max_pos);
 
             if mods.contains(KeyModifiers::SHIFT) {
                 // Extend selection - keep anchor, move head
