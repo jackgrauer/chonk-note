@@ -51,69 +51,104 @@ impl EditPanelRenderer {
     }
     
     pub fn scroll_up(&mut self, lines: u16) {
+        // Hard boundary at top - never go negative
         self.scroll_y = self.scroll_y.saturating_sub(lines);
-        self.viewport_y = self.viewport_y.saturating_sub(lines as usize);
+        self.viewport_y = self.scroll_y as usize;
     }
-    
+
     pub fn scroll_down(&mut self, lines: u16) {
         let max_scroll = self.buffer.len().saturating_sub(self.viewport_height as usize) as u16;
         self.scroll_y = (self.scroll_y + lines).min(max_scroll);
         self.viewport_y = self.scroll_y as usize;
     }
-    
+
     pub fn scroll_left(&mut self, cols: u16) {
+        // Hard boundary at left - never go negative
         self.scroll_x = self.scroll_x.saturating_sub(cols);
+        self.viewport_x = self.scroll_x as usize;
     }
-    
+
     pub fn scroll_right(&mut self, cols: u16) {
         let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
         let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
         self.scroll_x = (self.scroll_x + cols).min(max_scroll);
+        self.viewport_x = self.scroll_x as usize;
     }
-    
+
     pub fn scroll_to_x(&mut self, x: u16) {
-        self.scroll_x = x;
+        // Enforce boundaries when setting scroll position directly
+        let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
+        let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
+        self.scroll_x = x.min(max_scroll);
+        self.viewport_x = self.scroll_x as usize;
     }
-    
+
     pub fn scroll_to_y(&mut self, y: u16) {
-        self.scroll_y = y;
+        // Enforce boundaries when setting scroll position directly
+        let max_scroll = self.buffer.len().saturating_sub(self.viewport_height as usize) as u16;
+        self.scroll_y = y.min(max_scroll);
+        self.viewport_y = self.scroll_y as usize;
     }
 
     /// Automatically scroll viewport to follow cursor with padding
+    /// IMPORTANT: Viewport must ALWAYS keep cursor visible within its boundaries
     pub fn follow_cursor(&mut self, cursor_x: usize, cursor_y: usize, padding: u16) {
         let cursor_x = cursor_x as u16;
         let cursor_y = cursor_y as u16;
 
-        // Vertical scrolling
-        let visible_top = self.scroll_y;
-        let visible_bottom = self.scroll_y + self.viewport_height;
+        // HARD BOUNDARIES: Never allow negative scroll positions
+        const MIN_SCROLL: u16 = 0;
 
-        // If cursor is too close to top edge, scroll up
-        if cursor_y < visible_top + padding {
-            self.scroll_y = cursor_y.saturating_sub(padding);
+        // VERTICAL SCROLLING - Ensure cursor is always visible vertically
+
+        // If cursor is above viewport (including padding), scroll up to show it
+        if cursor_y < self.scroll_y + padding {
+            // Never scroll past 0 (hard boundary at top)
+            self.scroll_y = cursor_y.saturating_sub(padding).max(MIN_SCROLL);
         }
-        // If cursor is too close to bottom edge, scroll down
-        else if cursor_y + padding >= visible_bottom {
-            let target_scroll = (cursor_y + padding).saturating_sub(self.viewport_height) + 1;
+        // If cursor is below viewport (including padding), scroll down to show it
+        else if cursor_y >= self.scroll_y + self.viewport_height.saturating_sub(padding) {
+            // Calculate minimum scroll needed to show cursor with padding
+            let min_scroll = cursor_y.saturating_sub(self.viewport_height.saturating_sub(padding + 1));
             let max_scroll = self.buffer.len().saturating_sub(self.viewport_height as usize) as u16;
-            self.scroll_y = target_scroll.min(max_scroll);
+            self.scroll_y = min_scroll.min(max_scroll);
         }
 
-        // Horizontal scrolling
-        let visible_left = self.scroll_x;
-        let visible_right = self.scroll_x + self.viewport_width;
+        // HORIZONTAL SCROLLING - Ensure cursor is always visible horizontally
 
-        // If cursor is too close to left edge, scroll left
-        if cursor_x < visible_left + padding {
-            self.scroll_x = cursor_x.saturating_sub(padding);
+        // If cursor is left of viewport (including padding), scroll left to show it
+        if cursor_x < self.scroll_x + padding {
+            // Never scroll past 0 (hard boundary at left)
+            self.scroll_x = cursor_x.saturating_sub(padding).max(MIN_SCROLL);
         }
-        // If cursor is too close to right edge, scroll right
-        else if cursor_x + padding >= visible_right {
-            let target_scroll = (cursor_x + padding).saturating_sub(self.viewport_width) + 1;
+        // If cursor is right of viewport (including padding), scroll right to show it
+        else if cursor_x >= self.scroll_x + self.viewport_width.saturating_sub(padding) {
+            // Calculate minimum scroll needed to show cursor with padding
+            let min_scroll = cursor_x.saturating_sub(self.viewport_width.saturating_sub(padding + 1));
             let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
             let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
-            self.scroll_x = target_scroll.min(max_scroll);
+            self.scroll_x = min_scroll.min(max_scroll);
         }
+
+        // FINAL SAFETY CHECK: Ensure viewport boundaries are valid
+        // The viewport can never be positioned where cursor would be outside its range
+
+        // If cursor is somehow still not visible, force viewport to contain it
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;  // Force viewport to contain cursor
+        } else if cursor_y >= self.scroll_y + self.viewport_height {
+            self.scroll_y = cursor_y.saturating_sub(self.viewport_height - 1);
+        }
+
+        if cursor_x < self.scroll_x {
+            self.scroll_x = cursor_x;  // Force viewport to contain cursor
+        } else if cursor_x >= self.scroll_x + self.viewport_width {
+            self.scroll_x = cursor_x.saturating_sub(self.viewport_width - 1);
+        }
+
+        // Ensure scroll positions are never negative (absolute hard boundary)
+        self.scroll_x = self.scroll_x.max(MIN_SCROLL);
+        self.scroll_y = self.scroll_y.max(MIN_SCROLL);
 
         // Update viewport position for mouse mapping
         self.viewport_x = self.scroll_x as usize;
