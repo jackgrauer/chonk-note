@@ -279,7 +279,7 @@ impl EditPanelRenderer {
 
                     if is_cursor {
                         // ANSI: Cursor highlighting (light color)
-                        print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
+                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
                     } else if is_in_block {
                         // ANSI: Block selection highlighting
                         print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
@@ -299,7 +299,7 @@ impl EditPanelRenderer {
                         let virtual_x = end_col + offset;
                         if cursor.1 == buffer_y && cursor.0 == virtual_x {
                             // Render cursor in virtual space
-                            print!("\x1b[48;2;143;161;179m \x1b[m");
+                            print!("\x1b[48;2;80;80;200m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -375,7 +375,7 @@ impl EditPanelRenderer {
                     
                     if is_cursor {
                         // ANSI: Cursor highlighting (light color)
-                        print!("\x1b[48;2;143;161;179m\x1b[38;2;0;0;0m{}\x1b[m", ch);
+                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
                     } else if is_selected {
                         // ANSI: Selection highlighting (same blue as block selection)
                         print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
@@ -394,7 +394,7 @@ impl EditPanelRenderer {
                         let virtual_x = end_col + offset;
                         if cursor.1 == buffer_y && cursor.0 == virtual_x {
                             // Render cursor in virtual space
-                            print!("\x1b[48;2;143;161;179m \x1b[m");
+                            print!("\x1b[48;2;80;80;200m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -405,7 +405,7 @@ impl EditPanelRenderer {
                 for x in 0..render_width as usize {
                     if cursor.1 == buffer_y && cursor.0 == x {
                         // Render cursor on empty line
-                        print!("\x1b[48;2;143;161;179m \x1b[m");
+                        print!("\x1b[48;2;80;80;200m \x1b[m");
                     } else {
                         write!(stdout, " ")?;
                     }
