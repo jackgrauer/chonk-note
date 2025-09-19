@@ -348,8 +348,8 @@ async fn extract_leptess_ocr_method(
 async fn try_leptess_ocr(
     pdf_path: &Path,
     page_num: usize,
-    width: usize,
-    height: usize,
+    grid_width: usize,
+    grid_height: usize,
 ) -> Result<Vec<Vec<char>>> {
     use leptess::{LepTess, Variable};
 
@@ -360,43 +360,118 @@ async fn try_leptess_ocr(
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
     let page = document.pages().get(page_num as u16)?;
 
-    // Balanced OCR resolution: Good quality but faster processing
+    // PREPROCESSING TRICK: Render at 2x resolution for better OCR accuracy
+    // Tesseract performs better with higher resolution images (counterintuitive but true)
     let bitmap = page.render_with_config(
         &PdfRenderConfig::new()
-            .set_target_size(1200, 1600) // Reduced resolution for speed while maintaining quality
+            .set_target_size(2400, 3200) // 2x resolution for better OCR accuracy
             .rotate_if_landscape(PdfPageRenderRotation::None, false)
     )?;
 
-    let image = bitmap.as_image();
+    // OPTIMIZED: Try to use raw bytes directly if possible to avoid conversion overhead
+    // Get raw BGRA bytes directly from bitmap using the non-deprecated method
+    let raw_bytes = bitmap.as_raw_bytes();
 
-    // Convert to RGB8 format that Leptess can handle reliably
-    let rgb_image = image.to_rgb8();
+    // Direct BGRA to RGB conversion without intermediate Image object
+    // This saves memory by avoiding bitmap -> Image -> RGB8 conversions
+    let width = bitmap.width();
+    let height = bitmap.height();
+    let mut rgb_bytes = Vec::with_capacity((width * height * 3) as usize);
 
-    // Initialize Tesseract with optimal settings
+    // Direct BGRA to RGB conversion, skipping alpha channel
+    for chunk in raw_bytes.chunks_exact(4) {
+        rgb_bytes.push(chunk[2]); // R (BGRA format has reversed order)
+        rgb_bytes.push(chunk[1]); // G
+        rgb_bytes.push(chunk[0]); // B
+        // Skip chunk[3] which is alpha
+    }
+
+    // Initialize Tesseract with advanced optimization settings
     let mut leptess = LepTess::new(None, "eng")?;
 
-    // Optimized OCR settings for speed and reliability
-    leptess.set_variable(Variable::TesseditPagesegMode, "6")?; // PSM 6: Single uniform block (faster)
-    leptess.set_variable(Variable::TesseditOcrEngineMode, "1")?; // Neural nets LSTM only
+    // THE DPI LIE - Tesseract was trained on 300 DPI, so we tell it that's what we have
+    leptess.set_variable(Variable::UserDefinedDpi, "300")?; // Magic number that improves accuracy
 
-    // Speed optimizations
-    leptess.set_variable(Variable::TesseditWriteImages, "0")?; // Don't write debug images
+    // Note: Some thresholding variables may not be available in this version of leptess
+    // We'll use what's available for optimization
 
-    // Set the RGB image for OCR with error handling
-    if let Err(e) = leptess.set_image_from_mem(&rgb_image) {
+    // ADVANCED OCR CONFIGURATION
+    leptess.set_variable(Variable::TesseditPagesegMode, "3")?; // PSM 3: Fully automatic page segmentation
+    leptess.set_variable(Variable::TesseditOcrEngineMode, "1")?; // LSTM neural nets only (most accurate)
+
+    // DICTIONARY OPTIMIZATION - Disable system dictionaries for better character recognition
+    leptess.set_variable(Variable::LoadSystemDawg, "0")?; // Don't load system dictionary
+    leptess.set_variable(Variable::LoadFreqDawg, "0")?; // Don't load frequency dictionary
+
+    // CHARACTER WHITELIST - Limit to common characters for cleaner results
+    leptess.set_variable(Variable::TesseditCharWhitelist,
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?-()[]{}\"'/\n\t")?;
+
+    // EDGE ENHANCEMENT - Improve text edge detection
+    leptess.set_variable(Variable::TextordMinXheight, "8")?; // Minimum x-height for text lines
+    leptess.set_variable(Variable::MinOrientationMargin, "7")?; // Better orientation detection
+
+    // OUTPUT OPTIMIZATIONS
+    leptess.set_variable(Variable::TesseditCreateTsv, "0")?; // No TSV output
+    leptess.set_variable(Variable::TesseditCreateHocr, "0")?; // No HOCR output
+    leptess.set_variable(Variable::TesseditPreserveMinWdLen, "2")?; // Keep short words
+    leptess.set_variable(Variable::TesseditWriteImages, "0")?; // No debug images
+
+    // Set the RGB image for OCR
+    if let Err(e) = leptess.set_image_from_mem(&rgb_bytes) {
         return Err(anyhow::anyhow!("OCR image format error: {}", e));
     }
 
-    // Get OCR text
+    // Get OCR text and confidence score
     let ocr_text = leptess.get_utf8_text()?;
+    let confidence = leptess.mean_text_conf();
 
-    // Enhanced text processing with paragraph detection
-    let mut grid = vec![vec![' '; width]; height];
+    // INVERTED TEXT TRICK - If confidence is low, try inverted image
+    let final_text = if confidence < 70 {
+        // Create inverted version of the image (white text on black background)
+        let mut inverted_bytes = Vec::with_capacity(rgb_bytes.len());
+        for byte in &rgb_bytes {
+            inverted_bytes.push(255 - byte); // Invert each color channel
+        }
+
+        // Try OCR on inverted image
+        let mut leptess_inverted = LepTess::new(None, "eng")?;
+        leptess_inverted.set_variable(Variable::UserDefinedDpi, "300")?;
+        leptess_inverted.set_variable(Variable::TesseditPagesegMode, "3")?;
+        leptess_inverted.set_variable(Variable::TesseditOcrEngineMode, "1")?;
+
+        if let Ok(()) = leptess_inverted.set_image_from_mem(&inverted_bytes) {
+            if let Ok(inverted_text) = leptess_inverted.get_utf8_text() {
+                let inverted_confidence = leptess_inverted.mean_text_conf();
+
+                // Use inverted result if it has higher confidence
+                if inverted_confidence > confidence {
+                    inverted_text
+                } else {
+                    ocr_text
+                }
+            } else {
+                ocr_text
+            }
+        } else {
+            ocr_text
+        }
+    } else {
+        ocr_text
+    };
+
+    // Use the final OCR text for processing
+    let ocr_text = final_text;
+
+    // Enhanced text processing with better paragraph and section detection
+    let mut grid = vec![vec![' '; grid_width]; grid_height];
     let lines: Vec<&str> = ocr_text.lines().collect();
     let mut grid_row = 0;
+    let mut last_was_empty = false;
+    let mut prev_line_length = 0;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        if grid_row >= height {
+        if grid_row >= grid_height {
             break;
         }
 
@@ -404,35 +479,61 @@ async fn try_leptess_ocr(
         let trimmed_line = line.trim();
 
         if trimmed_line.is_empty() {
-            // Empty line indicates paragraph break
-            grid_row += 1;
-            if grid_row >= height { break; }
+            // Empty line indicates paragraph break - always preserve at least one blank line
+            if !last_was_empty {  // Avoid multiple consecutive blank lines
+                grid_row += 1;
+                if grid_row >= grid_height { break; }
+            }
+            last_was_empty = true;
             continue;
         }
 
-        // Check for paragraph indentation (common in well-formatted text)
-        let has_indent = line.starts_with("    ") || line.starts_with("\t");
-        if has_indent && line_idx > 0 && grid_row > 0 {
-            // Add blank line before indented paragraph
-            grid_row += 1;
-            if grid_row >= height { break; }
+        // Check for section/paragraph boundaries
+        let is_short_line = prev_line_length > 0 && prev_line_length < grid_width / 2;
+        let has_indent = line.starts_with("    ") || line.starts_with("\t") || line.starts_with("  ");
+        let starts_with_bullet = trimmed_line.starts_with("•") || trimmed_line.starts_with("-") ||
+                                trimmed_line.starts_with("*") || trimmed_line.starts_with("●");
+        let starts_with_number = trimmed_line.chars().next().map_or(false, |c| c.is_ascii_digit());
+
+        // Add spacing for various paragraph indicators
+        if line_idx > 0 && grid_row > 0 && !last_was_empty {
+            // Add blank line for:
+            // - After short lines (likely end of paragraph)
+            // - Before indented paragraphs
+            // - Before bullet points
+            // - Before numbered lists
+            // - Between sections (heuristic: significant change in line characteristics)
+            if is_short_line || has_indent || starts_with_bullet || starts_with_number {
+                grid_row += 1;
+                if grid_row >= grid_height { break; }
+            }
         }
 
         // Clean up OCR artifacts and preserve spacing
         let cleaned_line = line
             .chars()
-            .filter(|&ch| !ch.is_control() || ch == ' ')
+            .filter(|&ch| !ch.is_control() || ch == ' ' || ch == '\t')
             .collect::<String>();
 
-        for (col, ch) in cleaned_line.chars().enumerate() {
-            if col >= width {
+        // Preserve indentation and spacing
+        let line_to_write = if has_indent {
+            // Keep indentation for readability
+            format!("  {}", trimmed_line)
+        } else {
+            cleaned_line.clone()
+        };
+
+        for (col, ch) in line_to_write.chars().enumerate() {
+            if col >= grid_width {
                 break;
             }
-            if grid_row < height {
+            if grid_row < grid_height {
                 grid[grid_row][col] = ch;
             }
         }
 
+        prev_line_length = cleaned_line.trim().len();
+        last_was_empty = false;
         grid_row += 1;
     }
 

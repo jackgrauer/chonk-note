@@ -141,12 +141,12 @@ impl App {
 
             // Convert to character position in rope
             let line = actual_y.min(self.rope.len_lines().saturating_sub(1));
-            let line_start = self.rope.line_to_byte(line);
+            let line_start = self.rope.line_to_char(line);
             let line_str = self.rope.line(line);
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[SCREEN_TO_TEXT] line={}, line_start={}, line_len={}",
-                    line, line_start, line_str.len_bytes()).ok();
+                    line, line_start, line_str.len_chars()).ok();
             }
 
             // Find character at x position (simple approach, assumes monospace)
@@ -156,7 +156,7 @@ impl App {
                 if display_x >= actual_x {
                     break;
                 }
-                char_pos += ch.len_utf8();
+                char_pos += 1; // Count chars, not bytes
                 display_x += 1; // Simplified - assumes 1 char = 1 column
             }
 
@@ -164,9 +164,9 @@ impl App {
             // Store the desired column separately if it's past end of line
             let final_pos = if actual_x > display_x && display_x == line_str.len_chars() {
                 // Clicked past end of line - position at line end
-                line_start + line_str.len_bytes().saturating_sub(1).max(0)
+                line_start + line_str.len_chars().saturating_sub(1).max(0)
             } else {
-                line_start + char_pos.min(line_str.len_bytes())
+                line_start + char_pos.min(line_str.len_chars())
             };
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
@@ -250,8 +250,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 writeln!(file, "[MOUSE] DRAG EVENT MATCHED! x={}, y={}", x, y).ok();
             }
             if let Some(end_pos) = app.screen_to_text_pos(x, y) {
-                let end_line = app.rope.byte_to_line(end_pos);
-                let end_line_start = app.rope.line_to_byte(end_line);
+                let end_line = app.rope.char_to_line(end_pos);
+                let end_line_start = app.rope.line_to_char(end_line);
                 let end_col = end_pos - end_line_start;
 
                 // Calculate visual column for proper handling of tabs/wide chars
@@ -329,8 +329,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     }
 
                     // Only start block selection if Alt is held
-                    let line = app.rope.byte_to_line(pos);
-                    let line_start = app.rope.line_to_byte(line);
+                    let line = app.rope.char_to_line(pos);
+                    let line_start = app.rope.line_to_char(line);
                     let col = pos - line_start;
 
                     if modifiers.alt {
@@ -364,7 +364,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     let (term_width, _) = crate::kitty_native::KittyTerminal::size().unwrap_or((80, 24));
                     let split_x = term_width / 2;
                     let actual_col = (x as usize).saturating_sub(split_x as usize);
-                    let line = app.rope.byte_to_line(pos);
+                    let line = app.rope.char_to_line(pos);
                     let line_str = app.rope.line(line);
                     let line_chars = line_str.len_chars();
 

@@ -281,17 +281,12 @@ async fn main() -> Result<()> {
     let pdf_path = if let Some(path) = args.pdf_file {
         path
     } else {
-        // Try to find a default PDF in Documents
-        if let Some(path) = find_default_pdf() {
+        // Show file picker when no PDF specified
+        if let Some(path) = kitty_file_picker::pick_pdf_file()? {
             path
         } else {
-            // Fallback to file picker if no default found
-            if let Some(path) = kitty_file_picker::pick_pdf_file()? {
-                path
-            } else {
-                eprintln!("No PDF file specified and none found");
-                std::process::exit(1);
-            }
+            eprintln!("No PDF file selected");
+            std::process::exit(0);  // Exit cleanly if user cancels
         }
     };
 
@@ -305,19 +300,6 @@ async fn main() -> Result<()> {
     result
 }
 
-fn find_default_pdf() -> Option<PathBuf> {
-    let docs_path = PathBuf::from("/Users/jack/Documents");
-    if let Ok(entries) = std::fs::read_dir(&docs_path) {
-        for entry in entries.flatten() {
-            if let Some(ext) = entry.path().extension() {
-                if ext.to_string_lossy().to_lowercase() == "pdf" {
-                    return Some(entry.path());
-                }
-            }
-        }
-    }
-    None
-}
 
 fn setup_terminal() -> Result<()> {
     // CROSSTERM ELIMINATED! Pure Kitty-native
@@ -392,8 +374,8 @@ async fn run_app(app: &mut App) -> Result<()> {
             if let Some(renderer) = &app.edit_display {
                 // HELIX-CORE: Convert selection to old format for renderer
                 let cursor_pos = app.selection.primary().head;
-                let cursor_line = app.rope.byte_to_line(cursor_pos);
-                let line_start = app.rope.line_to_byte(cursor_line);
+                let cursor_line = app.rope.char_to_line(cursor_pos);
+                let line_start = app.rope.line_to_char(cursor_line);
                 let actual_col = cursor_pos - line_start;
 
                 // Use virtual cursor column if set (for positioning past line end)
@@ -407,32 +389,48 @@ async fn run_app(app: &mut App) -> Result<()> {
                 // The renderer expects viewport-relative coordinates, not absolute document coordinates
                 let viewport_relative_cursor = (cursor_col, cursor_line);
 
+                // Get the extraction method name for the label
+                let method_label = match app.extraction_method {
+                    ExtractionMethod::Segments => "PDFium",
+                    ExtractionMethod::PdfAlto => "PDFAlto",
+                    ExtractionMethod::LeptessOCR => "Leptess OCR",
+                };
+
                 // Check if we have block selection mode active
                 if app.block_selection.is_some() {
-                    // Use block selection renderer
+                    // First render the label
+                    renderer.render_with_label(
+                        split_x, 0, term_width - split_x, 1, Some(method_label)
+                    )?;
+                    // Then render block selection content
                     renderer.render_with_block_selection(
-                        split_x, 0, term_width - split_x, term_height - 2,
+                        split_x, 1, term_width - split_x, term_height - 3,
                         viewport_relative_cursor,
                         app.block_selection.as_ref()
                     )?;
                 } else {
+                    // First render the label
+                    renderer.render_with_label(
+                        split_x, 0, term_width - split_x, 1, Some(method_label)
+                    )?;
+
                     // Use normal selection renderer
                     let (sel_start, sel_end) = if app.selection.primary().len() > 0 {
                         let range = app.selection.primary();
-                        let start_line = app.rope.byte_to_line(range.from());
-                        let end_line = app.rope.byte_to_line(range.to());
-                        let start_line_byte = app.rope.line_to_byte(start_line);
-                        let end_line_byte = app.rope.line_to_byte(end_line);
+                        let start_line = app.rope.char_to_line(range.from());
+                        let end_line = app.rope.char_to_line(range.to());
+                        let start_line_char = app.rope.line_to_char(start_line);
+                        let end_line_char = app.rope.line_to_char(end_line);
                         (
-                            Some((range.from() - start_line_byte, start_line)),
-                            Some((range.to() - end_line_byte, end_line))
+                            Some((range.from() - start_line_char, start_line)),
+                            Some((range.to() - end_line_char, end_line))
                         )
                     } else {
                         (None, None)
                     };
 
                     renderer.render_with_cursor_and_selection(
-                        split_x, 0, term_width - split_x, term_height - 2,
+                        split_x, 1, term_width - split_x, term_height - 3,
                         viewport_relative_cursor,
                         sel_start,
                         sel_end

@@ -7,9 +7,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 // HELIX-CORE INTEGRATION! Professional text editing
-use helix_core::{Transaction, Selection, history::State};
-// HELIX-VIEW INTEGRATION! Clipboard and register system
-use helix_view::clipboard::{ClipboardProvider, ClipboardType};
+use helix_core::{Transaction, Selection, history::State, movement};
 
 // Arrow key acceleration helper
 fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
@@ -53,69 +51,39 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
     // macOS-NATIVE KEYBOARD SHORTCUTS!
     match (key.code, key.modifiers) {
-        // NAVIGATION - macOS style
+        // NAVIGATION - macOS style with proper Helix Rope API (no String conversion!)
         // Cmd+Left/Right = beginning/end of line
         (KeyCode::Left, mods) if mods.contains(KeyModifiers::SUPER) => {
-            // TODO: Implement Cmd+Left = line start with proper helix API
+            // Cmd+Left = move to line start using Helix Rope API
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
-            let line_start = app.rope.line_to_byte(line);
+            let line = rope.char_to_line(pos);
+            let line_start = rope.line_to_char(line);
             app.selection = Selection::point(line_start);
         }
 
         (KeyCode::Right, mods) if mods.contains(KeyModifiers::SUPER) => {
-            // Cmd+Right = move to line end
+            // Cmd+Right = move to line end using Helix Rope API
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
-            let line_start = app.rope.line_to_byte(line);
-            let line_end = line_start + app.rope.line(line).len_bytes().saturating_sub(1);
+            let line = rope.char_to_line(pos);
+            let line_start = rope.line_to_char(line);
+            let line_len = rope.line(line).len_chars();
+            let line_end = line_start + line_len.saturating_sub(1);
             app.selection = Selection::point(line_end);
         }
 
-        // Option+Left/Right = word by word (simplified for now)
+        // Option+Left/Right = word by word using proper Helix movement
         (KeyCode::Left, mods) if mods.contains(KeyModifiers::ALT) => {
-            // Option+Left = move to previous word (basic implementation)
-            let pos = app.selection.primary().head;
-            let text = rope.to_string();
-            let mut new_pos = pos;
-
-            // Find previous word boundary
-            let chars: Vec<char> = text.chars().collect();
-            if let Some(mut i) = pos.checked_sub(1) {
-                // Skip current whitespace
-                while i > 0 && chars.get(i).map_or(false, |c| c.is_whitespace()) {
-                    i -= 1;
-                }
-                // Skip current word
-                while i > 0 && chars.get(i).map_or(false, |c| !c.is_whitespace()) {
-                    i -= 1;
-                }
-                new_pos = i;
-            }
-            app.selection = Selection::point(new_pos);
+            // Option+Left = move to previous word using Helix movement
+            let range = app.selection.primary();
+            let new_pos = movement::move_prev_word_start(rope.slice(..), range, 1);
+            app.selection = Selection::single(new_pos.anchor, new_pos.head);
         }
 
         (KeyCode::Right, mods) if mods.contains(KeyModifiers::ALT) => {
-            // Option+Right = move to next word (basic implementation)
-            let pos = app.selection.primary().head;
-            let text = rope.to_string();
-            let mut new_pos = pos;
-
-            // Find next word boundary
-            let chars: Vec<char> = text.chars().collect();
-            if pos < chars.len() {
-                let mut i = pos;
-                // Skip current word
-                while i < chars.len() && chars.get(i).map_or(false, |c| !c.is_whitespace()) {
-                    i += 1;
-                }
-                // Skip whitespace
-                while i < chars.len() && chars.get(i).map_or(false, |c| c.is_whitespace()) {
-                    i += 1;
-                }
-                new_pos = i;
-            }
-            app.selection = Selection::point(new_pos);
+            // Option+Right = move to next word using Helix movement
+            let range = app.selection.primary();
+            let new_pos = movement::move_next_word_end(rope.slice(..), range, 1);
+            app.selection = Selection::single(new_pos.anchor, new_pos.head);
         }
 
         // Cmd+Up/Down = document start/end
@@ -129,20 +97,24 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.selection = Selection::point(rope.len_chars());
         }
 
-        // DELETION - macOS style
-        // Option+Backspace = delete word (simplified)
+        // DELETION - macOS style with proper Helix word boundaries
+        // Option+Backspace = delete word
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => {
-            let pos = app.selection.primary().head;
-            if pos > 0 {
+            let range = app.selection.primary();
+            if range.head > 0 {
                 // Save state before transaction for history
                 let state = State {
                     doc: app.rope.clone(),
                     selection: app.selection.clone(),
                 };
 
-                // For now, delete 5 characters (basic word approximation)
-                let start = pos.saturating_sub(5);
-                let transaction = Transaction::delete(&app.rope, std::iter::once((start, pos)));
+                // Use Helix movement to find the previous word boundary
+                let word_start_range = movement::move_prev_word_start(rope, range, 1);
+                let start = word_start_range.head;
+                let end = range.head;
+
+                // Create transaction to delete the word
+                let transaction = Transaction::delete(&app.rope, std::iter::once((start, end)));
 
                 // Apply transaction
                 let success = transaction.apply(&mut app.rope);
@@ -159,8 +131,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         // Cmd+Backspace = delete to line start
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::SUPER) => {
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
-            let line_start = app.rope.line_to_byte(line);
+            let line = app.rope.char_to_line(pos);
+            let line_start = app.rope.line_to_char(line);
             if pos > line_start {
                 // Save state before transaction for history
                 let state = State {
@@ -563,7 +535,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let accel = update_arrow_acceleration(app, KeyCode::Up);
 
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
+            let line = app.rope.char_to_line(pos);
             let lines_to_move = accel.min(line);  // Don't go past start
 
             if lines_to_move > 0 {
@@ -571,13 +543,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let virtual_col = if let Some(vc) = app.virtual_cursor_col {
                     vc
                 } else {
-                    let line_start = app.rope.line_to_byte(line);
+                    let line_start = app.rope.line_to_char(line);
                     pos - line_start
                 };
 
                 let new_line = line - lines_to_move;
-                let line_start = app.rope.line_to_byte(new_line);
-                let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
+                let line_start = app.rope.line_to_char(new_line);
+                let line_len = app.rope.line(new_line).len_chars().saturating_sub(1);
 
                 // Position cursor at virtual column, allowing it to go past line end
                 // The selection will be at the actual line position, but we remember the virtual column
@@ -605,7 +577,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let accel = update_arrow_acceleration(app, KeyCode::Down);
 
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
+            let line = app.rope.char_to_line(pos);
             let max_line = app.rope.len_lines() - 1;
             let lines_to_move = accel.min(max_line - line);  // Don't go past end
 
@@ -614,13 +586,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let virtual_col = if let Some(vc) = app.virtual_cursor_col {
                     vc
                 } else {
-                    let line_start = app.rope.line_to_byte(line);
+                    let line_start = app.rope.line_to_char(line);
                     pos - line_start
                 };
 
                 let new_line = line + lines_to_move;
-                let line_start = app.rope.line_to_byte(new_line);
-                let line_len = app.rope.line(new_line).len_bytes().saturating_sub(1);
+                let line_start = app.rope.line_to_char(new_line);
+                let line_len = app.rope.line(new_line).len_chars().saturating_sub(1);
 
                 // Position cursor at virtual column, allowing it to go past line end
                 // The selection will be at the actual line position, but we remember the virtual column
@@ -654,8 +626,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let new_pos = pos - accel;
 
                 // Update virtual cursor column based on new position
-                let line = app.rope.byte_to_line(new_pos);
-                let line_start = app.rope.line_to_byte(line);
+                let line = app.rope.char_to_line(new_pos);
+                let line_start = app.rope.line_to_char(line);
                 app.virtual_cursor_col = Some(new_pos - line_start);
 
                 if mods.contains(KeyModifiers::SHIFT) {
@@ -677,8 +649,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let accel = update_arrow_acceleration(app, KeyCode::Right);
 
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
-            let line_start = app.rope.line_to_byte(line);
+            let line = app.rope.char_to_line(pos);
+            let line_start = app.rope.line_to_char(line);
             let current_col = pos - line_start;
 
             // For Right arrow, always use virtual column if set, otherwise current
@@ -691,7 +663,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
             // Get the line length to stay within document bounds
             let line_slice = app.rope.line(line);
-            let line_len = line_slice.len_bytes().saturating_sub(1); // Exclude newline
+            let line_len = line_slice.len_chars().saturating_sub(1); // Exclude newline
 
             // Document position tracks virtual position when possible, but caps at line end
             let new_pos = line_start + new_virtual_col.min(line_len);
@@ -776,8 +748,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Enter, _) => {
             // Save the current virtual column before creating new line
             let pos = app.selection.primary().head;
-            let line = app.rope.byte_to_line(pos);
-            let line_start = app.rope.line_to_byte(line);
+            let line = app.rope.char_to_line(pos);
+            let line_start = app.rope.line_to_char(line);
             let current_col = pos - line_start;
 
             // Preserve virtual column if set, otherwise use current column
@@ -806,8 +778,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // After Enter, we're at the END of the spaces on the new line
                 // We need to explicitly set the virtual column to be at that position
                 let new_pos = app.selection.primary().head;
-                let new_line = app.rope.byte_to_line(new_pos);
-                let new_line_start = app.rope.line_to_byte(new_line);
+                let new_line = app.rope.char_to_line(new_pos);
+                let new_line_start = app.rope.line_to_char(new_line);
                 let new_col = new_pos - new_line_start;
 
                 // Set virtual column to where we actually are (at the end of spaces)
@@ -884,15 +856,42 @@ fn extract_selection_from_rope(app: &App) -> String {
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
-    // Use Helix's clipboard provider - Pasteboard on macOS
-    let mut clipboard = ClipboardProvider::default();
-    clipboard.set_contents(text, ClipboardType::Clipboard)
-        .map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
+    // Direct macOS pbcopy command for reliable system clipboard
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn pbcopy: {}", e))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(text.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to pbcopy: {}", e))?;
+    }
+
+    let output = child.wait_with_output()
+        .map_err(|e| anyhow::anyhow!("Failed to wait for pbcopy: {}", e))?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("pbcopy failed with status: {}", output.status));
+    }
+
+    Ok(())
 }
 
 fn paste_from_clipboard() -> Result<String> {
-    // Use Helix's clipboard provider - Pasteboard on macOS
-    let mut clipboard = ClipboardProvider::default();
-    clipboard.get_contents(&ClipboardType::Clipboard)
-        .map_err(|e| anyhow::anyhow!("Clipboard error: {}", e))
+    // Direct macOS pbpaste command for reliable system clipboard
+    use std::process::Command;
+
+    let output = Command::new("pbpaste")
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run pbpaste: {}", e))?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("pbpaste failed with status: {}", output.status));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 from pbpaste: {}", e))
 }

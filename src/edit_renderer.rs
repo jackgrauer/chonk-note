@@ -118,19 +118,42 @@ impl EditPanelRenderer {
     
     /// Efficiently render the text buffer to the terminal within bounds
     pub fn render(&self, start_x: u16, start_y: u16, max_width: u16, max_height: u16) -> io::Result<()> {
+        self.render_with_label(start_x, start_y, max_width, max_height, None)
+    }
+
+    /// Render with an optional extraction method label
+    pub fn render_with_label(&self, start_x: u16, start_y: u16, max_width: u16, max_height: u16, method_label: Option<&str>) -> io::Result<()> {
         let mut stdout = io::stdout();
-        
+
         // Clamp rendering to the specified bounds
         let render_width = self.viewport_width.min(max_width);
         let render_height = self.viewport_height.min(max_height);
-        
+
         // Build the entire screen content in one go
         let mut screen_buffer = String::with_capacity(
             (render_width * render_height * 2) as usize
         );
-        
-        for y in 0..render_height {
-            let buffer_y = (self.scroll_y + y) as usize;
+
+        // Add extraction method label at the top if provided
+        let mut start_row = 0;
+        if let Some(label) = method_label {
+            // Move cursor to top of edit panel
+            print!("\x1b[{};{}H", start_y + 1, start_x + 1);
+
+            // Create label with styling
+            let label_text = format!(" [{}] ", label);
+            let padding = render_width.saturating_sub(label_text.len() as u16);
+
+            // Render label with subtle background color
+            print!("\x1b[48;2;40;40;40m\x1b[38;2;200;200;200m{}{}\x1b[0m",
+                   label_text,
+                   " ".repeat(padding as usize));
+
+            start_row = 1; // Start actual content from row 1
+        }
+
+        for y in start_row..render_height {
+            let buffer_y = (self.scroll_y + y - start_row) as usize;
             
             // Move cursor to start of line
             // ANSI: Move cursor to position
