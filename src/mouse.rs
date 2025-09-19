@@ -431,16 +431,33 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         // Remove the old motion handler - we handle drag with is_drag now
 
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), .. } => {
-            // Smooth scroll up with momentum
-            mouse_state.add_scroll_velocity(0.0, -3.0);
-            apply_smooth_scroll(app, mouse_state);
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, .. } => {
+            // Check if scroll is in PDF pane
+            if x <= current_split {
+                // Scroll PDF viewport up
+                app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
+                app.needs_redraw = true;
+            } else {
+                // Smooth scroll text editor up with momentum
+                mouse_state.add_scroll_velocity(0.0, -3.0);
+                apply_smooth_scroll(app, mouse_state);
+            }
         }
 
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), .. } => {
-            // Smooth scroll down with momentum
-            mouse_state.add_scroll_velocity(0.0, 3.0);
-            apply_smooth_scroll(app, mouse_state);
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, .. } => {
+            // Check if scroll is in PDF pane
+            if x <= current_split {
+                // Scroll PDF viewport down
+                let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
+                let pdf_viewport_height = term_height.saturating_sub(3);
+                let max_scroll = app.pdf_full_height.saturating_sub(pdf_viewport_height);
+                app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll);
+                app.needs_redraw = true;
+            } else {
+                // Smooth scroll text editor down with momentum
+                mouse_state.add_scroll_velocity(0.0, 3.0);
+                apply_smooth_scroll(app, mouse_state);
+            }
         }
 
         // Ignore other mouse events

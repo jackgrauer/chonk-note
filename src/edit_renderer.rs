@@ -254,6 +254,55 @@ impl EditPanelRenderer {
     pub fn get_viewport_size(&self) -> (u16, u16) {
         (self.viewport_width, self.viewport_height)
     }
+
+    /// Draw scrollbars for the text editor viewport
+    pub fn draw_scrollbars(&self, start_x: u16, start_y: u16, width: u16, height: u16) -> io::Result<()> {
+        // Calculate content dimensions
+        let content_height = self.buffer.len() as u16;
+        let content_width = self.buffer.iter().map(|row| row.len()).max().unwrap_or(0) as u16;
+
+        // Draw horizontal scrollbar if content is wider than viewport
+        if content_width > width {
+            let scrollbar_y = start_y + height;
+            let thumb_width = ((width as f32 / content_width as f32) * width as f32).max(2.0) as u16;
+            let max_scroll = content_width.saturating_sub(width);
+            let thumb_pos = if max_scroll > 0 {
+                ((self.scroll_x as f32 / max_scroll as f32) * (width - thumb_width) as f32) as u16
+            } else {
+                0
+            };
+
+            // Draw scrollbar track
+            print!("\x1b[{};{}H\x1b[38;2;40;40;40m{}\x1b[0m",
+                scrollbar_y, start_x + 1, "─".repeat(width as usize));
+            // Draw scrollbar thumb
+            print!("\x1b[{};{}H\x1b[38;2;100;100;100m{}\x1b[0m",
+                scrollbar_y, start_x + thumb_pos + 1, "═".repeat(thumb_width as usize));
+        }
+
+        // Draw vertical scrollbar if content is taller than viewport
+        if content_height > height {
+            let scrollbar_x = start_x + width;
+            let thumb_height = ((height as f32 / content_height as f32) * height as f32).max(2.0) as u16;
+            let max_scroll = content_height.saturating_sub(height);
+            let thumb_pos = if max_scroll > 0 {
+                ((self.scroll_y as f32 / max_scroll as f32) * (height - thumb_height) as f32) as u16
+            } else {
+                0
+            };
+
+            // Draw scrollbar track and thumb
+            for y in 0..height {
+                if y >= thumb_pos && y < thumb_pos + thumb_height {
+                    print!("\x1b[{};{}H\x1b[38;2;100;100;100m║\x1b[0m", start_y + y + 1, scrollbar_x);
+                } else {
+                    print!("\x1b[{};{}H\x1b[38;2;40;40;40m│\x1b[0m", start_y + y + 1, scrollbar_x);
+                }
+            }
+        }
+
+        Ok(())
+    }
     
     /// Render with block selection (rectangular selection)
     pub fn render_with_block_selection(
