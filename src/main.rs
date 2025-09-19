@@ -87,6 +87,10 @@ pub struct App {
     pub pdf_scroll_y: u16,            // Vertical scroll position for PDF
     pub pdf_full_width: u16,          // Full width of PDF image
     pub pdf_full_height: u16,         // Full height of PDF image
+
+    // Zoom levels for each pane (1.0 = 100%)
+    pub pdf_zoom: f32,                // Zoom level for PDF pane
+    pub text_zoom: f32,               // Zoom level for text editor pane
 }
 
 impl App {
@@ -135,6 +139,10 @@ impl App {
             pdf_scroll_y: 0,
             pdf_full_width: 800,   // Will be updated when image loads
             pdf_full_height: 1000, // Will be updated when image loads
+
+            // Zoom levels
+            pdf_zoom: 1.0,
+            text_zoom: 1.0,
         })
     }
 
@@ -393,156 +401,35 @@ async fn run_app(app: &mut App) -> Result<()> {
             last_render_time = now;
 
             // Clear the entire screen to prevent artifacts when resizing
-            // More efficient than selective clearing and ensures no remnants
             print!("\x1b[2J");
             stdout.flush()?;
 
             // Save cursor position
             print!("\x1b[s]");
 
-            // Render PDF with viewport and scrollbars
-            if let Some(image) = &app.current_page_image {
-                // Calculate viewport dimensions (leave room for scrollbars)
-                let pdf_viewport_width = split_x.saturating_sub(3);  // -2 for divider, -1 for scrollbar
-                let pdf_viewport_height = term_height.saturating_sub(3); // -2 for borders, -1 for scrollbar
+            // Render PDF pane on the left
+            render_pdf_pane(app, 0, 0, split_x - 1, term_height)?;
 
-                // Display only the visible portion of the PDF at full size
-                let _ = viuer_display::display_pdf_viewport(
-                    image, 0, 0, pdf_viewport_width, pdf_viewport_height,
-                    app.pdf_scroll_x, app.pdf_scroll_y, app.dark_mode
-                );
-
-                // Draw horizontal scrollbar if needed
-                if app.pdf_full_width > pdf_viewport_width {
-                    let scrollbar_y = pdf_viewport_height + 1;
-                    let thumb_width = ((pdf_viewport_width as f32 / app.pdf_full_width as f32) * pdf_viewport_width as f32) as u16;
-                    let thumb_pos = ((app.pdf_scroll_x as f32 / (app.pdf_full_width - pdf_viewport_width) as f32) * (pdf_viewport_width - thumb_width) as f32) as u16;
-
-                    // Draw scrollbar track
-                    print!("\x1b[{};1H\x1b[38;2;40;40;40m{}\x1b[0m",
-                        scrollbar_y, "─".repeat(pdf_viewport_width as usize));
-                    // Draw scrollbar thumb
-                    print!("\x1b[{};{}H\x1b[38;2;100;100;100m{}\x1b[0m",
-                        scrollbar_y, thumb_pos + 1, "═".repeat(thumb_width.max(2) as usize));
-                }
-
-                // Draw vertical scrollbar if needed
-                if app.pdf_full_height > pdf_viewport_height {
-                    let scrollbar_x = pdf_viewport_width + 1;
-                    let thumb_height = ((pdf_viewport_height as f32 / app.pdf_full_height as f32) * pdf_viewport_height as f32) as u16;
-                    let thumb_pos = ((app.pdf_scroll_y as f32 / (app.pdf_full_height - pdf_viewport_height) as f32) * (pdf_viewport_height - thumb_height) as f32) as u16;
-
-                    // Draw scrollbar track and thumb
-                    for y in 0..pdf_viewport_height {
-                        if y >= thumb_pos && y < thumb_pos + thumb_height {
-                            print!("\x1b[{};{}H\x1b[38;2;100;100;100m║\x1b[0m", y + 1, scrollbar_x);
-                        } else {
-                            print!("\x1b[{};{}H\x1b[38;2;40;40;40m│\x1b[0m", y + 1, scrollbar_x);
-                        }
-                    }
-                }
-            }
-
-            // Draw divider line between panes
+            // Draw draggable divider between panes
             {
                 let divider_color = if app.is_dragging_divider {
                     "\x1b[38;2;100;150;255m"  // Bright blue when dragging
                 } else {
-                    "\x1b[38;2;60;60;60m"     // Dark gray normally
+                    "\x1b[38;2;80;80;80m"     // Medium gray normally
                 };
 
                 for y in 0..term_height {
-                    print!("\x1b[{};{}H{}│\x1b[0m",
+                    print!("\x1b[{};{}H{}┃\x1b[0m",
                         y + 1, split_x, divider_color);
                 }
             }
 
-            // Render text editor on right
-            if let Some(renderer) = &mut app.edit_display {
-                // Ensure renderer buffer is synced with rope before rendering
-                renderer.update_from_rope(&app.rope);
-
-                // HELIX-CORE: Convert selection to old format for renderer
-                let cursor_pos = app.selection.primary().head;
-                let cursor_line = app.rope.char_to_line(cursor_pos);
-                let line_start = app.rope.line_to_char(cursor_line);
-                let actual_col = cursor_pos - line_start;
-
-                // Use virtual cursor column if set (for positioning past line end)
-                let cursor_col = if let Some(vc) = app.virtual_cursor_col {
-                    vc
-                } else {
-                    actual_col
-                };
-
-                // AUTO-SCROLL: Make viewport follow cursor with 3-line padding
-                renderer.follow_cursor(cursor_col, cursor_line, 3);
-
-                // IMPORTANT: Adjust cursor position for viewport offset
-                // The renderer expects viewport-relative coordinates, not absolute document coordinates
-                let viewport_relative_cursor = (cursor_col, cursor_line);
-
-                // Get the extraction method name for the label
-                let method_label = match app.extraction_method {
-                    ExtractionMethod::Segments => "PDFium",
-                    ExtractionMethod::PdfAlto => "PDFAlto",
-                    ExtractionMethod::LeptessOCR => "Leptess OCR",
-                };
-
-                // Calculate text viewport dimensions (leave room for scrollbars)
-                let text_viewport_width = term_width.saturating_sub(split_x + 2); // -1 for divider, -1 for scrollbar
-                let text_viewport_height = term_height.saturating_sub(4); // -1 for label, -2 for borders, -1 for scrollbar
-
-                // Check if we have block selection mode active
-                if app.block_selection.is_some() {
-                    // First render the label
-                    renderer.render_with_label(
-                        split_x + 1, 0, text_viewport_width, 1, Some(method_label)
-                    )?;
-                    // Then render block selection content
-                    renderer.render_with_block_selection(
-                        split_x + 1, 1, text_viewport_width, text_viewport_height,
-                        viewport_relative_cursor,
-                        app.block_selection.as_ref()
-                    )?;
-                } else {
-                    // First render the label
-                    renderer.render_with_label(
-                        split_x + 1, 0, text_viewport_width, 1, Some(method_label)
-                    )?;
-
-                    // Use normal selection renderer
-                    let (sel_start, sel_end) = if app.selection.primary().len() > 0 {
-                        let range = app.selection.primary();
-                        let start_line = app.rope.char_to_line(range.from());
-                        let end_line = app.rope.char_to_line(range.to());
-                        let start_line_char = app.rope.line_to_char(start_line);
-                        let end_line_char = app.rope.line_to_char(end_line);
-                        (
-                            Some((range.from() - start_line_char, start_line)),
-                            Some((range.to() - end_line_char, end_line))
-                        )
-                    } else {
-                        (None, None)
-                    };
-
-                    renderer.render_with_cursor_and_selection(
-                        split_x + 1, 1, text_viewport_width, text_viewport_height,
-                        viewport_relative_cursor,
-                        sel_start,
-                        sel_end
-                    )?;
-                }
-
-                // Draw scrollbars for text editor
-                renderer.draw_scrollbars(split_x + 1, 1, text_viewport_width, text_viewport_height)?;
-
-                // Force flush after text rendering to ensure it displays
-                stdout.flush()?;
-            }
+            // Render text editor pane on the right
+            render_text_pane(app, split_x + 1, 0, term_width - split_x - 1, term_height)?;
 
             // Restore cursor position
             print!("\x1b[u]");
+            stdout.flush()?;
 
             // Status bar disabled to prevent debug flood
             // render_status_bar(&mut stdout, app, term_width, term_height)?;
@@ -601,6 +488,162 @@ async fn run_app(app: &mut App) -> Result<()> {
         }
     }
     
+    Ok(())
+}
+
+/// Render the PDF pane with zoom controls
+fn render_pdf_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+    // Draw container border
+    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╭{}╮\x1b[0m",
+        y + 1, x + 1, "─".repeat((width - 2) as usize));
+
+    // Draw zoom controls in top right corner of PDF pane
+    let zoom_text = format!(" {:.0}% ", app.pdf_zoom * 100.0);
+    let button_x = x + width - 12;
+    print!("\x1b[{};{}H\x1b[38;2;100;100;100m[\x1b[38;2;200;200;200m-\x1b[38;2;100;100;100m]{} [\x1b[38;2;200;200;200m+\x1b[38;2;100;100;100m]\x1b[0m",
+        y + 1, button_x, zoom_text);
+
+    // Draw side borders
+    for row in 1..height - 1 {
+        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + 1);
+        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + width);
+    }
+
+    // Draw bottom border
+    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╰{}╯\x1b[0m",
+        y + height, x + 1, "─".repeat((width - 2) as usize));
+
+    // Render PDF content inside the container (with 1-cell padding for borders)
+    if let Some(image) = &app.current_page_image {
+        let content_x = x + 2;
+        let content_y = y + 1;
+        let content_width = width.saturating_sub(4);  // -2 for borders, -2 for scrollbar
+        let content_height = height.saturating_sub(3); // -2 for borders, -1 for scrollbar
+
+        // Apply zoom to PDF display
+        let _ = viuer_display::display_pdf_viewport(
+            image, content_x, content_y, content_width, content_height,
+            app.pdf_scroll_x, app.pdf_scroll_y, app.dark_mode
+        );
+
+        // Draw scrollbars inside the container
+        if app.pdf_full_width > content_width {
+            let scrollbar_y = y + height - 2;
+            let thumb_width = ((content_width as f32 / app.pdf_full_width as f32) * content_width as f32) as u16;
+            let thumb_pos = ((app.pdf_scroll_x as f32 / (app.pdf_full_width - content_width) as f32) * (content_width - thumb_width) as f32) as u16;
+
+            print!("\x1b[{};{}H\x1b[38;2;40;40;40m{} \x1b[0m",
+                scrollbar_y, content_x, "─".repeat(content_width as usize));
+            print!("\x1b[{};{}H\x1b[38;2;100;100;100m{}\x1b[0m",
+                scrollbar_y, content_x + thumb_pos, "═".repeat(thumb_width.max(2) as usize));
+        }
+
+        if app.pdf_full_height > content_height {
+            let scrollbar_x = x + width - 2;
+            let thumb_height = ((content_height as f32 / app.pdf_full_height as f32) * content_height as f32) as u16;
+            let thumb_pos = ((app.pdf_scroll_y as f32 / (app.pdf_full_height - content_height) as f32) * (content_height - thumb_height) as f32) as u16;
+
+            for row in 0..content_height {
+                if row >= thumb_pos && row < thumb_pos + thumb_height {
+                    print!("\x1b[{};{}H\x1b[38;2;100;100;100m║\x1b[0m", y + row + 2, scrollbar_x);
+                } else {
+                    print!("\x1b[{};{}H\x1b[38;2;40;40;40m│\x1b[0m", y + row + 2, scrollbar_x);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Render the text editor pane with zoom controls
+fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+    // Draw container border
+    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╭{}╮\x1b[0m",
+        y + 1, x + 1, "─".repeat((width - 2) as usize));
+
+    // Draw zoom controls and extraction method label
+    let method_label = match app.extraction_method {
+        ExtractionMethod::Segments => "PDFium",
+        ExtractionMethod::PdfAlto => "PDFAlto",
+        ExtractionMethod::LeptessOCR => "Leptess OCR",
+    };
+
+    let label_text = format!(" {} ", method_label);
+    print!("\x1b[{};{}H\x1b[38;2;150;150;150m{}\x1b[0m", y + 1, x + 2, label_text);
+
+    let zoom_text = format!(" {:.0}% ", app.text_zoom * 100.0);
+    let button_x = x + width - 12;
+    print!("\x1b[{};{}H\x1b[38;2;100;100;100m[\x1b[38;2;200;200;200m-\x1b[38;2;100;100;100m]{} [\x1b[38;2;200;200;200m+\x1b[38;2;100;100;100m]\x1b[0m",
+        y + 1, button_x, zoom_text);
+
+    // Draw side borders
+    for row in 1..height - 1 {
+        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + 1);
+        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + width);
+    }
+
+    // Draw bottom border
+    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╰{}╯\x1b[0m",
+        y + height, x + 1, "─".repeat((width - 2) as usize));
+
+    // Render text content inside the container
+    if let Some(renderer) = &mut app.edit_display {
+        renderer.update_from_rope(&app.rope);
+
+        let cursor_pos = app.selection.primary().head;
+        let cursor_line = app.rope.char_to_line(cursor_pos);
+        let line_start = app.rope.line_to_char(cursor_line);
+        let actual_col = cursor_pos - line_start;
+
+        let cursor_col = if let Some(vc) = app.virtual_cursor_col {
+            vc
+        } else {
+            actual_col
+        };
+
+        renderer.follow_cursor(cursor_col, cursor_line, 3);
+
+        let viewport_relative_cursor = (cursor_col, cursor_line);
+
+        let content_x = x + 2;
+        let content_y = y + 1;
+        let content_width = width.saturating_sub(4);
+        let content_height = height.saturating_sub(3);
+
+        if app.block_selection.is_some() {
+            renderer.render_with_block_selection(
+                content_x, content_y + 1, content_width, content_height - 1,
+                viewport_relative_cursor,
+                app.block_selection.as_ref()
+            )?;
+        } else {
+            let (sel_start, sel_end) = if app.selection.primary().len() > 0 {
+                let range = app.selection.primary();
+                let start_line = app.rope.char_to_line(range.from());
+                let end_line = app.rope.char_to_line(range.to());
+                let start_line_char = app.rope.line_to_char(start_line);
+                let end_line_char = app.rope.line_to_char(end_line);
+                (
+                    Some((range.from() - start_line_char, start_line)),
+                    Some((range.to() - end_line_char, end_line))
+                )
+            } else {
+                (None, None)
+            };
+
+            renderer.render_with_cursor_and_selection(
+                content_x, content_y + 1, content_width, content_height - 1,
+                viewport_relative_cursor,
+                sel_start,
+                sel_end
+            )?;
+        }
+
+        // Draw scrollbars
+        renderer.draw_scrollbars(content_x, content_y + 1, content_width, content_height - 1)?;
+    }
+
     Ok(())
 }
 

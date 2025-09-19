@@ -301,6 +301,40 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 writeln!(file, "[MOUSE] Left click at ({}, {}) with modifiers: alt={}", x, y, modifiers.alt).ok();
             }
 
+            // Check for zoom button clicks
+            // PDF zoom buttons are in top-right of left pane
+            let pdf_pane_width = current_split - 1;
+            if y == 0 {  // Top row
+                // PDF zoom minus button
+                if x >= pdf_pane_width - 12 && x <= pdf_pane_width - 10 {
+                    app.pdf_zoom = (app.pdf_zoom - 0.1).max(0.5);  // Min 50%
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+                // PDF zoom plus button
+                if x >= pdf_pane_width - 3 && x <= pdf_pane_width - 1 {
+                    app.pdf_zoom = (app.pdf_zoom + 0.1).min(3.0);  // Max 300%
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+
+                // Text zoom buttons are in top-right of right pane
+                let text_pane_width = term_width - current_split - 1;
+                let text_button_x = current_split + 1 + text_pane_width - 12;
+                // Text zoom minus button
+                if x >= text_button_x && x <= text_button_x + 2 {
+                    app.text_zoom = (app.text_zoom - 0.1).max(0.5);  // Min 50%
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+                // Text zoom plus button
+                if x >= text_button_x + 9 && x <= text_button_x + 11 {
+                    app.text_zoom = (app.text_zoom + 0.1).min(3.0);  // Max 300%
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+            }
+
             // Check if click is on the divider (within 2 columns of the split position)
             if x >= current_split.saturating_sub(2) && x <= current_split + 2 {
                 app.is_dragging_divider = true;
