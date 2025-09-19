@@ -480,7 +480,11 @@ async fn run_app(app: &mut App) -> Result<()> {
 
                 // IMPORTANT: Adjust cursor position for viewport offset
                 // The renderer expects viewport-relative coordinates, not absolute document coordinates
-                let viewport_relative_cursor = (cursor_col, cursor_line);
+                let (scroll_x, scroll_y) = renderer.get_scroll();
+                let viewport_relative_cursor = (
+                    cursor_col.saturating_sub(scroll_x as usize),
+                    cursor_line.saturating_sub(scroll_y as usize)
+                );
 
                 // Get the extraction method name for the label
                 let method_label = match app.extraction_method {
@@ -518,9 +522,18 @@ async fn run_app(app: &mut App) -> Result<()> {
                         let end_line = app.rope.char_to_line(range.to());
                         let start_line_char = app.rope.line_to_char(start_line);
                         let end_line_char = app.rope.line_to_char(end_line);
+
+                        // Convert to viewport-relative coordinates
+                        let start_col = range.from() - start_line_char;
+                        let end_col = range.to() - end_line_char;
+                        let viewport_start_line = start_line.saturating_sub(scroll_y as usize);
+                        let viewport_end_line = end_line.saturating_sub(scroll_y as usize);
+                        let viewport_start_col = start_col.saturating_sub(scroll_x as usize);
+                        let viewport_end_col = end_col.saturating_sub(scroll_x as usize);
+
                         (
-                            Some((range.from() - start_line_char, start_line)),
-                            Some((range.to() - end_line_char, end_line))
+                            Some((viewport_start_col, viewport_start_line)),
+                            Some((viewport_end_col, viewport_end_line))
                         )
                     } else {
                         (None, None)
