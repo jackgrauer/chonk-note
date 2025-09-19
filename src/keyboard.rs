@@ -620,17 +620,20 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let accel = update_arrow_acceleration(app, KeyCode::Left);
 
             let pos = app.selection.primary().head;
+            let line = app.rope.char_to_line(pos);
+            let line_start = app.rope.line_to_char(line);
+            let col = pos - line_start;
 
-            // BOUNDARY CHECK: Ensure we never go below 0, even with acceleration
-            // Use saturating_sub to prevent underflow
-            let new_pos = pos.saturating_sub(accel);
+            // BOUNDARY CHECK: Don't go past the start of the current line
+            // This enforces the left boundary on every row, not just row 0
+            let max_movement = col.min(accel);
 
-            // Only move if we're not already at the boundary
-            if new_pos != pos || pos > 0 {
+            if max_movement > 0 {
+                let new_pos = pos - max_movement;
+
                 // Update virtual cursor column based on new position
-                let line = app.rope.char_to_line(new_pos);
-                let line_start = app.rope.line_to_char(line);
-                app.virtual_cursor_col = Some(new_pos - line_start);
+                let new_col = col - max_movement;
+                app.virtual_cursor_col = Some(new_col);
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     // Extend selection - keep anchor, move head
