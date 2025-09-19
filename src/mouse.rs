@@ -431,11 +431,16 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         // Remove the old motion handler - we handle drag with is_drag now
 
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, .. } => {
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, modifiers, .. } => {
             // Check if scroll is in PDF pane
             if x <= current_split {
-                // Scroll PDF viewport up
-                app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
+                if modifiers.shift {
+                    // Horizontal scroll with Shift+Scroll
+                    app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
+                } else {
+                    // Vertical scroll
+                    app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
+                }
                 app.needs_redraw = true;
             } else {
                 // Smooth scroll text editor up with momentum
@@ -444,14 +449,22 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             }
         }
 
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, .. } => {
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
             // Check if scroll is in PDF pane
             if x <= current_split {
-                // Scroll PDF viewport down
-                let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
+                let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
                 let pdf_viewport_height = term_height.saturating_sub(3);
-                let max_scroll = app.pdf_full_height.saturating_sub(pdf_viewport_height);
-                app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll);
+                let pdf_viewport_width = current_split.saturating_sub(3);
+
+                if modifiers.shift {
+                    // Horizontal scroll with Shift+Scroll
+                    let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
+                    app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
+                } else {
+                    // Vertical scroll
+                    let max_scroll_y = app.pdf_full_height.saturating_sub(pdf_viewport_height);
+                    app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll_y);
+                }
                 app.needs_redraw = true;
             } else {
                 // Smooth scroll text editor down with momentum

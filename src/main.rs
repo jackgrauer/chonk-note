@@ -402,9 +402,10 @@ async fn run_app(app: &mut App) -> Result<()> {
                 let pdf_viewport_width = split_x.saturating_sub(3);  // -2 for divider, -1 for scrollbar
                 let pdf_viewport_height = term_height.saturating_sub(3); // -2 for borders, -1 for scrollbar
 
-                // Display only the visible portion of the PDF
-                let _ = viuer_display::display_pdf_image(
-                    image, 0, 0, pdf_viewport_width, pdf_viewport_height, app.dark_mode
+                // Display only the visible portion of the PDF at full size
+                let _ = viuer_display::display_pdf_viewport(
+                    image, 0, 0, pdf_viewport_width, pdf_viewport_height,
+                    app.pdf_scroll_x, app.pdf_scroll_y, app.dark_mode
                 );
 
                 // Draw horizontal scrollbar if needed
