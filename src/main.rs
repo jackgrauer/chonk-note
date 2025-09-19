@@ -453,11 +453,12 @@ async fn run_app(app: &mut App) -> Result<()> {
             app.needs_redraw = false;
         }
 
-        // Check for momentum-based scrolling updates
-        if mouse_state.scroll_momentum.velocity_y.abs() > 0.1 ||
-           mouse_state.scroll_momentum.velocity_x.abs() > 0.1 {
-            mouse::apply_smooth_scroll(app, &mut mouse_state);
-        }
+        // DISABLED: Text pane trackpad gestures are not active yet
+        // Momentum-based scrolling is disabled for the text pane
+        // if mouse_state.scroll_momentum.velocity_y.abs() > 0.1 ||
+        //    mouse_state.scroll_momentum.velocity_x.abs() > 0.1 {
+        //     mouse::apply_smooth_scroll(app, &mut mouse_state);
+        // }
 
         // CROSSTERM ELIMINATED! Direct Kitty input
         if KittyTerminal::poll_input()? {

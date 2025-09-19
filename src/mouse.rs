@@ -476,11 +476,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
                 }
                 app.needs_redraw = true;
-            } else {
-                // Smooth scroll text editor up with momentum
-                mouse_state.add_scroll_velocity(0.0, -3.0);
-                apply_smooth_scroll(app, mouse_state);
             }
+            // DISABLED: Text pane trackpad gestures are not active yet
+            // No scrolling in text pane for now
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
@@ -500,11 +498,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll_y);
                 }
                 app.needs_redraw = true;
-            } else {
-                // Smooth scroll text editor down with momentum
-                mouse_state.add_scroll_velocity(0.0, 3.0);
-                apply_smooth_scroll(app, mouse_state);
             }
+            // DISABLED: Text pane trackpad gestures are not active yet
+            // No scrolling in text pane for now
         }
 
         // Ignore other mouse events
