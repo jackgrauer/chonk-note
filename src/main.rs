@@ -594,9 +594,10 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
     let label_text = format!(" {} ", method_label);
     print!("\x1b[{};{}H\x1b[38;2;150;150;150m{}\x1b[0m", y + 1, x + 2, label_text);
 
+    // Text zoom is disabled - show grayed out buttons
     let zoom_text = format!(" {:.0}% ", app.text_zoom * 100.0);
     let button_x = x + width - 12;
-    print!("\x1b[{};{}H\x1b[38;2;100;100;100m[\x1b[38;2;200;200;200m-\x1b[38;2;100;100;100m]{} [\x1b[38;2;200;200;200m+\x1b[38;2;100;100;100m]\x1b[0m",
+    print!("\x1b[{};{}H\x1b[38;2;60;60;60m[\x1b[38;2;80;80;80m-\x1b[38;2;60;60;60m]{} [\x1b[38;2;80;80;80m+\x1b[38;2;60;60;60m]\x1b[0m",
         y + 1, button_x, zoom_text);
 
     // Draw side borders
@@ -630,15 +631,17 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         let content_x = x + 2;
         let content_y = y + 1;
-        // Apply zoom to content dimensions (zoom in = less visible, zoom out = more visible)
-        let base_width = width.saturating_sub(4);
-        let base_height = height.saturating_sub(3);
-        let content_width = (base_width as f32 / app.text_zoom).round() as u16;
-        let content_height = (base_height as f32 / app.text_zoom).round() as u16;
+        // Keep the display area constant, but adjust viewport for zoom
+        let display_width = width.saturating_sub(4);
+        let display_height = height.saturating_sub(3);
+
+        // For text zoom, we'll scale the font/character size visually
+        // For now, keep the same rendering area to avoid breaking the UI
+        // TODO: Implement proper text scaling in the renderer
 
         if app.block_selection.is_some() {
             renderer.render_with_block_selection(
-                content_x, content_y + 1, content_width, content_height - 1,
+                content_x, content_y + 1, display_width, display_height - 1,
                 viewport_relative_cursor,
                 app.block_selection.as_ref()
             )?;
@@ -658,7 +661,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
             };
 
             renderer.render_with_cursor_and_selection(
-                content_x, content_y + 1, content_width, content_height - 1,
+                content_x, content_y + 1, display_width, display_height - 1,
                 viewport_relative_cursor,
                 sel_start,
                 sel_end
@@ -666,7 +669,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
         }
 
         // Draw scrollbars
-        renderer.draw_scrollbars(content_x, content_y + 1, content_width, content_height - 1)?;
+        renderer.draw_scrollbars(content_x, content_y + 1, display_width, display_height - 1)?;
     }
 
     Ok(())
