@@ -77,6 +77,10 @@ pub struct App {
 
     // Viewport tracking for flicker prevention
     pub last_viewport_scroll: (u16, u16),
+
+    // Pane split position (x coordinate where the divider is)
+    pub split_position: Option<u16>,  // None means use default (50/50 split)
+    pub is_dragging_divider: bool,    // Track if user is dragging the divider
 }
 
 impl App {
@@ -115,6 +119,10 @@ impl App {
 
             // Viewport tracking
             last_viewport_scroll: (0, 0),
+
+            // Pane split
+            split_position: None,  // Start with default 50/50 split
+            is_dragging_divider: false,
         })
     }
 
@@ -329,7 +337,8 @@ async fn run_app(app: &mut App) -> Result<()> {
     
     loop {
         let (term_width, term_height) = KittyTerminal::size()?;
-        let split_x = term_width / 2;
+        // Use custom split position or default to 50/50
+        let split_x = app.split_position.unwrap_or(term_width / 2);
         
         // Check if terminal was resized
         if (term_width, term_height) != last_term_size {
@@ -366,12 +375,26 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Always dual pane mode: PDF on left, text editor on right
             if let Some(image) = &app.current_page_image {
                 let _ = viuer_display::display_pdf_image(
-                    image, 0, 0, split_x - 1, term_height - 2, app.dark_mode
+                    image, 0, 0, split_x.saturating_sub(2), term_height - 2, app.dark_mode
                 );
             }
 
+            // Draw divider line between panes
+            {
+                let divider_color = if app.is_dragging_divider {
+                    "\x1b[38;2;100;150;255m"  // Bright blue when dragging
+                } else {
+                    "\x1b[38;2;60;60;60m"     // Dark gray normally
+                };
+
+                for y in 0..term_height {
+                    print!("\x1b[{};{}H{}│\x1b[0m",
+                        y + 1, split_x, divider_color);
+                }
+            }
+
             // Render text editor on right
-            if let Some(renderer) = &app.edit_display {
+            if let Some(renderer) = &mut app.edit_display {
                 // HELIX-CORE: Convert selection to old format for renderer
                 let cursor_pos = app.selection.primary().head;
                 let cursor_line = app.rope.char_to_line(cursor_pos);
@@ -384,6 +407,9 @@ async fn run_app(app: &mut App) -> Result<()> {
                 } else {
                     actual_col
                 };
+
+                // AUTO-SCROLL: Make viewport follow cursor with 3-line padding
+                renderer.follow_cursor(cursor_col, cursor_line, 3);
 
                 // IMPORTANT: Adjust cursor position for viewport offset
                 // The renderer expects viewport-relative coordinates, not absolute document coordinates
@@ -400,18 +426,18 @@ async fn run_app(app: &mut App) -> Result<()> {
                 if app.block_selection.is_some() {
                     // First render the label
                     renderer.render_with_label(
-                        split_x, 0, term_width - split_x, 1, Some(method_label)
+                        split_x + 1, 0, term_width.saturating_sub(split_x + 1), 1, Some(method_label)
                     )?;
                     // Then render block selection content
                     renderer.render_with_block_selection(
-                        split_x, 1, term_width - split_x, term_height - 3,
+                        split_x + 1, 1, term_width.saturating_sub(split_x + 1), term_height - 3,
                         viewport_relative_cursor,
                         app.block_selection.as_ref()
                     )?;
                 } else {
                     // First render the label
                     renderer.render_with_label(
-                        split_x, 0, term_width - split_x, 1, Some(method_label)
+                        split_x + 1, 0, term_width.saturating_sub(split_x + 1), 1, Some(method_label)
                     )?;
 
                     // Use normal selection renderer
@@ -430,7 +456,7 @@ async fn run_app(app: &mut App) -> Result<()> {
                     };
 
                     renderer.render_with_cursor_and_selection(
-                        split_x, 1, term_width - split_x, term_height - 3,
+                        split_x + 1, 1, term_width.saturating_sub(split_x + 1), term_height - 3,
                         viewport_relative_cursor,
                         sel_start,
                         sel_end

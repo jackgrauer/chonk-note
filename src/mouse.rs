@@ -111,7 +111,7 @@ impl App {
     pub fn screen_to_text_pos(&self, x: u16, y: u16) -> Option<usize> {
         // Only process if in right pane (text editor)
         let (term_width, _) = crate::kitty_native::KittyTerminal::size().ok()?;
-        let split_x = term_width / 2;
+        let split_x = self.split_position.unwrap_or(term_width / 2);
 
         // Debug log conversion attempt
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
@@ -119,14 +119,14 @@ impl App {
                 x, y, term_width, split_x).ok();
         }
 
-        if x < split_x {
+        if x <= split_x {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] Click in PDF pane, ignoring").ok();
+                writeln!(file, "[SCREEN_TO_TEXT] Click in PDF pane or on divider, ignoring").ok();
             }
-            return None; // Click is in PDF pane
+            return None; // Click is in PDF pane or on divider
         }
 
-        let text_x = x - split_x;
+        let text_x = x - split_x - 1;  // Account for divider width
 
         if let Some(renderer) = &self.edit_display {
             // Account for viewport scrolling - y is 1-based from terminal coordinates
@@ -242,9 +242,22 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             mouse_state.is_dragging, app.block_selection.is_some()).ok();
     }
 
+    // Get terminal width for split position calculation
+    let (term_width, _term_height) = crate::kitty_native::KittyTerminal::size()?;
+    let current_split = app.split_position.unwrap_or(term_width / 2);
+
     match event {
         // Handle drag events FIRST before regular clicks
         MouseEvent { is_drag: true, x, y, .. } => {
+            // Check if we're dragging the divider
+            if app.is_dragging_divider {
+                // Update split position based on mouse X, with constraints
+                let min_split = term_width / 4;  // Minimum 25% for each pane
+                let max_split = term_width * 3 / 4;  // Maximum 75% for each pane
+                app.split_position = Some(x.max(min_split).min(max_split));
+                app.needs_redraw = true;
+                return Ok(());
+            }
             // Mouse drag - always block selection
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[MOUSE] DRAG EVENT MATCHED! x={}, y={}", x, y).ok();
@@ -286,6 +299,13 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Debug log click position
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[MOUSE] Left click at ({}, {}) with modifiers: alt={}", x, y, modifiers.alt).ok();
+            }
+
+            // Check if click is on the divider (within 2 columns of the split position)
+            if x >= current_split.saturating_sub(2) && x <= current_split + 2 {
+                app.is_dragging_divider = true;
+                app.needs_redraw = true;
+                return Ok(());
             }
 
             // Left click - set cursor position
@@ -405,6 +425,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: false, .. } => {
             // Left button release - end drag but keep the block selection visible
             mouse_state.is_dragging = false;
+            app.is_dragging_divider = false;
             // Block selection remains in app.block_selection
         }
 

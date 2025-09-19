@@ -114,6 +114,10 @@ impl EditPanelRenderer {
             let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
             self.scroll_x = target_scroll.min(max_scroll);
         }
+
+        // Update viewport position for mouse mapping
+        self.viewport_x = self.scroll_x as usize;
+        self.viewport_y = self.scroll_y as usize;
     }
     
     /// Efficiently render the text buffer to the terminal within bounds
