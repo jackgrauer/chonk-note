@@ -188,11 +188,17 @@ impl App {
             .join("\n");
 
         self.rope = Rope::from_str(&text);
-        self.selection = Selection::point(0);  // Reset cursor
+        self.selection = Selection::point(0);  // Reset cursor to top-left
+        self.virtual_cursor_col = Some(0);  // Reset virtual cursor position
 
-        // Update renderer from rope
+        // Update renderer from rope and reset viewport to top-left
         if let Some(renderer) = &mut self.edit_display {
             renderer.update_from_rope(&self.rope);
+            // Reset viewport to show top-left of extracted text
+            renderer.scroll_x = 0;
+            renderer.scroll_y = 0;
+            renderer.viewport_x = 0;
+            renderer.viewport_y = 0;
         } else {
             let mut renderer = EditPanelRenderer::new(text_width, text_height);
             renderer.update_from_rope(&self.rope);
@@ -215,6 +221,7 @@ impl App {
             // HELIX-CORE: Clear rope and reset
             self.rope = Rope::from("");
             self.selection = Selection::point(0);
+            self.virtual_cursor_col = Some(0);  // Reset virtual cursor
             self.edit_display = None;
             self.current_page_image = None;
             self.needs_redraw = true;
@@ -228,6 +235,7 @@ impl App {
             // HELIX-CORE: Clear rope and reset
             self.rope = Rope::from("");
             self.selection = Selection::point(0);
+            self.virtual_cursor_col = Some(0);  // Reset virtual cursor
             self.edit_display = None;
             self.current_page_image = None;
             self.needs_redraw = true;
@@ -280,9 +288,16 @@ impl App {
                     .collect::<Vec<_>>()
                     .join("\n");
                 self.rope = Rope::from_str(&text);
-                // HELIX-CORE: Update renderer from rope
+                self.selection = Selection::point(0);  // Reset cursor to top-left
+                self.virtual_cursor_col = Some(0);  // Reset virtual cursor position
+                // HELIX-CORE: Update renderer from rope and reset viewport
                 if let Some(renderer) = &mut self.edit_display {
                     renderer.update_from_rope(&self.rope);
+                    // Reset viewport to show top-left of extracted text
+                    renderer.scroll_x = 0;
+                    renderer.scroll_y = 0;
+                    renderer.viewport_x = 0;
+                    renderer.viewport_y = 0;
                 }
             }
 
