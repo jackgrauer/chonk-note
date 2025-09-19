@@ -170,11 +170,7 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
         if let Some(key) = KittyTerminal::read_key()? {
             match key.code {
                 KeyCode::Up => {
-                    let max_index = if search_mode && !search_query.is_empty() {
-                        filtered_files.len().saturating_sub(1)
-                    } else {
-                        files.len().saturating_sub(1)
-                    };
+                    // No need to check max_index for Up arrow
                     if selected_index > 0 {
                         selected_index -= 1;
                         needs_redraw = true;

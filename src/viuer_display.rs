@@ -1,7 +1,7 @@
 use anyhow::Result;
 use viuer::{Config, print};
 use std::io::{self, Write};
-use image::{DynamicImage, GenericImageView};
+use image::GenericImageView;
 
 /// Display a PDF page image using viuer with optional dark mode
 /// 

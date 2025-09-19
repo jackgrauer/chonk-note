@@ -120,12 +120,14 @@ impl KittyTerminal {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn hide_cursor() -> Result<(), io::Error> {
         print!("\x1b[?25l");
         io::stdout().flush()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn show_cursor() -> Result<(), io::Error> {
         print!("\x1b[?25h");
         io::stdout().flush()?;
@@ -133,18 +135,21 @@ impl KittyTerminal {
     }
 
     // Colors - direct RGB
+    #[allow(dead_code)]
     pub fn set_fg_rgb(r: u8, g: u8, b: u8) -> Result<(), io::Error> {
         print!("\x1b[38;2;{};{};{}m", r, g, b);
         io::stdout().flush()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_bg_rgb(r: u8, g: u8, b: u8) -> Result<(), io::Error> {
         print!("\x1b[48;2;{};{};{}m", r, g, b);
         io::stdout().flush()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn reset_colors() -> Result<(), io::Error> {
         print!("\x1b[m");
         io::stdout().flush()?;
@@ -152,12 +157,14 @@ impl KittyTerminal {
     }
 
     // Screen control
+    #[allow(dead_code)]
     pub fn clear_screen() -> Result<(), io::Error> {
         print!("\x1b[2J");
         io::stdout().flush()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn clear_line() -> Result<(), io::Error> {
         print!("\x1b[2K");
         io::stdout().flush()?;

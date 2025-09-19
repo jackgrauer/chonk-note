@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use std::fs::OpenOptions;
 use std::io::Write;
 
-// Smooth scrolling state for trackpad gestures
+// DISABLED: Smooth scrolling for trackpad gestures - not active for text pane
+// Keeping structure for potential future use with PDF pane
+#[allow(dead_code)]
 pub struct ScrollMomentum {
     pub velocity_y: f32,
     pub velocity_x: f32,
@@ -33,10 +35,16 @@ pub struct MouseState {
     pub last_click_pos: Option<(u16, u16)>,
     pub is_dragging: bool,
     pub double_click_threshold: Duration,
+    // DISABLED: Trackpad gesture fields - not active for text pane
+    #[allow(dead_code)]
     pub scroll_momentum: ScrollMomentum,
+    #[allow(dead_code)]
     pub last_scroll_time: Option<Instant>,
+    #[allow(dead_code)]
     pub scroll_accumulator_y: f32,  // For sub-line precision
+    #[allow(dead_code)]
     pub scroll_accumulator_x: f32,
+    #[allow(dead_code)]
     pub pinch_scale: f32,  // For zoom gestures
 }
 
@@ -57,7 +65,8 @@ impl Default for MouseState {
 }
 
 impl MouseState {
-    // Update momentum and apply friction
+    // DISABLED: Update momentum and apply friction
+    #[allow(dead_code)]
     pub fn update_momentum(&mut self) -> (f32, f32) {
         let now = Instant::now();
         let dt = now.duration_since(self.scroll_momentum.last_update).as_secs_f32();
@@ -81,7 +90,8 @@ impl MouseState {
         (self.scroll_momentum.velocity_x * dt, self.scroll_momentum.velocity_y * dt)
     }
 
-    // Add velocity from a scroll event
+    // DISABLED: Add velocity from a scroll event
+    #[allow(dead_code)]
     pub fn add_scroll_velocity(&mut self, dx: f32, dy: f32) {
         let now = Instant::now();
 
@@ -152,7 +162,7 @@ impl App {
             // Find character at x position (simple approach, assumes monospace)
             let mut char_pos = 0;
             let mut display_x = 0;
-            for ch in line_str.chars() {
+            for _ch in line_str.chars() {
                 if display_x >= actual_x {
                     break;
                 }
@@ -184,7 +194,8 @@ impl App {
     }
 }
 
-// Apply smooth scrolling with sub-line precision
+// DISABLED: Apply smooth scrolling with sub-line precision
+#[allow(dead_code)]
 pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
     if let Some(renderer) = &mut app.edit_display {
         let (dx, dy) = mouse_state.update_momentum();
