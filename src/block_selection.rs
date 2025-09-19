@@ -107,7 +107,7 @@ impl BlockSelection {
     }
 }
 
-fn visual_col_to_char_idx(line: RopeSlice, visual_col: usize) -> usize {
+pub fn visual_col_to_char_idx(line: RopeSlice, visual_col: usize) -> usize {
     let mut current_visual = 0;
     let mut char_idx = 0;
 

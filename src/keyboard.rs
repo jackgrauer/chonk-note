@@ -397,17 +397,45 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 // Delete the selected text using Transaction
                 // For block selections, replace with spaces to preserve layout
-                let transaction = if let Some(_) = &app.block_selection {
-                    Transaction::change_by_selection(&app.rope, &selection, |range| {
-                        // Replace the selected text with the exact same number of spaces
-                        let len = range.to() - range.from();
-                        if len > 0 {
-                            let spaces = " ".repeat(len);
-                            (range.from(), range.to(), Some(spaces.into()))
-                        } else {
-                            (range.from(), range.to(), None)
+                let transaction = if let Some(block_sel) = &app.block_selection {
+                    // Get the visual column bounds of the block
+                    let ((_, min_col), (_, max_col)) = block_sel.visual_bounds();
+                    let block_width = max_col - min_col + 1;
+
+                    // We need to handle each line separately to ensure proper spacing
+                    let mut changes = Vec::new();
+
+                    for (line_idx, start_col, end_col) in block_sel.iter_lines() {
+                        if line_idx >= app.rope.len_lines() {
+                            break;
                         }
-                    })
+
+                        let line = app.rope.slice(app.rope.line_to_char(line_idx)..app.rope.line_to_char(line_idx + 1));
+                        let line_start = app.rope.line_to_char(line_idx);
+
+                        // Calculate actual character positions
+                        let start_char = crate::block_selection::visual_col_to_char_idx(line, start_col);
+                        let end_char = crate::block_selection::visual_col_to_char_idx(line, end_col);
+
+                        let line_len = line.len_chars();
+
+                        // If the line is shorter than the block end position, we need to pad
+                        if end_char >= line_len {
+                            // Replace from start to end of line, then add spaces to reach block width
+                            let existing_chars = line_len.saturating_sub(start_char);
+                            let total_spaces_needed = block_width;
+                            let spaces = " ".repeat(total_spaces_needed);
+
+                            changes.push((line_start + start_char, line_start + line_len.min(end_char + 1), Some(spaces.into())));
+                        } else {
+                            // Normal case - just replace with spaces
+                            let len = end_char - start_char + 1;
+                            let spaces = " ".repeat(len);
+                            changes.push((line_start + start_char, line_start + end_char + 1, Some(spaces.into())));
+                        }
+                    }
+
+                    Transaction::change(&app.rope, changes.into_iter())
                 } else {
                     Transaction::change_by_selection(&app.rope, &selection, |range| {
                         (range.from(), range.to(), None)
@@ -705,17 +733,43 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Get the selection to use (block or regular)
             let (transaction, clear_block) = if let Some(block_sel) = &app.block_selection {
                 // Block selection - replace with spaces to preserve layout
-                let selection = block_sel.to_selection(&app.rope);
-                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
-                    // Replace the selected text with the exact same number of spaces
-                    let len = range.to() - range.from();
-                    if len > 0 {
-                        let spaces = " ".repeat(len);
-                        (range.from(), range.to(), Some(spaces.into()))
-                    } else {
-                        (range.from(), range.to(), None)
+                // Get the visual column bounds of the block
+                let ((_, min_col), (_, max_col)) = block_sel.visual_bounds();
+                let block_width = max_col - min_col + 1;
+
+                // We need to handle each line separately to ensure proper spacing
+                let mut changes = Vec::new();
+
+                for (line_idx, start_col, end_col) in block_sel.iter_lines() {
+                    if line_idx >= app.rope.len_lines() {
+                        break;
                     }
-                });
+
+                    let line = app.rope.slice(app.rope.line_to_char(line_idx)..app.rope.line_to_char(line_idx + 1));
+                    let line_start = app.rope.line_to_char(line_idx);
+
+                    // Calculate actual character positions
+                    let start_char = crate::block_selection::visual_col_to_char_idx(line, start_col);
+                    let end_char = crate::block_selection::visual_col_to_char_idx(line, end_col);
+
+                    let line_len = line.len_chars();
+
+                    // If the line is shorter than the block end position, we need to pad
+                    if end_char >= line_len {
+                        // Replace from start to end of line, then add spaces to reach block width
+                        let total_spaces_needed = block_width;
+                        let spaces = " ".repeat(total_spaces_needed);
+
+                        changes.push((line_start + start_char, line_start + line_len.min(end_char + 1), Some(spaces.into())));
+                    } else {
+                        // Normal case - just replace with spaces
+                        let len = end_char - start_char + 1;
+                        let spaces = " ".repeat(len);
+                        changes.push((line_start + start_char, line_start + end_char + 1, Some(spaces.into())));
+                    }
+                }
+
+                let transaction = Transaction::change(&app.rope, changes.into_iter());
                 (transaction, true)
             } else if app.selection.primary().len() > 0 {
                 // Regular selection - delete normally
