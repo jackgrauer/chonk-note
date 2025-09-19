@@ -374,7 +374,19 @@ impl KittyTerminal {
             [27, 91, 53, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageUp, modifiers }))),
             [27, 91, 54, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageDown, modifiers }))),
 
-            _ => Ok(None), // Unknown sequence
+            // IMPORTANT: Consume all escape sequences to prevent character leakage
+            // Any unrecognized escape sequence starting with ESC should be consumed, not ignored
+            bytes if bytes.len() > 0 && bytes[0] == 27 => {
+                // This is an escape sequence we don't recognize - consume it silently
+                // This prevents escape sequences from being interpreted as regular characters
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[PARSE_INPUT] Consumed unrecognized escape sequence: {:?}", bytes).ok();
+                }
+                Ok(None) // Consume but don't process
+            }
+
+            _ => Ok(None) // Unknown non-escape sequence
         }
     }
 
@@ -392,32 +404,72 @@ impl KittyTerminal {
         // Find the M or m at the end
         let end_idx = match data.iter().position(|&b| b == b'M' || b == b'm') {
             Some(idx) => idx,
-            None => return Ok(None),
+            None => {
+                // Log failed parse but still consume the sequence
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[SGR_PARSE] No M/m terminator found, consuming sequence").ok();
+                }
+                return Ok(None); // Consume but don't process
+            }
         };
         let is_press = data[end_idx] == b'M';
 
         // Parse the numbers
         let nums_str = match std::str::from_utf8(&data[..end_idx]) {
             Ok(s) => s,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                // Log failed parse but still consume the sequence
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[SGR_PARSE] UTF8 parse failed, consuming sequence").ok();
+                }
+                return Ok(None); // Consume but don't process
+            }
         };
         let parts: Vec<&str> = nums_str.split(';').collect();
 
         if parts.len() != 3 {
-            return Ok(None);
+            // Log failed parse but still consume the sequence
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                use std::io::Write;
+                writeln!(file, "[SGR_PARSE] Wrong number of parts: {}, consuming sequence", parts.len()).ok();
+            }
+            return Ok(None); // Consume but don't process
         }
 
         let button_code = match parts[0].parse::<u32>() {
             Ok(n) => n,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                // Log failed parse but still consume the sequence
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[SGR_PARSE] Button code parse failed, consuming sequence").ok();
+                }
+                return Ok(None); // Consume but don't process
+            }
         };
         let x = match parts[1].parse::<u16>() {
             Ok(n) => n.saturating_sub(1), // Convert to 0-based
-            Err(_) => return Ok(None),
+            Err(_) => {
+                // Log failed parse but still consume the sequence
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[SGR_PARSE] X coordinate parse failed, consuming sequence").ok();
+                }
+                return Ok(None); // Consume but don't process
+            }
         };
         let y = match parts[2].parse::<u16>() {
             Ok(n) => n.saturating_sub(1), // Convert to 0-based
-            Err(_) => return Ok(None),
+            Err(_) => {
+                // Log failed parse but still consume the sequence
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[SGR_PARSE] Y coordinate parse failed, consuming sequence").ok();
+                }
+                return Ok(None); // Consume but don't process
+            }
         };
 
         // Decode button and modifiers from button_code
