@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::fs;
 use anyhow::Result;
 use crate::kitty_native::{KittyTerminal, KeyCode, KeyModifiers};
-use crate::theme::KittyTheme;
 use std::io::Write;
 
 pub fn pick_pdf_file() -> Result<Option<PathBuf>> {
@@ -115,7 +114,7 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
         print!("\r\n");
 
         // Get terminal size for display
-        let (term_width, term_height) = KittyTerminal::size().unwrap_or((80, 24));
+        let (_, term_height) = KittyTerminal::size().unwrap_or((80, 24));
         let max_display_items = (term_height as usize).saturating_sub(5).min(20);
 
         // Update scroll offset to keep selected item visible
@@ -134,7 +133,6 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
         }
 
         // Display files with simple loop to avoid iterator issues
-        let mut files_shown = 0;
         for i in 0..max_display_items {
             let file_index = scroll_offset + i;
             if file_index < filtered_files.len() {
@@ -150,7 +148,6 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
                     // Unselected file with explicit line control
                     print!("\x1b[38;2;96;99;102m    {}\x1b[m\r\n", filename);
                 }
-                files_shown += 1;
             } else {
                 // Clear empty lines from previous renders
                 print!("                                                                \r\n");

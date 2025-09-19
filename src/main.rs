@@ -3,14 +3,14 @@ use anyhow::Result;
 // CROSSTERM ELIMINATED! Pure Kitty-native PDF viewer
 use kitty_native::{KittyTerminal, KeyCode};
 // All crossterm eliminated - pure Kitty ANSI
-use std::{io::{self, Write}, path::PathBuf, time::{Duration, Instant}};
+use std::{io::{self, Write}, path::PathBuf};
 use image::DynamicImage;
 use clap::Parser;
 
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{
-    Rope, Selection, Transaction,
-    history::{History, State},  // Need State for history
+    Rope, Selection,
+    history::History,
 };
 
 mod content_extractor;
@@ -32,10 +32,6 @@ use mouse::MouseState;
 use block_selection::BlockSelection;
 // Theme eliminated - using direct ANSI
 
-#[cfg(target_os = "macos")]
-const MOD_KEY: kitty_native::KeyModifiers = kitty_native::KeyModifiers::SUPER;
-#[cfg(not(target_os = "macos"))]
-const MOD_KEY: kitty_native::KeyModifiers = kitty_native::KeyModifiers::CONTROL;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExtractionMethod {

@@ -2,7 +2,7 @@
 use crate::{App, kitty_native::MouseEvent};
 use crate::block_selection::{BlockSelection, char_idx_to_visual_col};
 use anyhow::Result;
-use helix_core::{Selection, Range, movement, Transaction, history::State};
+use helix_core::{Selection, Range, movement};
 use std::time::{Duration, Instant};
 use std::fs::OpenOptions;
 use std::io::Write;

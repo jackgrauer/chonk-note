@@ -1,5 +1,4 @@
-use helix_core::{Range, Rope, RopeSlice, Selection, Transaction};
-use std::cmp::{min, max};
+use helix_core::{Range, Rope, RopeSlice, Selection};
 
 const TAB_WIDTH: usize = 4;
 
@@ -152,25 +151,3 @@ pub fn char_idx_to_visual_col(line: RopeSlice, char_idx: usize) -> usize {
     current_visual
 }
 
-// Block operations
-pub fn block_insert(rope: &mut Rope, block_sel: &BlockSelection, text: &str) -> Transaction {
-    let selection = block_sel.to_selection(rope);
-    Transaction::change_by_selection(rope, &selection, |range| {
-        // Insert at the beginning of each range
-        (range.from(), range.from(), Some(text.into()))
-    })
-}
-
-pub fn block_delete(rope: &mut Rope, block_sel: &BlockSelection) -> Transaction {
-    let selection = block_sel.to_selection(rope);
-    Transaction::change_by_selection(rope, &selection, |range| {
-        (range.from(), range.to(), None)
-    })
-}
-
-pub fn block_replace(rope: &mut Rope, block_sel: &BlockSelection, text: &str) -> Transaction {
-    let selection = block_sel.to_selection(rope);
-    Transaction::change_by_selection(rope, &selection, |range| {
-        (range.from(), range.to(), Some(text.into()))
-    })
-}

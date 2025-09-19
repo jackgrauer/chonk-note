@@ -1,5 +1,5 @@
 // MINIMAL KEYBOARD HANDLING
-use crate::{App, MOD_KEY};
+use crate::App;
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 use std::fs::OpenOptions;
@@ -7,7 +7,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 // HELIX-CORE INTEGRATION! Professional text editing
-use helix_core::{movement, Transaction, Selection, Range, textobject, history::State};
+use helix_core::{Transaction, Selection, history::State};
 // HELIX-VIEW INTEGRATION! Clipboard and register system
 use helix_view::clipboard::{ClipboardProvider, ClipboardType};
 
