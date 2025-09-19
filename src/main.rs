@@ -395,6 +395,10 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Clear the entire screen to prevent artifacts when resizing
             // More efficient than selective clearing and ensures no remnants
             print!("\x1b[2J");
+            stdout.flush()?;
+
+            // Save cursor position
+            print!("\x1b[s]");
 
             // Render PDF with viewport and scrollbars
             if let Some(image) = &app.current_page_image {
@@ -455,6 +459,9 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render text editor on right
             if let Some(renderer) = &mut app.edit_display {
+                // Ensure renderer buffer is synced with rope before rendering
+                renderer.update_from_rope(&app.rope);
+
                 // HELIX-CORE: Convert selection to old format for renderer
                 let cursor_pos = app.selection.primary().head;
                 let cursor_line = app.rope.char_to_line(cursor_pos);
@@ -529,7 +536,13 @@ async fn run_app(app: &mut App) -> Result<()> {
 
                 // Draw scrollbars for text editor
                 renderer.draw_scrollbars(split_x + 1, 1, text_viewport_width, text_viewport_height)?;
+
+                // Force flush after text rendering to ensure it displays
+                stdout.flush()?;
             }
+
+            // Restore cursor position
+            print!("\x1b[u]");
 
             // Status bar disabled to prevent debug flood
             // render_status_bar(&mut stdout, app, term_width, term_height)?;
