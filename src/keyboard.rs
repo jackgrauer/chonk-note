@@ -396,9 +396,18 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 };
 
                 // Delete the selected text using Transaction
-                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
-                    (range.from(), range.to(), None)
-                });
+                // For block selections, replace with spaces to preserve layout
+                let transaction = if let Some(_) = &app.block_selection {
+                    Transaction::change_by_selection(&app.rope, &selection, |range| {
+                        let len = range.to() - range.from();
+                        let spaces = " ".repeat(len);
+                        (range.from(), range.to(), Some(spaces.into()))
+                    })
+                } else {
+                    Transaction::change_by_selection(&app.rope, &selection, |range| {
+                        (range.from(), range.to(), None)
+                    })
+                };
 
                 // Apply transaction
                 transaction.apply(&mut app.rope);
@@ -688,16 +697,27 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 selection: app.selection.clone(),
             };
 
-            // CORRECT HELIX: Professional backspace with Ferrari engine!
-            let transaction = if app.selection.primary().len() > 0 {
-                // Delete selection
-                Transaction::delete(&app.rope, app.selection.ranges().into_iter().map(|r| (r.from(), r.to())))
+            // Get the selection to use (block or regular)
+            let (transaction, clear_block) = if let Some(block_sel) = &app.block_selection {
+                // Block selection - replace with spaces to preserve layout
+                let selection = block_sel.to_selection(&app.rope);
+                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
+                    let len = range.to() - range.from();
+                    let spaces = " ".repeat(len);
+                    (range.from(), range.to(), Some(spaces.into()))
+                });
+                (transaction, true)
+            } else if app.selection.primary().len() > 0 {
+                // Regular selection - delete normally
+                let transaction = Transaction::delete(&app.rope, app.selection.ranges().into_iter().map(|r| (r.from(), r.to())));
+                (transaction, false)
             } else {
                 // Delete character before cursor (delete_backward)
-                Transaction::delete(&app.rope, std::iter::once((
+                let transaction = Transaction::delete(&app.rope, std::iter::once((
                     app.selection.primary().head.saturating_sub(1),
                     app.selection.primary().head
-                )))
+                )));
+                (transaction, false)
             };
 
             // Apply transaction (modifies rope in-place)
@@ -706,6 +726,11 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if success {
                 // Map selection through changes
                 app.selection = app.selection.clone().map(transaction.changes());
+
+                // Clear block selection if we just deleted it
+                if clear_block {
+                    app.block_selection = None;
+                }
 
                 // Commit to history for undo/redo
                 app.history.commit_revision(&transaction, &state);
