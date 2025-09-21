@@ -520,6 +520,27 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // No scrolling in text pane for now
         }
 
+        // Horizontal swipe gestures for PDF pane
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
+            // Check if scroll is in PDF pane
+            if x <= current_split {
+                // Scroll left (decrease scroll_x)
+                app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
+                app.needs_redraw = true;
+            }
+        }
+
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
+            // Check if scroll is in PDF pane
+            if x <= current_split {
+                let pdf_viewport_width = current_split.saturating_sub(3);
+                let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
+                // Scroll right (increase scroll_x)
+                app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
+                app.needs_redraw = true;
+            }
+        }
+
         // Ignore other mouse events
         _ => {}
     }

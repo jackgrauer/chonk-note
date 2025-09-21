@@ -28,6 +28,8 @@ pub enum MouseButton {
     Right,
     ScrollUp,
     ScrollDown,
+    ScrollLeft,
+    ScrollRight,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -531,6 +533,10 @@ impl KittyTerminal {
             Some(MouseButton::ScrollUp)
         } else if !is_drag && button_code == 65 {
             Some(MouseButton::ScrollDown)
+        } else if !is_drag && button_code == 66 {
+            Some(MouseButton::ScrollLeft)
+        } else if !is_drag && button_code == 67 {
+            Some(MouseButton::ScrollRight)
         } else {
             button
         };
