@@ -494,8 +494,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
                 app.needs_redraw = true;
             }
-            // DISABLED: Text pane trackpad gestures are not active yet
-            // No scrolling in text pane for now
+            // Text pane: explicitly consume the event to prevent character leakage
+            // Scrolling is disabled for text pane but we must handle the event
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
@@ -516,11 +516,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
                 app.needs_redraw = true;
             }
-            // DISABLED: Text pane trackpad gestures are not active yet
-            // No scrolling in text pane for now
+            // Text pane: explicitly consume the event to prevent character leakage
+            // Scrolling is disabled for text pane but we must handle the event
         }
 
-        // Horizontal swipe gestures for PDF pane
+        // Horizontal swipe gestures
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
             // Check if scroll is in PDF pane
             if x <= current_split {
@@ -528,6 +528,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
                 app.needs_redraw = true;
             }
+            // Text pane: explicitly consume the event to prevent character leakage
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
@@ -539,6 +540,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
                 app.needs_redraw = true;
             }
+            // Text pane: explicitly consume the event to prevent character leakage
         }
 
         // Ignore other mouse events
