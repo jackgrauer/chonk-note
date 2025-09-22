@@ -522,6 +522,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         // Horizontal swipe gestures
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
+            // Debug log for text pane events
+            if x > current_split {
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[MOUSE] ScrollLeft in TEXT PANE at x={}", x).ok();
+                }
+            }
             // Check if scroll is in PDF pane
             if x <= current_split {
                 // Scroll left (decrease scroll_x)
@@ -532,6 +538,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
+            // Debug log for text pane events
+            if x > current_split {
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    writeln!(file, "[MOUSE] ScrollRight in TEXT PANE at x={}", x).ok();
+                }
+            }
             // Check if scroll is in PDF pane
             if x <= current_split {
                 let pdf_viewport_width = current_split.saturating_sub(3);

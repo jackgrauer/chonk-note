@@ -79,6 +79,10 @@ pub struct KeyEvent {
 
 pub struct KittyTerminal;
 
+// Static buffer for incomplete escape sequences
+use std::sync::Mutex;
+static INPUT_BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
 impl KittyTerminal {
     // Terminal setup
     pub fn enter_fullscreen() -> Result<(), io::Error> {
@@ -231,6 +235,18 @@ impl KittyTerminal {
 
     // Raw input parsing (keyboard and mouse)
     pub fn read_input() -> Result<Option<InputEvent>, io::Error> {
+        // First check if we have buffered data to process
+        {
+            let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
+            if !buffer_guard.is_empty() {
+                // Try to parse buffered data first
+                let bytes = buffer_guard.clone();
+                if let Some(event) = Self::parse_input_with_remainder(&bytes, &mut buffer_guard)? {
+                    return Ok(Some(event));
+                }
+            }
+        }
+
         let mut buffer = [0u8; 64];  // Increased for SGR mouse sequences
         let mut stdin = io::stdin();
 
@@ -270,8 +286,13 @@ impl KittyTerminal {
             writeln!(file, "[READ_INPUT] Read {} bytes: {:?}", bytes_read, &buffer[..bytes_read]).ok();
         }
 
-        // Parse escape sequences
-        Self::parse_input(&buffer[..bytes_read])
+        // Add new bytes to buffer and parse
+        let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
+        buffer_guard.extend_from_slice(&buffer[..bytes_read]);
+
+        // Parse with remainder handling
+        let bytes = buffer_guard.clone();
+        Self::parse_input_with_remainder(&bytes, &mut buffer_guard)
     }
 
     // Compatibility wrapper for existing code
@@ -282,24 +303,66 @@ impl KittyTerminal {
         }
     }
 
-    fn parse_input(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
+    // Parse input with remainder handling for multiple events
+    fn parse_input_with_remainder(bytes: &[u8], buffer: &mut Vec<u8>) -> Result<Option<InputEvent>, io::Error> {
         if bytes.is_empty() {
             return Ok(None);
+        }
+
+        // Try to parse an event and calculate how many bytes it consumed
+        let (event, consumed) = Self::parse_single_event(bytes)?;
+
+        if consumed > 0 {
+            // Remove consumed bytes from buffer
+            if consumed < buffer.len() {
+                *buffer = buffer[consumed..].to_vec();
+            } else {
+                buffer.clear();
+            }
+        }
+
+        Ok(event)
+    }
+
+    fn parse_single_event(bytes: &[u8]) -> Result<(Option<InputEvent>, usize), io::Error> {
+        if bytes.is_empty() {
+            return Ok((None, 0));
+        }
+
+        // Check for SGR mouse sequence first: CSI < button ; x ; y M/m
+        if bytes.len() >= 6 && bytes[0] == 27 && bytes[1] == b'[' && bytes[2] == b'<' {
+            // Find the end of this sequence
+            if let Some(end_pos) = bytes[3..].iter().position(|&b| b == b'M' || b == b'm') {
+                let sequence_end = 3 + end_pos + 1;  // +3 for ESC[<, +1 to include M/m
+                let sequence = &bytes[..sequence_end];
+
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[PARSE_SINGLE] SGR sequence found, length={}", sequence_end).ok();
+                }
+
+                // Parse just this one sequence
+                if let Some(event) = Self::parse_sgr_mouse_single(sequence)? {
+                    return Ok((Some(event), sequence_end));
+                }
+            }
+            // Incomplete sequence, wait for more data
+            return Ok((None, 0));
+        }
+
+        // Fall back to old parse_input logic for non-mouse events
+        Self::parse_keyboard_input(bytes)
+    }
+
+    fn parse_keyboard_input(bytes: &[u8]) -> Result<(Option<InputEvent>, usize), io::Error> {
+        if bytes.is_empty() {
+            return Ok((None, 0));
         }
 
         // Debug log raw input bytes
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
             use std::io::Write;
-            writeln!(file, "[PARSE_INPUT] Raw bytes: {:?}", bytes).ok();
-        }
-
-        // Check for SGR mouse sequence first: CSI < button ; x ; y M/m
-        if bytes.len() >= 6 && bytes[0] == 27 && bytes[1] == b'[' && bytes[2] == b'<' {
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                use std::io::Write;
-                writeln!(file, "[PARSE_INPUT] Detected SGR mouse sequence").ok();
-            }
-            return Self::parse_sgr_mouse(bytes);
+            writeln!(file, "[PARSE_KEYBOARD] Raw bytes: {:?}", bytes).ok();
         }
 
         let mut modifiers = KeyModifiers {
@@ -311,96 +374,96 @@ impl KittyTerminal {
 
         match bytes {
             // Special keys FIRST (before control character parsing)
-            [13] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Enter, modifiers }))),
-            [127] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Backspace, modifiers }))),
-            [9] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Tab, modifiers }))),
-            [27] if bytes.len() == 1 => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Esc, modifiers }))),
+            [13, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Enter, modifiers })), 1)),
+            [127, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Backspace, modifiers })), 1)),
+            [9, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Tab, modifiers })), 1)),
+            [27] if bytes.len() == 1 => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Esc, modifiers })), 1)),
 
             // Simple characters
-            [b] if *b >= 32 && *b <= 126 => {
-                Ok(Some(InputEvent::Key(KeyEvent {
+            [b, ..] if *b >= 32 && *b <= 126 => {
+                Ok((Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(*b as char),
                     modifiers,
-                })))
+                })), 1))
             }
 
             // Control characters (excluding Enter=13, Tab=9 which are handled above)
-            [b] if *b >= 1 && *b <= 26 && *b != 13 && *b != 9 => {
+            [b, ..] if *b >= 1 && *b <= 26 && *b != 13 && *b != 9 => {
                 modifiers.ctrl = true;
                 let ch = (*b - 1 + b'a') as char;
 
                 // Debug log control character parsing
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                     use std::io::Write;
-                    writeln!(file, "[PARSE_INPUT] Control char: byte={}, char='{}', ctrl={}",
+                    writeln!(file, "[PARSE_KEYBOARD] Control char: byte={}, char='{}', ctrl={}",
                         b, ch, modifiers.ctrl).ok();
                 }
 
-                Ok(Some(InputEvent::Key(KeyEvent {
+                Ok((Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(ch),
                     modifiers,
-                })))
+                })), 1))
             }
 
             // Command key on macOS (Cmd+char)
-            [226, 140, 152, b] => {
+            [226, 140, 152, b, ..] => {
                 modifiers.cmd = true;
-                Ok(Some(InputEvent::Key(KeyEvent {
+                Ok((Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(*b as char),
                     modifiers,
-                })))
+                })), 4))
             }
 
             // Arrow keys
-            [27, 91, 65] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers }))),
-            [27, 91, 66] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers }))),
-            [27, 91, 68] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers }))),
-            [27, 91, 67] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers }))),
+            [27, 91, 65, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })), 3)),
+            [27, 91, 66, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })), 3)),
+            [27, 91, 68, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })), 3)),
+            [27, 91, 67, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })), 3)),
 
             // Shift+Arrow keys (for selection)
-            [27, 91, 49, 59, 50, 65] => {
+            [27, 91, 49, 59, 50, 65, ..] => {
                 modifiers.shift = true;
-                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })))
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })), 6))
             }
-            [27, 91, 49, 59, 50, 66] => {
+            [27, 91, 49, 59, 50, 66, ..] => {
                 modifiers.shift = true;
-                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })))
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })), 6))
             }
-            [27, 91, 49, 59, 50, 68] => {
+            [27, 91, 49, 59, 50, 68, ..] => {
                 modifiers.shift = true;
-                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })))
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })), 6))
             }
-            [27, 91, 49, 59, 50, 67] => {
+            [27, 91, 49, 59, 50, 67, ..] => {
                 modifiers.shift = true;
-                Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })))
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })), 6))
             }
 
             // Home/End
-            [27, 91, 72] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::Home, modifiers }))),
-            [27, 91, 70] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::End, modifiers }))),
+            [27, 91, 72, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Home, modifiers })), 3)),
+            [27, 91, 70, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::End, modifiers })), 3)),
 
             // Page Up/Down
-            [27, 91, 53, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageUp, modifiers }))),
-            [27, 91, 54, 126] => Ok(Some(InputEvent::Key(KeyEvent { code: KeyCode::PageDown, modifiers }))),
+            [27, 91, 53, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::PageUp, modifiers })), 4)),
+            [27, 91, 54, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::PageDown, modifiers })), 4)),
 
             // IMPORTANT: Consume all escape sequences to prevent character leakage
             // Any unrecognized escape sequence starting with ESC should be consumed, not ignored
             bytes if bytes.len() > 0 && bytes[0] == 27 => {
-                // This is an escape sequence we don't recognize - consume it silently
+                // This is an escape sequence we don't recognize - consume it ALL
                 // This prevents escape sequences from being interpreted as regular characters
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                     use std::io::Write;
-                    writeln!(file, "[PARSE_INPUT] Consumed unrecognized escape sequence: {:?}", bytes).ok();
+                    writeln!(file, "[PARSE_KEYBOARD] Consumed unrecognized escape sequence: {:?}", bytes).ok();
                 }
-                Ok(None) // Consume but don't process
+                Ok((None, bytes.len())) // Consume entire buffer
             }
 
-            _ => Ok(None) // Unknown non-escape sequence
+            _ => Ok((None, 1)) // Consume one byte of unknown input
         }
     }
 
-    // Parse SGR mouse events: CSI < button ; x ; y M/m
-    fn parse_sgr_mouse(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
+    // Parse SGR mouse events: CSI < button ; x ; y M/m - single event only
+    fn parse_sgr_mouse_single(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
         // Debug log SGR parsing
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
             use std::io::Write;
@@ -529,6 +592,13 @@ impl KittyTerminal {
         };
 
         // Handle scroll separately (these have different codes)
+        // Debug log ALL button codes to see what we're actually receiving
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+            use std::io::Write;
+            writeln!(file, "[SGR_PARSE] Button event: button_code={}, is_drag={}, x={}, y={}",
+                button_code, is_drag, x, y).ok();
+        }
+
         let button = if !is_drag && button_code == 64 {
             Some(MouseButton::ScrollUp)
         } else if !is_drag && button_code == 65 {
