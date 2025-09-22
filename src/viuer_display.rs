@@ -134,6 +134,21 @@ pub fn display_pdf_viewport(
     // Crop the image to show only the visible portion
     let cropped = image.crop_imm(crop_x, crop_y, crop_width, crop_height);
 
+    // Convert to RGBA for processing
+    let mut rgba_image = cropped.to_rgba8();
+
+    // Apply dark mode filter if enabled
+    if _dark_mode {
+        // Invert colors for dark mode
+        for pixel in rgba_image.pixels_mut() {
+            // Invert RGB but preserve alpha
+            pixel[0] = 255 - pixel[0]; // R
+            pixel[1] = 255 - pixel[1]; // G
+            pixel[2] = 255 - pixel[2]; // B
+            // pixel[3] stays the same (alpha)
+        }
+    }
+
     // Save cursor position
     print!("\x1b[s");
     io::stdout().flush()?;
@@ -157,9 +172,6 @@ pub fn display_pdf_viewport(
         use_kitty: true,
         use_iterm: true,
     };
-
-    // Convert to image 0.24 for viuer compatibility
-    let rgba_image = cropped.to_rgba8();
     let (width, height) = (rgba_image.width(), rgba_image.height());
     let raw = rgba_image.into_raw();
 
