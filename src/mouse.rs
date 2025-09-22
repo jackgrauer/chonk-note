@@ -483,8 +483,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         // Remove the old motion handler - we handle drag with is_drag now
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, modifiers, .. } => {
-            // Check if scroll is in PDF pane
             if x <= current_split {
+                // PDF pane scrolling
                 if modifiers.shift {
                     // Horizontal scroll with Shift+Scroll
                     app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
@@ -493,14 +493,24 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
                 }
                 app.needs_redraw = true;
+            } else {
+                // Text pane scrolling
+                if let Some(renderer) = &mut app.edit_display {
+                    if modifiers.shift {
+                        // Horizontal scroll with Shift+Scroll
+                        renderer.scroll_left(5);
+                    } else {
+                        // Vertical scroll
+                        renderer.scroll_up(3);
+                    }
+                    app.needs_redraw = true;
+                }
             }
-            // Text pane: explicitly consume the event to prevent character leakage
-            // Scrolling is disabled for text pane but we must handle the event
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
-            // Check if scroll is in PDF pane
             if x <= current_split {
+                // PDF pane scrolling
                 let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
                 let pdf_viewport_height = term_height.saturating_sub(3);
                 let pdf_viewport_width = current_split.saturating_sub(3);
@@ -515,44 +525,50 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll_y);
                 }
                 app.needs_redraw = true;
+            } else {
+                // Text pane scrolling
+                if let Some(renderer) = &mut app.edit_display {
+                    if modifiers.shift {
+                        // Horizontal scroll with Shift+Scroll
+                        renderer.scroll_right(5);
+                    } else {
+                        // Vertical scroll
+                        renderer.scroll_down(3);
+                    }
+                    app.needs_redraw = true;
+                }
             }
-            // Text pane: explicitly consume the event to prevent character leakage
-            // Scrolling is disabled for text pane but we must handle the event
         }
 
         // Horizontal swipe gestures
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
-            // Debug log for text pane events
-            if x > current_split {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    writeln!(file, "[MOUSE] ScrollLeft in TEXT PANE at x={}", x).ok();
-                }
-            }
-            // Check if scroll is in PDF pane
             if x <= current_split {
-                // Scroll left (decrease scroll_x)
+                // PDF pane - scroll left (decrease scroll_x)
                 app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
                 app.needs_redraw = true;
+            } else {
+                // Text pane - scroll left
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.scroll_left(5);
+                    app.needs_redraw = true;
+                }
             }
-            // Text pane: explicitly consume the event to prevent character leakage
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
-            // Debug log for text pane events
-            if x > current_split {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    writeln!(file, "[MOUSE] ScrollRight in TEXT PANE at x={}", x).ok();
-                }
-            }
-            // Check if scroll is in PDF pane
             if x <= current_split {
+                // PDF pane - scroll right (increase scroll_x)
                 let pdf_viewport_width = current_split.saturating_sub(3);
                 let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
-                // Scroll right (increase scroll_x)
                 app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
                 app.needs_redraw = true;
+            } else {
+                // Text pane - scroll right
+                if let Some(renderer) = &mut app.edit_display {
+                    renderer.scroll_right(5);
+                    app.needs_redraw = true;
+                }
             }
-            // Text pane: explicitly consume the event to prevent character leakage
         }
 
         // Ignore other mouse events
