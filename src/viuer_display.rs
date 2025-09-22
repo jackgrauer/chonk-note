@@ -96,8 +96,8 @@ pub fn display_pdf_viewport(
     viewport_y: u16,      // Terminal position where viewport starts
     viewport_width: u16,  // Width of viewport in terminal
     viewport_height: u16, // Height of viewport in terminal
-    scroll_x: u16,        // Horizontal scroll position in image (in pixels)
-    scroll_y: u16,        // Vertical scroll position in image (in pixels)
+    scroll_x: u16,        // Horizontal scroll position in TERMINAL CELLS, not pixels
+    scroll_y: u16,        // Vertical scroll position in TERMINAL CELLS, not pixels
     _dark_mode: bool,
 ) -> Result<()> {
     // For terminal display, we need to consider that each terminal cell represents multiple pixels
@@ -105,18 +105,25 @@ pub fn display_pdf_viewport(
     let cell_width = 7;
     let cell_height = 14;
 
-    // Convert scroll positions from pixels to approximate cell positions
-    let scroll_x_cells = scroll_x / cell_width;
-    let scroll_y_cells = scroll_y / cell_height;
+    // The scroll positions are already in terminal cells, convert to pixels
+    let scroll_x_pixels = scroll_x * cell_width;
+    let scroll_y_pixels = scroll_y * cell_height;
 
     // Get image dimensions
     let (img_width, img_height) = image.dimensions();
 
     // Calculate the pixel region to extract based on viewport and cell size
-    let crop_x = (scroll_x_cells * cell_width).min(img_width.saturating_sub(1) as u16) as u32;
-    let crop_y = (scroll_y_cells * cell_height).min(img_height.saturating_sub(1) as u16) as u32;
-    let crop_width = (viewport_width * cell_width).min((img_width - crop_x) as u16) as u32;
-    let crop_height = (viewport_height * cell_height).min((img_height - crop_y) as u16) as u32;
+    // Make sure we don't go beyond image boundaries
+    let crop_x = (scroll_x_pixels as u32).min(img_width.saturating_sub(1));
+    let crop_y = (scroll_y_pixels as u32).min(img_height.saturating_sub(1));
+
+    // Calculate available width/height from the crop position
+    let available_width = img_width.saturating_sub(crop_x);
+    let available_height = img_height.saturating_sub(crop_y);
+
+    // Don't request more than what's available
+    let crop_width = ((viewport_width * cell_width) as u32).min(available_width);
+    let crop_height = ((viewport_height * cell_height) as u32).min(available_height);
 
     // If the crop dimensions are invalid, just display the whole image scaled
     if crop_width == 0 || crop_height == 0 || crop_x >= img_width || crop_y >= img_height {
@@ -131,6 +138,11 @@ pub fn display_pdf_viewport(
     print!("\x1b[s");
     io::stdout().flush()?;
 
+    // Calculate the actual display dimensions based on what's available
+    // Don't stretch - if we have less content than viewport, show less
+    let display_width = (crop_width / cell_width as u32).min(viewport_width as u32);
+    let display_height = (crop_height / cell_height as u32).min(viewport_height as u32);
+
     // Configure viuer to display the cropped portion
     let config = Config {
         transparent: true,
@@ -138,9 +150,9 @@ pub fn display_pdf_viewport(
         x: viewport_x,
         y: viewport_y as i16,
         restore_cursor: false,
-        // Set to viewport dimensions to fill the available space
-        width: Some(viewport_width as u32),
-        height: Some(viewport_height as u32),
+        // Use actual content dimensions, not viewport dimensions to prevent stretching
+        width: Some(display_width),
+        height: Some(display_height),
         truecolor: true,
         use_kitty: true,
         use_iterm: true,

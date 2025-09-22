@@ -156,9 +156,12 @@ impl App {
         // Render page at zoomed size
         let image = pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, zoomed_width, zoomed_height)?;
 
-        // Update PDF dimensions
-        self.pdf_full_width = image.width() as u16;
-        self.pdf_full_height = image.height() as u16;
+        // Update PDF dimensions - convert from pixels to terminal cells
+        // Typical terminal cell is about 7x14 pixels
+        let cell_width = 7;
+        let cell_height = 14;
+        self.pdf_full_width = (image.width() / cell_width) as u16;
+        self.pdf_full_height = (image.height() / cell_height) as u16;
 
         // Reset scroll position when loading new page
         self.pdf_scroll_x = 0;
