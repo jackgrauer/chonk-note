@@ -6,13 +6,25 @@ use anyhow::Result;
 use crate::kitty_native::{KittyTerminal, KeyCode, KeyModifiers};
 use std::io::Write;
 
+pub enum FilePickerAction {
+    Open(PathBuf),
+    Cancel,
+}
+
 pub fn pick_pdf_file() -> Result<Option<PathBuf>> {
+    match pick_pdf_with_action()? {
+        FilePickerAction::Open(path) => Ok(Some(path)),
+        _ => Ok(None),
+    }
+}
+
+pub fn pick_pdf_with_action() -> Result<FilePickerAction> {
     // Find all PDF files in Documents
     let docs_dir = PathBuf::from("/Users/jack/Documents");
     let pdf_files = find_pdf_files(&docs_dir)?;
 
     if pdf_files.is_empty() {
-        return Ok(None);
+        return Ok(FilePickerAction::Cancel);
     }
 
     // Always do proper terminal setup for file picker
@@ -76,7 +88,7 @@ fn search_pdf_filename(pdf_path: &PathBuf, query: &str) -> bool {
     filename.contains(&query_lower)
 }
 
-fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
+fn run_simple_picker(files: &[PathBuf]) -> Result<FilePickerAction> {
     let mut selected_index = 0;
     let mut scroll_offset = 0;
     let mut needs_redraw = true; // Nuclear anti-flicker state tracking
@@ -157,9 +169,9 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
         // Footer with search instructions
         print!("\r\n");
         if search_mode {
-            print!("\x1b[38;2;96;99;102m  ↑/↓ Navigate  •  Enter Select  •  Esc Exit Search  •  Type to search\x1b[m");
+            print!("\x1b[38;2;96;99;102m  ↑/↓ Navigate  •  Enter Open  •  Esc Exit Search\x1b[m");
         } else {
-            print!("\x1b[38;2;96;99;102m  ↑/↓ Navigate  •  Enter Select  •  Esc Cancel  •  / Search Content\x1b[m");
+            print!("\x1b[38;2;96;99;102m  ↑/↓ Navigate  •  Enter Open  •  Esc Cancel  •  / Search\x1b[m");
         }
 
         std::io::stdout().flush()?;
@@ -194,7 +206,7 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
                         &files.iter().collect::<Vec<_>>()
                     };
                     if selected_index < target_files.len() {
-                        return Ok(Some(target_files[selected_index].clone()));
+                        return Ok(FilePickerAction::Open(target_files[selected_index].clone()));
                     }
                 }
                 KeyCode::Esc => {
@@ -204,7 +216,7 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
                         selected_index = 0;
                         needs_redraw = true;
                     } else {
-                        return Ok(None);
+                        return Ok(FilePickerAction::Cancel);
                     }
                 }
                 KeyCode::Char('/') => {
@@ -227,7 +239,7 @@ fn run_simple_picker(files: &[PathBuf]) -> Result<Option<PathBuf>> {
                     needs_redraw = true;
                 }
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(None);
+                    return Ok(FilePickerAction::Cancel);
                 }
                 _ => {}
             }

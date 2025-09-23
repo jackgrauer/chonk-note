@@ -333,23 +333,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     return Ok(());
                 }
 
-                // Text zoom buttons are disabled for now
-                // Terminal text can't really be zoomed without changing font size
-                // which requires terminal-level support
-                // let text_pane_width = term_width - current_split - 1;
-                // let text_button_x = current_split + 1 + text_pane_width - 12;
-                // // Text zoom minus button
-                // if x >= text_button_x && x <= text_button_x + 2 {
-                //     app.text_zoom = (app.text_zoom - 0.1).max(0.5);  // Min 50%
-                //     app.needs_redraw = true;
-                //     return Ok(());
-                // }
-                // // Text zoom plus button
-                // if x >= text_button_x + 9 && x <= text_button_x + 11 {
-                //     app.text_zoom = (app.text_zoom + 0.1).min(3.0);  // Max 300%
-                //     app.needs_redraw = true;
-                //     return Ok(());
-                // }
             }
 
             // Check if click is on the divider (within 2 columns of the split position)

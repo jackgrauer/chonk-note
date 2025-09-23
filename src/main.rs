@@ -91,6 +91,7 @@ pub struct App {
     // Zoom levels for each pane (1.0 = 100%)
     pub pdf_zoom: f32,                // Zoom level for PDF pane
     pub text_zoom: f32,               // Zoom level for text editor pane
+
 }
 
 impl App {
@@ -143,6 +144,7 @@ impl App {
             // Zoom levels
             pdf_zoom: 1.0,
             text_zoom: 1.0,
+
         })
     }
 
@@ -402,15 +404,21 @@ async fn run_app(app: &mut App) -> Result<()> {
         if app.open_file_picker {
             app.open_file_picker = false;
             restore_terminal()?;
-            
-            if let Some(new_path) = kitty_file_picker::pick_pdf_file()? {
-                app.pdf_path = new_path;
-                app.current_page = 0;
-                app.total_pages = content_extractor::get_page_count(&app.pdf_path)?;
-                app.load_pdf_page().await?;
-                app.needs_redraw = true;
+
+            use kitty_file_picker::FilePickerAction;
+            match kitty_file_picker::pick_pdf_with_action()? {
+                FilePickerAction::Open(new_path) => {
+                    app.pdf_path = new_path;
+                    app.current_page = 0;
+                    app.total_pages = content_extractor::get_page_count(&app.pdf_path)?;
+                    app.load_pdf_page().await?;
+                    app.needs_redraw = true;
+                }
+                FilePickerAction::Cancel => {
+                    // User cancelled
+                }
             }
-            
+
             setup_terminal()?;
             app.needs_redraw = true;
         }
@@ -597,12 +605,6 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
     let label_text = format!(" {} ", method_label);
     print!("\x1b[{};{}H\x1b[38;2;150;150;150m{}\x1b[0m", y + 1, x + 2, label_text);
 
-    // Text zoom is disabled - show grayed out buttons
-    let zoom_text = format!(" {:.0}% ", app.text_zoom * 100.0);
-    let button_x = x + width - 12;
-    print!("\x1b[{};{}H\x1b[38;2;60;60;60m[\x1b[38;2;80;80;80m-\x1b[38;2;60;60;60m]{} [\x1b[38;2;80;80;80m+\x1b[38;2;60;60;60m]\x1b[0m",
-        y + 1, button_x, zoom_text);
-
     // Draw side borders
     for row in 1..height - 1 {
         print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + 1);
@@ -634,14 +636,12 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         let content_x = x + 2;
         let content_y = y + 1;
-        // Keep the display area constant, but adjust viewport for zoom
-        let display_width = width.saturating_sub(4);
-        let display_height = height.saturating_sub(3);
+        // Use full available space now that scrollbars are removed
+        let display_width = width.saturating_sub(2);  // Just borders
+        let display_height = height.saturating_sub(2); // Just borders
 
-        // For text zoom, we'll scale the font/character size visually
-        // For now, keep the same rendering area to avoid breaking the UI
-        // TODO: Implement proper text scaling in the renderer
-
+        // Always use normal rendering - text zoom doesn't work well in terminals
+        // The zoom controls remain but just show the status without changing rendering
         if app.block_selection.is_some() {
             renderer.render_with_block_selection(
                 content_x, content_y + 1, display_width, display_height - 1,
@@ -671,11 +671,11 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
             )?;
         }
 
-        // Draw scrollbars
-        renderer.draw_scrollbars(content_x, content_y + 1, display_width, display_height - 1)?;
+        // Scrollbars removed for cleaner interface
     }
 
     Ok(())
 }
+
 
 // Status bar function removed - disabled in main rendering loop

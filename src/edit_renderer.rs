@@ -50,6 +50,13 @@ impl EditPanelRenderer {
         }
     }
     
+    /// Update viewport dimensions (for zoom functionality)
+    pub fn set_viewport_size(&mut self, width: u16, height: u16) {
+        self.viewport_width = width;
+        self.viewport_height = height;
+    }
+
+
     pub fn scroll_up(&mut self, lines: u16) {
         // Hard boundary at top - never go negative
         self.scroll_y = self.scroll_y.saturating_sub(lines);

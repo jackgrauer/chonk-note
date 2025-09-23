@@ -47,6 +47,7 @@ fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
 }
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+
     let rope = app.rope.slice(..);
 
     // macOS-NATIVE KEYBOARD SHORTCUTS!
@@ -512,6 +513,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.toggle_extraction_method().await?;
         }
 
+
         (KeyCode::Char('n'), mods) if mods.contains(KeyModifiers::CONTROL) => {
             app.next_page();
             if app.current_page_image.is_none() {
@@ -524,6 +526,23 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if app.current_page_image.is_none() {
                 app.load_pdf_page().await?;
             }
+        }
+
+        // Text zoom disabled - terminal text can't be resized properly
+        // These shortcuts now just show a message explaining the limitation
+        (KeyCode::Char('+'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.status_message = "Text zoom not available (terminal limitation)".to_string();
+            app.needs_redraw = true;
+        }
+
+        (KeyCode::Char('-'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.status_message = "Text zoom not available (terminal limitation)".to_string();
+            app.needs_redraw = true;
+        }
+
+        (KeyCode::Char('0'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.status_message = "Text zoom not available (terminal limitation)".to_string();
+            app.needs_redraw = true;
         }
 
         // BASIC MOVEMENT - Arrow keys with acceleration

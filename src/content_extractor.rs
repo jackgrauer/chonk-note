@@ -5,6 +5,41 @@ use std::path::Path;
 use crate::ExtractionMethod;
 
 
+pub async fn extract_to_string(pdf_path: &Path, page_num: usize) -> Result<String> {
+    // Simple text extraction for library indexing
+    let pdfium = Pdfium::new(
+        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/Users/jack/chonker7/lib/")))
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("../lib/")))
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/opt/homebrew/lib/")))
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/usr/local/lib/")))
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/usr/lib/")))
+            .or_else(|_| Pdfium::bind_to_system_library())?
+    );
+
+    let document = pdfium.load_pdf_from_file(pdf_path, None)?;
+    let pages = document.pages();
+
+    // Get text from all pages if page_num is 0, otherwise just the specified page
+    let mut all_text = String::new();
+
+    if page_num == 0 {
+        // Extract from all pages
+        for page in pages.iter() {
+            let text = page.text()?;
+            all_text.push_str(&text.all());
+            all_text.push('\n');
+        }
+    } else {
+        // Extract from specific page
+        let page = pages.get((page_num - 1) as u16)?;
+        let text = page.text()?;
+        all_text = text.all();
+    }
+
+    Ok(all_text)
+}
+
 pub async fn extract_to_matrix_with_method(
     pdf_path: &Path,
     page_num: usize,
