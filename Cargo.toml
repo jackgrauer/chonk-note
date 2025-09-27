@@ -2,6 +2,7 @@
 name = "chonker7"
 version = "7.0.0"
 edition = "2021"
+default-run = "chonker7"
 
 [dependencies]
 # Core
@@ -39,6 +40,14 @@ libc = "0.2"
 
 # OCR
 leptess = "0.14"
+
+# Notes mode (from snyfter3)
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"  # For note ID generation
+dirs = "5.0"  # For database directory
 
 
 # Dependency duplicates will be resolved when crossterm is fully eliminated

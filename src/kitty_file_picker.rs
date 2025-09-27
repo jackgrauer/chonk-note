@@ -33,9 +33,14 @@ pub fn pick_pdf_with_action() -> Result<FilePickerAction> {
 
     let result = run_simple_picker(&pdf_files);
 
-    // Clean exit that works whether returning to app or shell
+    // Clean exit - restore terminal to normal mode
+    // The main app will set it up again for its own use
     KittyTerminal::exit_fullscreen()?;
     KittyTerminal::disable_raw_mode()?;
+
+    // Clear any remaining graphics
+    print!("\x1b[2J\x1b[H");  // Clear screen and move to top
+    std::io::stdout().flush()?;
 
     result
 }

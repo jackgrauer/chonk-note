@@ -9,46 +9,88 @@ use std::time::{Duration, Instant};
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{Transaction, Selection, history::State, movement};
 
-// Arrow key acceleration helper
-fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
-    let now = Instant::now();
-
-    // Check if it's the same arrow key being held
-    if let Some(last_key) = app.last_arrow_key {
-        if last_key == key {
-            // Check if it's within the acceleration window (300ms)
-            if let Some(last_time) = app.last_arrow_time {
-                if now.duration_since(last_time) < Duration::from_millis(300) {
-                    app.arrow_key_count += 1;
-                } else {
-                    // Reset if too much time has passed
-                    app.arrow_key_count = 1;
-                }
-            }
-        } else {
-            // Different arrow key, reset counter
-            app.arrow_key_count = 1;
-        }
-    } else {
-        // First arrow press
-        app.arrow_key_count = 1;
-    }
-
-    app.last_arrow_key = Some(key);
-    app.last_arrow_time = Some(now);
-
-    // Calculate acceleration based on key count
-    match app.arrow_key_count {
-        1..=3 => 1,           // Normal speed for first few presses
-        4..=8 => 3,           // 3x speed after holding briefly
-        9..=15 => 6,          // 6x speed for sustained holding
-        _ => 10,              // Max 10x speed for long holds
-    }
-}
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+    // Try dual-pane handler first for Notes mode
+    if app.app_mode == crate::AppMode::NotesEditor {
+        // Check if dual-pane handler can handle this key
+        if let Ok(handled) = crate::dual_pane_keyboard::handle_dual_pane_input(app, &key) {
+            if handled {
+                return Ok(true);
+            }
+        }
+    }
 
     let rope = app.rope.slice(..);
+
+    // Handle notes mode specific commands
+    if app.app_mode == crate::AppMode::NotesEditor {
+        if let Some(ref mut notes) = app.notes_mode {
+            match (key.code, key.modifiers) {
+                // Ctrl+N - Create new note (in notes mode)
+                // Always works with the notes pane (left pane) regardless of which is active
+                (KeyCode::Char('n'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                    // Debug log
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "[KEYBOARD] Ctrl+N detected in Notes mode").ok();
+                        writeln!(file, "  Before: notes_rope len = {}, selection = {:?}",
+                            app.notes_rope.len_chars(), app.notes_selection.primary()).ok();
+                    }
+
+                    if let Some(msg) = notes.handle_command(&mut app.notes_rope, &mut app.notes_selection, "new")? {
+                        app.status_message = msg;
+                    } else {
+                        app.status_message = "New note created".to_string();
+                    }
+
+                    // Debug log after
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                        writeln!(file, "  After: notes_rope len = {}, selection = {:?}",
+                            app.notes_rope.len_chars(), app.notes_selection.primary()).ok();
+                    }
+
+                    // Update the notes display renderer
+                    if let Some(renderer) = &mut app.notes_display {
+                        renderer.update_from_rope(&app.notes_rope);
+                    }
+
+                    // Also switch focus to the notes pane
+                    app.switch_active_pane(crate::ActivePane::Left);
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+                // Ctrl+S - Save note
+                (KeyCode::Char('s'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                    if let Some(msg) = notes.handle_command(&mut app.notes_rope, &mut app.notes_selection, "save")? {
+                        app.status_message = msg;
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+L - List notes
+                (KeyCode::Char('l'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                    if let Some(msg) = notes.handle_command(&mut app.notes_rope, &mut app.notes_selection, "list")? {
+                        app.status_message = msg;
+                    }
+                    // Switch to notes pane to see the list
+                    app.switch_active_pane(crate::ActivePane::Left);
+                    return Ok(true);
+                }
+                // Ctrl+F - Search notes
+                (KeyCode::Char('f'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                    if let Some(msg) = notes.handle_command(&mut app.notes_rope, &mut app.notes_selection, "search")? {
+                        app.status_message = msg;
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+E - Return to PDF mode (E for Editor toggle)
+                (KeyCode::Char('e'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                    app.toggle_notes_mode()?;
+                    return Ok(true);
+                }
+                _ => {} // Fall through to regular text editing
+            }
+        }
+    }
 
     // macOS-NATIVE KEYBOARD SHORTCUTS!
     match (key.code, key.modifiers) {
@@ -355,65 +397,94 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Copy to clipboard
                 copy_to_clipboard(&text)?;
 
-                // Save state before deletion for history
-                let state = State {
-                    doc: app.rope.clone(),
-                    selection: app.selection.clone(),
-                };
-
-                // Get the selection to use for deletion (block or regular)
-                let selection = if let Some(block_sel) = &app.block_selection {
-                    block_sel.to_selection(&app.rope)
-                } else {
-                    app.selection.clone()
-                };
-
-                // Delete the selected text using Transaction
-                // For block selections, replace with spaces to preserve layout
-                let transaction = if let Some(block_sel) = &app.block_selection {
-                    // For block selections, we need to replace each character with a space
-                    // to preserve the column alignment of text to the right
-
-                    let selection = block_sel.to_selection(&app.rope);
-
-                    // Replace each selected character with a space
-                    Transaction::change_by_selection(&app.rope, &selection, |range| {
-                        let start = range.from();
-                        let end = range.to();
-
-                        // Get the actual text being replaced
-                        let text = app.rope.slice(start..end);
-                        let mut replacement = String::new();
-
-                        // Replace each character with a space, preserving line breaks
-                        for ch in text.chars() {
-                            if ch == '\n' || ch == '\r' {
-                                replacement.push(ch);
-                            } else {
-                                replacement.push(' ');
-                            }
+                // In Notes mode, work with the appropriate rope and selection based on active pane
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    let (rope, selection) = match app.active_pane {
+                        crate::ActivePane::Left => {
+                            (&mut app.notes_rope, &mut app.notes_selection)
                         }
+                        crate::ActivePane::Right => {
+                            (&mut app.extraction_rope, &mut app.extraction_selection)
+                        }
+                    };
 
-                        (start, end, Some(replacement.into()))
-                    })
-                } else {
-                    Transaction::change_by_selection(&app.rope, &selection, |range| {
+                    // Save state before deletion for history
+                    let state = State {
+                        doc: rope.clone(),
+                        selection: selection.clone(),
+                    };
+
+                    // Get the selection to use for deletion
+                    let sel_for_deletion = selection.clone();
+
+                    // Delete the selected text using Transaction
+                    let transaction = Transaction::change_by_selection(&rope, &selection, |range| {
                         (range.from(), range.to(), None)
-                    })
-                };
+                    });
 
-                // Apply transaction
-                transaction.apply(&mut app.rope);
+                    // Apply transaction
+                    transaction.apply(rope);
 
-                // Update selection to collapsed position at deletion point
-                let new_pos = selection.primary().from();
-                app.selection = Selection::point(new_pos);
+                    // Update selection to collapsed position at deletion point
+                    let new_pos = sel_for_deletion.primary().from();
+                    *selection = Selection::point(new_pos);
 
-                // Clear any block selection
-                app.block_selection = None;
+                    // Block selection not supported in dual-pane mode yet
 
-                // Add to history for undo support
-                app.history.commit_revision(&transaction, &state);
+                    // Note: History would need separate tracking per rope
+                    // For now, skip history in Notes mode
+
+                } else {
+                    // Original PDF mode logic
+                    // Save state before deletion for history
+                    let state = State {
+                        doc: app.rope.clone(),
+                        selection: app.selection.clone(),
+                    };
+
+                    // Get the selection to use for deletion (block or regular)
+                    let selection = if let Some(block_sel) = &app.block_selection {
+                        block_sel.to_selection(&app.rope)
+                    } else {
+                        app.selection.clone()
+                    };
+
+                    // Delete the selected text using Transaction
+                    let transaction = if let Some(block_sel) = &app.block_selection {
+                        let selection = block_sel.to_selection(&app.rope);
+                        Transaction::change_by_selection(&app.rope, &selection, |range| {
+                            let start = range.from();
+                            let end = range.to();
+                            let text = app.rope.slice(start..end);
+                            let mut replacement = String::new();
+                            for ch in text.chars() {
+                                if ch == '\n' || ch == '\r' {
+                                    replacement.push(ch);
+                                } else {
+                                    replacement.push(' ');
+                                }
+                            }
+                            (start, end, Some(replacement.into()))
+                        })
+                    } else {
+                        Transaction::change_by_selection(&app.rope, &selection, |range| {
+                            (range.from(), range.to(), None)
+                        })
+                    };
+
+                    // Apply transaction
+                    transaction.apply(&mut app.rope);
+
+                    // Update selection to collapsed position at deletion point
+                    let new_pos = selection.primary().from();
+                    app.selection = Selection::point(new_pos);
+
+                    // Clear any block selection
+                    app.block_selection = None;
+
+                    // Add to history for undo support
+                    app.history.commit_revision(&transaction, &state);
+                }
 
                 // Force re-render
                 app.needs_redraw = true;
@@ -459,36 +530,76 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
 
             if let Ok(text) = paste_from_clipboard() {
-                // Save state before transaction for history
-                let state = State {
-                    doc: app.rope.clone(),
-                    selection: app.selection.clone(),
-                };
+                // In Notes mode, work with the appropriate rope and selection based on active pane
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    let (rope, selection) = match app.active_pane {
+                        crate::ActivePane::Left => {
+                            (&mut app.notes_rope, &mut app.notes_selection)
+                        }
+                        crate::ActivePane::Right => {
+                            (&mut app.extraction_rope, &mut app.extraction_selection)
+                        }
+                    };
 
-                // Get the selection to use for paste (block or regular)
-                let selection = if let Some(block_sel) = &app.block_selection {
-                    block_sel.to_selection(&app.rope)
+                    // Save state before transaction for history
+                    let state = State {
+                        doc: rope.clone(),
+                        selection: selection.clone(),
+                    };
+
+                    // Get the selection to use for paste
+                    let sel_for_paste = selection.clone();
+
+                    // Create paste transaction
+                    let transaction = Transaction::change_by_selection(&rope, &sel_for_paste, |range| {
+                        (range.from(), range.to(), Some(text.clone().into()))
+                    });
+
+                    // Apply and get new rope
+                    transaction.apply(rope);
+
+                    // Move cursor to end of pasted text
+                    let paste_end = sel_for_paste.primary().from() + text.len();
+                    *selection = Selection::point(paste_end);
+
+                    // Block selection not supported in dual-pane mode yet
+
+                    // Note: History would need separate tracking per rope
+                    // For now, skip history in Notes mode
+
                 } else {
-                    app.selection.clone()
-                };
+                    // Original PDF mode logic
+                    // Save state before transaction for history
+                    let state = State {
+                        doc: app.rope.clone(),
+                        selection: app.selection.clone(),
+                    };
 
-                // Create paste transaction
-                let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
-                    (range.from(), range.to(), Some(text.clone().into()))
-                });
+                    // Get the selection to use for paste (block or regular)
+                    let selection = if let Some(block_sel) = &app.block_selection {
+                        block_sel.to_selection(&app.rope)
+                    } else {
+                        app.selection.clone()
+                    };
 
-                // Apply and get new rope
-                transaction.apply(&mut app.rope);
+                    // Create paste transaction
+                    let transaction = Transaction::change_by_selection(&app.rope, &selection, |range| {
+                        (range.from(), range.to(), Some(text.clone().into()))
+                    });
 
-                // Move cursor to end of pasted text
-                let paste_end = selection.primary().from() + text.len();
-                app.selection = Selection::point(paste_end);
+                    // Apply and get new rope
+                    transaction.apply(&mut app.rope);
 
-                // Clear any block selection
-                app.block_selection = None;
+                    // Move cursor to end of pasted text
+                    let paste_end = selection.primary().from() + text.len();
+                    app.selection = Selection::point(paste_end);
 
-                // Add to history
-                app.history.commit_revision(&transaction, &state);
+                    // Clear any block selection
+                    app.block_selection = None;
+
+                    // Add to history
+                    app.history.commit_revision(&transaction, &state);
+                }
 
                 // Force update
                 app.needs_redraw = true;
@@ -514,18 +625,51 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
 
-        (KeyCode::Char('n'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+        // Next page - Using PageDown
+        (KeyCode::PageDown, _) => {
             app.next_page();
-            if app.current_page_image.is_none() {
-                app.load_pdf_page().await?;
-            }
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;  // Re-extract text for new page
         }
 
-        (KeyCode::Char('p'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+        // Next page - Ctrl+Right
+        (KeyCode::Right, mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.next_page();
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;  // Re-extract text for new page
+        }
+
+        // Toggle Notes Mode with Ctrl+E (E for Editor mode)
+        (KeyCode::Char('e'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+            app.toggle_notes_mode()?;
+            return Ok(true);
+        }
+
+        // Previous page - Using PageUp
+        (KeyCode::PageUp, _) => {
             app.prev_page();
-            if app.current_page_image.is_none() {
-                app.load_pdf_page().await?;
-            }
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;  // Re-extract text for new page
+        }
+
+        // Previous page - Ctrl+Left
+        (KeyCode::Left, mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.prev_page();
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;  // Re-extract text for new page
+        }
+
+        // Ctrl+J/K navigation for pages (keeps j/k free for typing)
+        (KeyCode::Char('j'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.next_page();
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;
+        }
+
+        (KeyCode::Char('k'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            app.prev_page();
+            app.load_pdf_page().await?;
+            app.extract_current_page().await?;
         }
 
         // Text zoom disabled - terminal text can't be resized properly
@@ -545,30 +689,37 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
 
-        // BASIC MOVEMENT - Arrow keys with acceleration
+        // BASIC MOVEMENT - Arrow keys (no acceleration)
         (KeyCode::Up, mods) => {
+            // Get the correct rope and selection based on mode and active pane
+            let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_rope, &mut app.notes_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_rope, &mut app.extraction_selection),
+                }
+            } else {
+                (&mut app.rope, &mut app.selection)
+            };
+
             // Clear any block selection when using arrow keys
             app.block_selection = None;
 
-            // Update acceleration state
-            let accel = update_arrow_acceleration(app, KeyCode::Up);
-
-            let pos = app.selection.primary().head;
-            let line = app.rope.char_to_line(pos);
-            let lines_to_move = accel.min(line);  // Don't go past start
+            let pos = selection.primary().head;
+            let line = rope.char_to_line(pos);
+            let lines_to_move = 1.min(line);  // Don't go past start
 
             if lines_to_move > 0 {
                 // Preserve virtual column if set, otherwise calculate from current position
                 let virtual_col = if let Some(vc) = app.virtual_cursor_col {
                     vc
                 } else {
-                    let line_start = app.rope.line_to_char(line);
+                    let line_start = rope.line_to_char(line);
                     pos - line_start
                 };
 
                 let new_line = line - lines_to_move;
-                let line_start = app.rope.line_to_char(new_line);
-                let line_len = app.rope.line(new_line).len_chars().saturating_sub(1);
+                let line_start = rope.line_to_char(new_line);
+                let line_len = rope.line(new_line).len_chars().saturating_sub(1);
 
                 // Position cursor at virtual column, allowing it to go past line end
                 // The selection will be at the actual line position, but we remember the virtual column
@@ -576,11 +727,11 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     // Extend selection - keep anchor, move head
-                    let anchor = app.selection.primary().anchor;
-                    app.selection = Selection::single(anchor, new_pos);
+                    let anchor = selection.primary().anchor;
+                    *selection = Selection::single(anchor, new_pos);
                 } else {
                     // Just move cursor
-                    app.selection = Selection::point(new_pos);
+                    *selection = Selection::point(new_pos);
                 }
 
                 // Clear virtual column when moving up/down - let Right arrow recalculate it
@@ -592,13 +743,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Clear any block selection when using arrow keys
             app.block_selection = None;
 
-            // Update acceleration state
-            let accel = update_arrow_acceleration(app, KeyCode::Down);
-
             let pos = app.selection.primary().head;
             let line = app.rope.char_to_line(pos);
             let max_line = app.rope.len_lines() - 1;
-            let lines_to_move = accel.min(max_line - line);  // Don't go past end
+            let lines_to_move = 1.min(max_line - line);  // Don't go past end
 
             if lines_to_move > 0 {
                 // Preserve virtual column if set, otherwise calculate from current position
@@ -635,9 +783,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Clear any block selection when using arrow keys
             app.block_selection = None;
 
-            // Update acceleration state
-            let accel = update_arrow_acceleration(app, KeyCode::Left);
-
             let pos = app.selection.primary().head;
             let line = app.rope.char_to_line(pos);
             let line_start = app.rope.line_to_char(line);
@@ -645,7 +790,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
             // BOUNDARY CHECK: Don't go past the start of the current line
             // This enforces the left boundary on every row, not just row 0
-            let max_movement = col.min(accel);
+            let max_movement = col.min(1);
 
             if max_movement > 0 {
                 let new_pos = pos - max_movement;
@@ -669,9 +814,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Clear any block selection when using arrow keys
             app.block_selection = None;
 
-            // Update acceleration state
-            let accel = update_arrow_acceleration(app, KeyCode::Right);
-
             let pos = app.selection.primary().head;
             let line = app.rope.char_to_line(pos);
             let line_start = app.rope.line_to_char(line);
@@ -685,7 +827,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let virtual_col = app.virtual_cursor_col.unwrap_or(current_col);
 
             // Now increment from the virtual position with boundary check
-            let new_virtual_col = virtual_col.saturating_add(accel);
+            let new_virtual_col = virtual_col.saturating_add(1);
             app.virtual_cursor_col = Some(new_virtual_col);
 
             // Get the line length to stay within document bounds
@@ -845,27 +987,63 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
-            // Save state before transaction for history
-            let state = State {
-                doc: app.rope.clone(),
-                selection: app.selection.clone(),
-            };
+            // In Notes mode, work with the appropriate rope and selection based on active pane
+            if app.app_mode == crate::AppMode::NotesEditor {
+                let (rope, selection) = match app.active_pane {
+                    crate::ActivePane::Left => {
+                        (&mut app.notes_rope, &mut app.notes_selection)
+                    }
+                    crate::ActivePane::Right => {
+                        (&mut app.extraction_rope, &mut app.extraction_selection)
+                    }
+                };
 
-            // CORRECT HELIX: The real Ferrari engine!
-            let transaction = Transaction::insert(&app.rope, &app.selection, c.to_string().into());
+                // Save state before transaction for history
+                let state = State {
+                    doc: rope.clone(),
+                    selection: selection.clone(),
+                };
 
-            // Apply transaction (modifies rope in-place)
-            let success = transaction.apply(&mut app.rope);
+                // CORRECT HELIX: The real Ferrari engine!
+                let transaction = Transaction::insert(rope, selection, c.to_string().into());
 
-            if success {
-                // Map selection through changes (CRITICAL!)
-                app.selection = app.selection.clone().map(transaction.changes());
+                // Apply transaction (modifies rope in-place)
+                let success = transaction.apply(rope);
 
-                // Commit to history for undo/redo
-                app.history.commit_revision(&transaction, &state);
+                if success {
+                    // Map selection through changes (CRITICAL!)
+                    *selection = selection.clone().map(transaction.changes());
 
-                // Clear virtual column when typing
-                app.virtual_cursor_col = None;
+                    // Note: History would need separate tracking per rope
+                    // For now, skip history in Notes mode
+
+                    // Clear virtual column when typing
+                    app.virtual_cursor_col = None;
+                }
+            } else {
+                // Original PDF mode logic
+                // Save state before transaction for history
+                let state = State {
+                    doc: app.rope.clone(),
+                    selection: app.selection.clone(),
+                };
+
+                // CORRECT HELIX: The real Ferrari engine!
+                let transaction = Transaction::insert(&app.rope, &app.selection, c.to_string().into());
+
+                // Apply transaction (modifies rope in-place)
+                let success = transaction.apply(&mut app.rope);
+
+                if success {
+                    // Map selection through changes (CRITICAL!)
+                    app.selection = app.selection.clone().map(transaction.changes());
+
+                    // Commit to history for undo/redo
+                    app.history.commit_revision(&transaction, &state);
+
+                    // Clear virtual column when typing
+                    app.virtual_cursor_col = None;
+                }
             }
         }
 
@@ -884,26 +1062,37 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 // HELIX-CORE: Extract selection from rope (handles both regular and block selection)
 fn extract_selection_from_rope(app: &App) -> String {
+    // In Notes mode, check which pane is active and use the appropriate rope/selection
+    let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
+        match app.active_pane {
+            crate::ActivePane::Left => (&app.notes_rope, &app.notes_selection, &None),
+            crate::ActivePane::Right => (&app.extraction_rope, &app.extraction_selection, &None),
+        }
+    } else {
+        // In PDF mode, always use the main rope/selection (extraction text)
+        (&app.rope, &app.selection, &app.block_selection)
+    };
+
     // First check if we have block selection
-    if let Some(block_sel) = &app.block_selection {
+    if let Some(block_sel) = block_selection {
         // Convert block selection to regular selection and extract text
-        let selection = block_sel.to_selection(&app.rope);
+        let selection = block_sel.to_selection(rope);
         let mut result = String::new();
         for range in selection.ranges() {
             if range.len() > 0 {
                 if !result.is_empty() {
                     result.push('\n');  // Separate lines in block selection
                 }
-                result.push_str(&app.rope.slice(range.from()..range.to()).to_string());
+                result.push_str(&rope.slice(range.from()..range.to()).to_string());
             }
         }
         return result;
     }
 
     // Regular selection
-    let range = app.selection.primary();
+    let range = selection.primary();
     if range.len() > 0 {
-        app.rope.slice(range.from()..range.to()).to_string()
+        rope.slice(range.from()..range.to()).to_string()
     } else {
         String::new()
     }

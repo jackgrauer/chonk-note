@@ -342,6 +342,17 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 return Ok(());
             }
 
+            // Determine which pane was clicked and switch to it
+            if x < current_split {
+                // Clicked in left pane
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    app.switch_active_pane(crate::ActivePane::Left);
+                }
+            } else {
+                // Clicked in right pane (always extraction)
+                app.switch_active_pane(crate::ActivePane::Right);
+            }
+
             // Left click - set cursor position
             if let Some(pos) = app.screen_to_text_pos(x, y) {
                 // Debug log text position
