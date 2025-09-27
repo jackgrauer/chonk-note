@@ -119,40 +119,65 @@ impl MouseState {
 impl App {
     // Convert screen coordinates to text position
     pub fn screen_to_text_pos(&self, x: u16, y: u16) -> Option<usize> {
-        // Only process if in right pane (text editor)
         let (term_width, _) = crate::kitty_native::KittyTerminal::size().ok()?;
-        let split_x = self.split_position.unwrap_or(term_width / 2);
 
         // Debug log conversion attempt
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            writeln!(file, "[SCREEN_TO_TEXT] x={}, y={}, term_width={}, split_x={}",
-                x, y, term_width, split_x).ok();
+            writeln!(file, "[SCREEN_TO_TEXT] x={}, y={}, term_width={}, mode={:?}, active_pane={:?}",
+                x, y, term_width, self.app_mode, self.active_pane).ok();
         }
 
-        if x <= split_x {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] Click in PDF pane or on divider, ignoring").ok();
+        // Determine which pane we're in and get the appropriate rope and renderer
+        let (rope, renderer, pane_start_x) = if self.app_mode == crate::AppMode::NotesEditor {
+            // In Notes mode, we have three sections:
+            // 1. Notes list (0-4)
+            // 2. Notes editor (4 to half of remaining)
+            // 3. Extraction text (half to end)
+            let notes_list_width = 4;
+            let remaining_width = term_width.saturating_sub(notes_list_width);
+            let notes_editor_width = remaining_width / 2;
+            let extraction_start_x = notes_list_width + notes_editor_width;
+
+            if x <= notes_list_width {
+                // Click is in notes list, not in a text pane
+                return None;
+            } else if x < extraction_start_x {
+                // Click is in notes editor (left text pane)
+                (&self.notes_rope, &self.notes_display, notes_list_width)
+            } else {
+                // Click is in extraction text (right pane)
+                (&self.extraction_rope, &self.edit_display, extraction_start_x)
             }
-            return None; // Click is in PDF pane or on divider
-        }
+        } else {
+            // In PDF mode, we have two panes split down the middle
+            let split_x = self.split_position.unwrap_or(term_width / 2);
 
-        let text_x = x - split_x - 1;  // Account for divider width
+            if x <= split_x {
+                // Click is in PDF pane
+                return None;
+            }
 
-        if let Some(renderer) = &self.edit_display {
-            // Account for viewport scrolling - y is 1-based from terminal coordinates
-            // No adjustment needed - y directly maps to the line
-            let actual_y = (y as usize) + renderer.viewport_y;
+            // Click is in extraction text pane
+            (&self.extraction_rope, &self.edit_display, split_x)
+        };
+
+        // Calculate relative position within the pane
+        let text_x = x.saturating_sub(pane_start_x);
+
+        if let Some(renderer) = renderer {
+            // Account for viewport scrolling - y is 0-based but terminal gives us 1-based
+            let actual_y = (y.saturating_sub(1) as usize) + renderer.viewport_y;
             let actual_x = text_x as usize + renderer.viewport_x;
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] text_x={}, actual_x={}, actual_y={}, viewport_y={}",
-                    text_x, actual_x, actual_y, renderer.viewport_y).ok();
+                writeln!(file, "[SCREEN_TO_TEXT] pane_start_x={}, text_x={}, actual_x={}, actual_y={}, viewport_y={}",
+                    pane_start_x, text_x, actual_x, actual_y, renderer.viewport_y).ok();
             }
 
             // Convert to character position in rope
-            let line = actual_y.min(self.rope.len_lines().saturating_sub(1));
-            let line_start = self.rope.line_to_char(line);
-            let line_str = self.rope.line(line);
+            let line = actual_y.min(rope.len_lines().saturating_sub(1));
+            let line_start = rope.line_to_char(line);
+            let line_str = rope.line(line);
 
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[SCREEN_TO_TEXT] line={}, line_start={}, line_len={}",
@@ -170,9 +195,8 @@ impl App {
                 display_x += 1; // Simplified - assumes 1 char = 1 column
             }
 
-            // For virtual space: don't clamp to line length
-            // Store the desired column separately if it's past end of line
-            let final_pos = if actual_x > display_x && display_x == line_str.len_chars() {
+            // Handle clicking past end of line
+            let final_pos = if actual_x > line_str.len_chars() {
                 // Clicked past end of line - position at line end
                 line_start + line_str.len_chars().saturating_sub(1).max(0)
             } else {
@@ -187,7 +211,7 @@ impl App {
             Some(final_pos)
         } else {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] No edit_display available!").ok();
+                writeln!(file, "[SCREEN_TO_TEXT] No renderer available for this pane!").ok();
             }
             None
         }
@@ -274,12 +298,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 writeln!(file, "[MOUSE] DRAG EVENT MATCHED! x={}, y={}", x, y).ok();
             }
             if let Some(end_pos) = app.screen_to_text_pos(x, y) {
-                let end_line = app.rope.char_to_line(end_pos);
-                let end_line_start = app.rope.line_to_char(end_line);
+                // Determine which rope and selection to use based on mode and active pane
+                let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection),
+                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection),
+                    }
+                } else {
+                    // In PDF mode, always use extraction rope
+                    (&app.extraction_rope, &mut app.extraction_selection)
+                };
+
+                let end_line = rope.char_to_line(end_pos);
+                let end_line_start = rope.line_to_char(end_line);
                 let end_col = end_pos - end_line_start;
 
                 // Calculate visual column for proper handling of tabs/wide chars
-                let rope_slice = app.rope.slice(..);
+                let rope_slice = rope.slice(..);
                 let line_slice = rope_slice.line(end_line);
                 let visual_col = char_idx_to_visual_col(line_slice, end_col);
 
@@ -288,7 +323,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     block_sel.extend_to(end_line, end_col, visual_col);
 
                     // Update helix selection to match block selection
-                    app.selection = block_sel.to_selection(&app.rope);
+                    *selection = block_sel.to_selection(rope);
 
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                         let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
@@ -310,6 +345,38 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Debug log click position
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                 writeln!(file, "[MOUSE] Left click at ({}, {}) with modifiers: alt={}", x, y, modifiers.alt).ok();
+            }
+
+            // In Notes mode, check for clicks on notes list (far left, 4 chars wide)
+            if app.app_mode == crate::AppMode::NotesEditor && x <= 4 {
+                // Calculate which note was clicked based on display position
+                // Notes start at y=1 (0-based becomes 1-based in terminal)
+                let clicked_row = y.saturating_sub(1) as usize; // Convert to 0-based index
+                if clicked_row < app.notes_list.len() {
+                    // Select and load the clicked note
+                    app.selected_note_index = clicked_row;
+
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        let selected_note = app.notes_list[clicked_row].clone();
+
+                        // Load the note content
+                        app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                        app.notes_selection = helix_core::Selection::point(0);
+                        notes_mode.current_note = Some(selected_note.clone());
+
+                        // Update the display
+                        if let Some(renderer) = &mut app.notes_display {
+                            renderer.update_from_rope(&app.notes_rope);
+                        }
+
+                        // Switch focus to notes editor
+                        app.switch_active_pane(crate::ActivePane::Left);
+                        app.status_message = format!("Opened: {}", selected_note.title);
+                    }
+
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
             }
 
             // Check for zoom button clicks
@@ -343,14 +410,32 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             }
 
             // Determine which pane was clicked and switch to it
-            if x < current_split {
-                // Clicked in left pane
-                if app.app_mode == crate::AppMode::NotesEditor {
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, we have three sections:
+                // 1. Notes list (0-4)
+                // 2. Notes editor (4 to half of remaining)
+                // 3. Extraction text (half to end)
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x > notes_list_width && x < extraction_start_x {
+                    // Clicked in notes editor
                     app.switch_active_pane(crate::ActivePane::Left);
+                } else if x >= extraction_start_x {
+                    // Clicked in extraction text
+                    app.switch_active_pane(crate::ActivePane::Right);
                 }
+                // If x <= notes_list_width, we already handled it above
             } else {
-                // Clicked in right pane (always extraction)
-                app.switch_active_pane(crate::ActivePane::Right);
+                // In PDF mode, use simple split
+                if x < current_split {
+                    // Clicked in PDF pane - no action needed
+                } else {
+                    // Clicked in extraction pane
+                    app.switch_active_pane(crate::ActivePane::Right);
+                }
             }
 
             // Left click - set cursor position
@@ -370,9 +455,20 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     false
                 };
 
+                // Determine which rope and selection to use based on pane
+                let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection),
+                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection),
+                    }
+                } else {
+                    // In PDF mode, always use extraction rope
+                    (&app.extraction_rope, &mut app.extraction_selection)
+                };
+
                 if is_double_click {
                     // Double-click: select word
-                    let rope_slice = app.rope.slice(..);
+                    let rope_slice = rope.slice(..);
                     let range = movement::move_next_word_end(
                         rope_slice,
                         Range::point(pos),
@@ -384,23 +480,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         1
                     ).head;
 
-                    app.selection = Selection::single(word_start, range.head);
+                    *selection = Selection::single(word_start, range.head);
                     mouse_state.last_click = None; // Reset to avoid triple-click
                 } else {
                     // Single click: move cursor and start block selection
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
                         writeln!(file, "[MOUSE] Single click - moving cursor to pos {}", pos).ok();
-                        writeln!(file, "[MOUSE] Old selection: {:?}", app.selection).ok();
+                        writeln!(file, "[MOUSE] Old selection: {:?}", selection).ok();
                     }
 
                     // Only start block selection if Alt is held
-                    let line = app.rope.char_to_line(pos);
-                    let line_start = app.rope.line_to_char(line);
+                    let line = rope.char_to_line(pos);
+                    let line_start = rope.line_to_char(line);
                     let col = pos - line_start;
 
                     if modifiers.alt {
                         // Calculate visual column for proper handling of tabs/wide chars
-                        let rope_slice = app.rope.slice(..);
+                        let rope_slice = rope.slice(..);
                         let line_slice = rope_slice.line(line);
                         let visual_col = char_idx_to_visual_col(line_slice, col);
 
@@ -423,24 +519,13 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         }
                     }
 
-                    app.selection = Selection::point(pos);
+                    *selection = Selection::point(pos);
 
-                    // Check if we clicked past end of line to set virtual cursor column
-                    let (term_width, _) = crate::kitty_native::KittyTerminal::size().unwrap_or((80, 24));
-                    let split_x = term_width / 2;
-                    let actual_col = (x as usize).saturating_sub(split_x as usize);
-                    let line = app.rope.char_to_line(pos);
-                    let line_str = app.rope.line(line);
-                    let line_chars = line_str.len_chars();
-
-                    // Always store the virtual cursor column to maintain consistency
-                    app.virtual_cursor_col = Some(actual_col);
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] Set virtual_cursor_col={} (line_chars={})", actual_col, line_chars).ok();
-                    }
+                    // Virtual cursor column is no longer used in dual-pane mode
+                    // Each pane tracks its own cursor independently
 
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] New selection: {:?}", app.selection).ok();
+                        writeln!(file, "[MOUSE] New selection: {:?}", selection).ok();
                     }
 
                     mouse_state.last_click = Some(now);

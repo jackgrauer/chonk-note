@@ -86,6 +86,10 @@ pub struct App {
     pub virtual_cursor_col: Option<usize>,  // Virtual cursor column for navigating past line ends
     pub active_pane: ActivePane,       // Which pane has focus
 
+    // Notes list for sidebar
+    pub notes_list: Vec<notes_database::Note>,
+    pub selected_note_index: usize,    // Currently selected note in the list
+
     // Rendering
     pub edit_display: Option<EditPanelRenderer>,
     pub notes_display: Option<EditPanelRenderer>,  // Separate renderer for notes pane
@@ -173,14 +177,31 @@ impl App {
             // Mode
             app_mode: AppMode::PdfViewer,
             notes_mode: None,
+
+            // Notes list
+            notes_list: Vec::new(),
+            selected_note_index: 0,
         })
     }
 
     pub fn new_notes_mode() -> Result<Self> {
+        let mut notes_mode = notes_mode::NotesMode::new()?;
+        let mut notes_list = Vec::new();
+
+        // Load existing notes
+        if let Ok(notes) = notes_mode.db.list_notes(100) {
+            notes_list = notes;
+        }
+
+        // Start with an empty note
+        let mut notes_rope = Rope::from("");
+        let mut notes_selection = Selection::point(0);
+        notes_mode.handle_command(&mut notes_rope, &mut notes_selection, "new")?;
+
         Ok(Self {
             // Mode
             app_mode: AppMode::NotesEditor,
-            notes_mode: Some(notes_mode::NotesMode::new()?),
+            notes_mode: Some(notes_mode),
 
             // PDF-related fields (empty until PDF is loaded)
             pdf_path: PathBuf::new(),  // Empty path, will be set when opening PDF
@@ -191,12 +212,12 @@ impl App {
             dual_pane_mode: false,
 
             // HELIX-CORE INTEGRATION!
-            rope: Rope::from("# Notes\n\nPress Ctrl+N to create a new note, Ctrl+L to list notes\n"),
+            rope: notes_rope.clone(),
             extraction_rope: Rope::from(""),
-            notes_rope: Rope::from("# Notes\n\nPress Ctrl+N to create a new note, Ctrl+L to list notes\n"),
-            selection: Selection::point(0),
+            notes_rope,
+            selection: notes_selection.clone(),
             extraction_selection: Selection::point(0),
-            notes_selection: Selection::point(0),
+            notes_selection,
             history: History::default(),
             block_selection: None,
             virtual_cursor_col: None,
@@ -207,7 +228,7 @@ impl App {
             notes_display: None,
 
             // App state
-            status_message: "Notes mode - Ctrl+N for new, Ctrl+L to list".to_string(),
+            status_message: "Notes Mode (auto-save) - Ctrl+Up/Down: Nav | Ctrl+O: Open | Ctrl+N: New".to_string(),
             dark_mode: true,
             exit_requested: false,
             needs_redraw: true,
@@ -229,6 +250,10 @@ impl App {
             // Zoom levels
             pdf_zoom: 1.0,
             text_zoom: 1.0,
+
+            // Notes list
+            notes_list,
+            selected_note_index: 0,
         })
     }
 
@@ -389,13 +414,54 @@ impl App {
                 }
                 self.app_mode = AppMode::NotesEditor;
 
-                // Load notes into notes_rope and switch active rope
-                if self.notes_rope.len_chars() == 0 {
-                    self.notes_rope = Rope::from("# Notes\n\nCtrl+N: New note | Ctrl+S: Save | Ctrl+L: List | Ctrl+F: Search\nCtrl+E: Back to PDF\n");
+                // Load notes list for sidebar
+                if let Some(ref mut notes_mode) = self.notes_mode {
+                    // Get all notes from database
+                    if let Ok(notes) = notes_mode.db.list_notes(100) {
+                        self.notes_list = notes;
+                    }
+
+                    // If no notes exist, create two sample notes
+                    if self.notes_list.is_empty() {
+                        // Create first sample note
+                        let note1 = notes_mode.db.create_note(
+                            "Meeting Notes".to_string(),
+                            "# Meeting Notes\n\nToday's action items:\n- Review the PDF extraction code\n- Implement auto-save feature\n- Test the notes system\n\nTags: work, todo".to_string(),
+                            vec!["work".to_string(), "todo".to_string()]
+                        )?;
+
+                        // Create second sample note
+                        let note2 = notes_mode.db.create_note(
+                            "Project Ideas".to_string(),
+                            "# Project Ideas\n\nPotential improvements:\n1. Add markdown support\n2. Implement search functionality\n3. Add export to PDF feature\n4. Create themes system\n\nTags: ideas, development".to_string(),
+                            vec!["ideas".to_string(), "development".to_string()]
+                        )?;
+
+                        // Add to notes list
+                        self.notes_list.push(note1);
+                        self.notes_list.push(note2);
+
+                        // Load the first note
+                        if !self.notes_list.is_empty() {
+                            let first_note = &self.notes_list[0];
+                            self.notes_rope = Rope::from(first_note.content.as_str());
+                            self.notes_selection = Selection::point(0);
+                            notes_mode.current_note = Some(first_note.clone());
+                            self.selected_note_index = 0;
+                        }
+                    } else if !self.notes_list.is_empty() {
+                        // Load the first existing note
+                        let first_note = &self.notes_list[0];
+                        self.notes_rope = Rope::from_str(&first_note.content);
+                        self.notes_selection = Selection::point(0);
+                        notes_mode.current_note = Some(first_note.clone());
+                        self.selected_note_index = 0;
+                    }
                 }
+
                 self.rope = self.notes_rope.clone();  // Make notes the active buffer
                 self.selection = Selection::point(0);
-                self.status_message = "Notes Mode - Ctrl+E to return to PDF".to_string();
+                self.status_message = "Notes Mode (auto-save) - Ctrl+Up/Down: Nav | Ctrl+O: Open | Ctrl+N: New | Ctrl+E: Back".to_string();
 
                 // Keep dual pane mode - notes on left, extraction on right
                 self.dual_pane_mode = true;
@@ -625,31 +691,40 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Save cursor position
             print!("\x1b[s]");
 
-            // Always render split view - left pane changes based on mode
+            // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
-                // In notes mode, render notes on left, extraction text on right
-                render_notes_pane(app, 0, 0, split_x - 1, term_height)?;
-            } else {
-                // In PDF mode, render PDF on left
-                render_pdf_pane(app, 0, 0, split_x - 1, term_height)?;
-            }
+                // In notes mode, show three panes: notes list | notes editor | extraction text
+                let notes_list_width = 4;  // Even more minimal - just for numbers
+                let remaining_width = term_width.saturating_sub(notes_list_width);  // No space for dividers
+                let notes_editor_width = remaining_width / 2;
+                let extraction_width = remaining_width - notes_editor_width;
 
-            // Draw draggable divider between panes (always visible)
-            {
-                let divider_color = if app.is_dragging_divider {
-                    "\x1b[38;2;100;150;255m"  // Bright blue when dragging
-                } else {
-                    "\x1b[38;2;80;80;80m"     // Medium gray normally
-                };
-
-                for y in 0..term_height {
-                    print!("\x1b[{};{}H{}┃\x1b[0m",
-                        y + 1, split_x, divider_color);
+                // Debug log
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
+                    use std::io::Write;
+                    writeln!(file, "[RENDER] Notes mode - rendering {} notes in list", app.notes_list.len()).ok();
                 }
-            }
 
-            // Always render extraction text on the right
-            render_text_pane(app, split_x + 1, 0, term_width - split_x - 1, term_height)?;
+                // Render notes list sidebar on far left
+                render_notes_list(&app, 0, 0, notes_list_width, term_height)?;
+
+                // No divider - go straight to notes editor
+                let notes_start_x = notes_list_width;
+                render_notes_pane(&mut *app, notes_start_x, 0, notes_editor_width, term_height)?;
+
+                // No divider - extraction text right after notes editor
+                let extraction_start_x = notes_start_x + notes_editor_width;
+                if extraction_start_x < term_width {
+                    let actual_extraction_width = term_width.saturating_sub(extraction_start_x);
+                    render_text_pane(&mut *app, extraction_start_x, 0, actual_extraction_width, term_height)?;
+                }
+            } else {
+                // In PDF mode, render PDF on left (no divider)
+                render_pdf_pane(app, 0, 0, split_x, term_height)?;
+
+                // No divider - extraction text starts right after PDF
+                render_text_pane(&mut *app, split_x, 0, term_width - split_x, term_height)?;
+            }
 
             // Restore cursor position
             print!("\x1b[u]");
@@ -716,34 +791,20 @@ async fn run_app(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// Render the PDF pane with zoom controls
+/// Render the PDF pane (no borders)
 fn render_pdf_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
-    // Draw container border
-    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╭{}╮\x1b[0m",
-        y + 1, x + 1, "─".repeat((width - 2) as usize));
-
-    // Draw zoom controls in top right corner of PDF pane
+    // Draw zoom controls in top right corner of PDF pane (no border)
     let zoom_text = format!(" {:.0}% ", app.pdf_zoom * 100.0);
     let button_x = x + width - 12;
     print!("\x1b[{};{}H\x1b[38;2;100;100;100m[\x1b[38;2;200;200;200m-\x1b[38;2;100;100;100m]{} [\x1b[38;2;200;200;200m+\x1b[38;2;100;100;100m]\x1b[0m",
-        y + 1, button_x, zoom_text);
+        y, button_x, zoom_text);
 
-    // Draw side borders
-    for row in 1..height - 1 {
-        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + 1);
-        print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m", y + row + 1, x + width);
-    }
-
-    // Draw bottom border
-    print!("\x1b[{};{}H\x1b[38;2;60;60;60m╰{}╯\x1b[0m",
-        y + height, x + 1, "─".repeat((width - 2) as usize));
-
-    // Render PDF content inside the container (with 1-cell padding for borders)
+    // Render PDF content - use full space now (no borders)
     if let Some(image) = &app.current_page_image {
-        let content_x = x + 2;
-        let content_y = y + 1;
-        let content_width = width.saturating_sub(4);  // -2 for borders, -2 for scrollbar
-        let content_height = height.saturating_sub(3); // -2 for borders, -1 for scrollbar
+        let content_x = x;
+        let content_y = y;
+        let content_width = width;
+        let content_height = height;
 
         // Apply zoom to PDF display
         let _ = viuer_display::display_pdf_viewport(
@@ -781,33 +842,9 @@ fn render_pdf_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Re
     Ok(())
 }
 
-/// Render the notes pane (left side in notes mode)
+/// Render the notes pane (no borders)
 fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
-    // Draw container border - highlight if active
-    let border_color = if app.active_pane == ActivePane::Left {
-        "\x1b[38;2;100;150;255m"  // Bright blue when active
-    } else {
-        "\x1b[38;2;60;60;60m"     // Dim gray when inactive
-    };
-    print!("{}╭{}╮\x1b[0m",
-        format!("\x1b[{};{}H{}", y + 1, x + 1, border_color),
-        "─".repeat((width - 2) as usize));
-
-    // Draw label for notes pane
-    let label_text = " Notes - Ctrl+E for PDF ";
-    print!("\x1b[{};{}H\x1b[38;2;150;150;150m{}\x1b[0m", y + 1, x + 2, label_text);
-
-    // Draw side borders
-    for row in 1..height - 1 {
-        print!("\x1b[{};{}H{}│\x1b[0m", y + row + 1, x + 1, border_color);
-        print!("\x1b[{};{}H{}│\x1b[0m", y + row + 1, x + width, border_color);
-    }
-
-    // Draw bottom border
-    print!("\x1b[{};{}H{}╰{}╯\x1b[0m",
-        y + height, x + 1, border_color, "─".repeat((width - 2) as usize));
-
-    // Render notes content inside the container
+    // No borders - use full space
     // Create notes renderer if needed
     if app.notes_display.is_none() {
         let mut renderer = EditPanelRenderer::new(width, height);
@@ -830,10 +867,11 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
 
         let viewport_relative_cursor = (cursor_col, cursor_line);
 
-        let content_x = x + 2;
-        let content_y = y + 1;
-        let display_width = width.saturating_sub(2);
-        let display_height = height.saturating_sub(2);
+        // Use full space - no padding
+        let content_x = x;
+        let content_y = y;
+        let display_width = width;
+        let display_height = height;
 
         // Render notes with standard selection
         let (sel_start, sel_end) = if app.notes_selection.primary().len() > 0 && show_cursor {
@@ -851,7 +889,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         };
 
         renderer.render_with_cursor_and_selection(
-            content_x, content_y + 1, display_width, display_height - 1,
+            content_x, content_y, display_width, display_height,
             viewport_relative_cursor,
             sel_start,
             sel_end
@@ -861,38 +899,10 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     Ok(())
 }
 
-/// Render the text editor pane with zoom controls
+/// Render the text editor pane (no borders)
 fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
-    // Draw container border - highlight if active
-    let border_color = if app.active_pane == ActivePane::Right {
-        "\x1b[38;2;100;150;255m"  // Bright blue when active
-    } else {
-        "\x1b[38;2;60;60;60m"     // Dim gray when inactive
-    };
-    print!("{}╭{}╮\x1b[0m",
-        format!("\x1b[{};{}H{}", y + 1, x + 1, border_color),
-        "─".repeat((width - 2) as usize));
-
-    // Draw extraction method label (always show extraction method since this is always the extraction pane)
-    let method_label = match app.extraction_method {
-        ExtractionMethod::Segments => "PDFium",
-        ExtractionMethod::PdfAlto => "PDFAlto",
-        ExtractionMethod::LeptessOCR => "Leptess OCR",
-    };
-    let label_text = format!(" Extraction: {} ", method_label);
-    print!("\x1b[{};{}H\x1b[38;2;150;150;150m{}\x1b[0m", y + 1, x + 2, label_text);
-
-    // Draw side borders
-    for row in 1..height - 1 {
-        print!("\x1b[{};{}H{}│\x1b[0m", y + row + 1, x + 1, border_color);
-        print!("\x1b[{};{}H{}│\x1b[0m", y + row + 1, x + width, border_color);
-    }
-
-    // Draw bottom border
-    print!("\x1b[{};{}H{}╰{}╯\x1b[0m",
-        y + height, x + 1, border_color, "─".repeat((width - 2) as usize));
-
-    // Render extraction text content inside the container (always shows extraction)
+    // No borders - use full space
+    // Render extraction text content (always shows extraction)
     if let Some(renderer) = &mut app.edit_display {
         renderer.update_from_rope(&app.extraction_rope);
 
@@ -908,17 +918,17 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         let viewport_relative_cursor = (cursor_col, cursor_line);
 
-        let content_x = x + 2;
-        let content_y = y + 1;
-        // Use full available space now that scrollbars are removed
-        let display_width = width.saturating_sub(2);  // Just borders
-        let display_height = height.saturating_sub(2); // Just borders
+        // Use full space - no padding
+        let content_x = x;
+        let content_y = y;
+        let display_width = width;
+        let display_height = height;
 
         // Always use normal rendering - text zoom doesn't work well in terminals
         // The zoom controls remain but just show the status without changing rendering
         if app.block_selection.is_some() {
             renderer.render_with_block_selection(
-                content_x, content_y + 1, display_width, display_height - 1,
+                content_x, content_y, display_width, display_height,
                 viewport_relative_cursor,
                 app.block_selection.as_ref()
             )?;
@@ -938,7 +948,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
             };
 
             renderer.render_with_cursor_and_selection(
-                content_x, content_y + 1, display_width, display_height - 1,
+                content_x, content_y, display_width, display_height,
                 viewport_relative_cursor,
                 sel_start,
                 sel_end
@@ -946,6 +956,50 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
         }
 
         // Scrollbars removed for cleaner interface
+    }
+
+    Ok(())
+}
+
+/// Render the minimal notes list sidebar (just numbers)
+fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+    // No borders for minimal design - just a subtle divider line is drawn separately
+
+    // Show notes as simple numbers
+    if app.notes_list.is_empty() {
+        // Show + for new note
+        print!("\x1b[{};{}H\x1b[38;2;100;100;100m +\x1b[0m", y + 2, x + 1);
+    } else {
+        // Display notes as numbers with scrolling support
+        let visible_count = (height - 2) as usize;
+        let start_index = if app.selected_note_index >= visible_count {
+            app.selected_note_index - visible_count + 1
+        } else {
+            0
+        };
+        let end_index = (start_index + visible_count).min(app.notes_list.len());
+
+        for (display_pos, note_idx) in (start_index..end_index).enumerate() {
+            let is_selected = note_idx == app.selected_note_index;
+
+            // Highlight selected note
+            let (bg_color, text_color) = if is_selected {
+                ("\x1b[48;2;40;60;90m", "\x1b[38;2;200;220;255m")
+            } else {
+                ("", "\x1b[38;2;120;120;120m")
+            };
+
+            // Show note number (1-indexed for user friendliness)
+            let note_num = note_idx + 1;
+
+            // Add a carrot indicator for selected note
+            let indicator = if is_selected { ">" } else { " " };
+
+            // Clear the line and draw the indicator and note number
+            print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
+                y + display_pos as u16 + 1, x,
+                bg_color, text_color, indicator, note_num);
+        }
     }
 
     Ok(())

@@ -4,9 +4,9 @@ use helix_core::{Rope, Selection, Transaction, Range};
 use crate::notes_database::{NotesDatabase, Note};
 
 pub struct NotesMode {
-    db: NotesDatabase,
-    current_note: Option<Note>,
-    search_results: Vec<Note>,
+    pub db: NotesDatabase,
+    pub current_note: Option<Note>,
+    pub search_results: Vec<Note>,
 }
 
 impl NotesMode {
@@ -37,12 +37,12 @@ impl NotesMode {
     }
 
     fn create_new_note(&mut self, rope: &mut Rope, selection: &mut Selection) -> Result<Option<String>> {
-        let title = "# New Note\n\nStart typing here...\n\nTags: ";
-        let new_rope = Rope::from_str(title);
+        // Start with a blank note
+        let new_rope = Rope::from_str("");
         *rope = new_rope;
-        *selection = Selection::single(11, 11); // Position after "# New Note\n"
+        *selection = Selection::single(0, 0); // Position at start
         self.current_note = None;
-        Ok(Some("Created new note".to_string()))
+        Ok(Some("New Note 1".to_string()))
     }
 
     fn save_current_note(&mut self, rope: &Rope) -> Result<Option<String>> {

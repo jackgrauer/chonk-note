@@ -2,7 +2,7 @@
 use crate::{App, AppMode, ActivePane};
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
-use helix_core::{Transaction, Selection, history::State};
+use helix_core::{Transaction, Selection};
 
 // Handle keyboard input for dual-pane Notes mode
 // Returns true if the key was handled, false otherwise
@@ -25,6 +25,11 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
             transaction.apply(rope);
             *selection = selection.clone().map(transaction.changes());
             app.needs_redraw = true;
+
+            // Auto-save for notes pane
+            if app.active_pane == ActivePane::Left {
+                auto_save_note(app)?;
+            }
             Ok(true)
         }
 
@@ -38,6 +43,11 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
                 transaction.apply(rope);
                 *selection = selection.clone().map(transaction.changes());
                 app.needs_redraw = true;
+
+                // Auto-save for notes pane
+                if app.active_pane == ActivePane::Left {
+                    auto_save_note(app)?;
+                }
             }
             Ok(true)
         }
@@ -48,6 +58,11 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
             transaction.apply(rope);
             *selection = selection.clone().map(transaction.changes());
             app.needs_redraw = true;
+
+            // Auto-save for notes pane
+            if app.active_pane == ActivePane::Left {
+                auto_save_note(app)?;
+            }
             Ok(true)
         }
 
@@ -133,4 +148,49 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
         // Let other keys fall through
         _ => Ok(false),
     }
+}
+
+// Auto-save function for notes
+fn auto_save_note(app: &mut App) -> Result<()> {
+    if let Some(ref mut notes_mode) = app.notes_mode {
+        // Extract content from the notes rope
+        let content = app.notes_rope.to_string();
+
+        // Extract title from first line
+        let title = content.lines()
+            .next()
+            .unwrap_or("Untitled")
+            .trim_start_matches('#')
+            .trim()
+            .to_string();
+
+        // Extract tags if present (lines starting with "Tags:")
+        let mut tags = Vec::new();
+        for line in content.lines() {
+            if line.starts_with("Tags:") {
+                let tags_str = line.trim_start_matches("Tags:").trim();
+                tags = tags_str.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                break;
+            }
+        }
+
+        // Update or create note
+        if let Some(ref note) = notes_mode.current_note {
+            // Update existing note
+            notes_mode.db.update_note(&note.id, title, content, tags)?;
+        } else if !content.trim().is_empty() {
+            // Create new note only if there's content
+            let note = notes_mode.db.create_note(title, content, tags)?;
+            notes_mode.current_note = Some(note.clone());
+
+            // Add to the notes list if not already there
+            if !app.notes_list.iter().any(|n| n.id == note.id) {
+                app.notes_list.push(note);
+            }
+        }
+    }
+    Ok(())
 }
