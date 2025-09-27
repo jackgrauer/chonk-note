@@ -98,11 +98,6 @@ impl KittyTerminal {
 
         io::stdout().flush()?;
 
-        // Debug log that mouse mode was enabled
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[TERMINAL] Mouse tracking enabled with SGR mode").ok();
-        }
 
         Ok(())
     }
@@ -280,11 +275,6 @@ impl KittyTerminal {
             return Ok(None);
         }
 
-        // Debug log bytes read
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[READ_INPUT] Read {} bytes: {:?}", bytes_read, &buffer[..bytes_read]).ok();
-        }
 
         // Add new bytes to buffer and parse
         let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
@@ -337,7 +327,6 @@ impl KittyTerminal {
                 let sequence = &bytes[..sequence_end];
 
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[PARSE_SINGLE] SGR sequence found, length={}", sequence_end).ok();
                 }
 
@@ -359,11 +348,6 @@ impl KittyTerminal {
             return Ok((None, 0));
         }
 
-        // Debug log raw input bytes
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[PARSE_KEYBOARD] Raw bytes: {:?}", bytes).ok();
-        }
 
         let mut modifiers = KeyModifiers {
             ctrl: false,
@@ -392,12 +376,6 @@ impl KittyTerminal {
                 modifiers.ctrl = true;
                 let ch = (*b - 1 + b'a') as char;
 
-                // Debug log control character parsing
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
-                    writeln!(file, "[PARSE_KEYBOARD] Control char: byte={}, char='{}', ctrl={}",
-                        b, ch, modifiers.ctrl).ok();
-                }
 
                 Ok((Some(InputEvent::Key(KeyEvent {
                     code: KeyCode::Char(ch),
@@ -452,7 +430,6 @@ impl KittyTerminal {
                 // This is an escape sequence we don't recognize - consume it ALL
                 // This prevents escape sequences from being interpreted as regular characters
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[PARSE_KEYBOARD] Consumed unrecognized escape sequence: {:?}", bytes).ok();
                 }
                 Ok((None, bytes.len())) // Consume entire buffer
@@ -464,11 +441,6 @@ impl KittyTerminal {
 
     // Parse SGR mouse events: CSI < button ; x ; y M/m - single event only
     fn parse_sgr_mouse_single(bytes: &[u8]) -> Result<Option<InputEvent>, io::Error> {
-        // Debug log SGR parsing
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[SGR_PARSE] Parsing bytes: {:?}", bytes).ok();
-        }
 
         // Skip ESC [ <
         let data = &bytes[3..];
@@ -479,7 +451,6 @@ impl KittyTerminal {
             None => {
                 // Log failed parse but still consume the sequence
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[SGR_PARSE] No M/m terminator found, consuming sequence").ok();
                 }
                 return Ok(None); // Consume but don't process
@@ -493,7 +464,6 @@ impl KittyTerminal {
             Err(_) => {
                 // Log failed parse but still consume the sequence
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[SGR_PARSE] UTF8 parse failed, consuming sequence").ok();
                 }
                 return Ok(None); // Consume but don't process
@@ -504,7 +474,6 @@ impl KittyTerminal {
         if parts.len() != 3 {
             // Log failed parse but still consume the sequence
             if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                use std::io::Write;
                 writeln!(file, "[SGR_PARSE] Wrong number of parts: {}, consuming sequence", parts.len()).ok();
             }
             return Ok(None); // Consume but don't process
@@ -515,7 +484,6 @@ impl KittyTerminal {
             Err(_) => {
                 // Log failed parse but still consume the sequence
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[SGR_PARSE] Button code parse failed, consuming sequence").ok();
                 }
                 return Ok(None); // Consume but don't process
@@ -526,7 +494,6 @@ impl KittyTerminal {
             Err(_) => {
                 // Log failed parse but still consume the sequence
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[SGR_PARSE] X coordinate parse failed, consuming sequence").ok();
                 }
                 return Ok(None); // Consume but don't process
@@ -537,7 +504,6 @@ impl KittyTerminal {
             Err(_) => {
                 // Log failed parse but still consume the sequence
                 if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
                     writeln!(file, "[SGR_PARSE] Y coordinate parse failed, consuming sequence").ok();
                 }
                 return Ok(None); // Consume but don't process
@@ -566,12 +532,6 @@ impl KittyTerminal {
             button_code & 3  // Extract button from normal code
         };
 
-        // Debug log the button code
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[SGR_PARSE] button_code={}, is_drag={}, button_num={}, is_press={}",
-                button_code, is_drag, button_num, is_press).ok();
-        }
 
         let button = if is_drag {
             // During drag, button number tells us which button is held
@@ -592,12 +552,6 @@ impl KittyTerminal {
         };
 
         // Handle scroll separately (these have different codes)
-        // Debug log ALL button codes to see what we're actually receiving
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[SGR_PARSE] Button event: button_code={}, is_drag={}, x={}, y={}",
-                button_code, is_drag, x, y).ok();
-        }
 
         let button = if !is_drag && button_code == 64 {
             Some(MouseButton::ScrollUp)
@@ -620,12 +574,6 @@ impl KittyTerminal {
             is_drag,
         };
 
-        // Debug log parsed mouse event
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            use std::io::Write;
-            writeln!(file, "[SGR_PARSE] Parsed mouse event: button={:?}, x={}, y={}, press={}, drag={}",
-                button, x, y, is_press, is_drag).ok();
-        }
 
         Ok(Some(InputEvent::Mouse(event)))
     }

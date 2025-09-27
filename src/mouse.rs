@@ -4,8 +4,8 @@ use crate::block_selection::{BlockSelection, char_idx_to_visual_col};
 use anyhow::Result;
 use helix_core::{Selection, Range, movement};
 use std::time::{Duration, Instant};
-use std::fs::OpenOptions;
-use std::io::Write;
+
+
 
 // DISABLED: Smooth scrolling for trackpad gestures - not active for text pane
 // Keeping structure for potential future use with PDF pane
@@ -122,10 +122,6 @@ impl App {
         let (term_width, _) = crate::kitty_native::KittyTerminal::size().ok()?;
 
         // Debug log conversion attempt
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-            writeln!(file, "[SCREEN_TO_TEXT] x={}, y={}, term_width={}, mode={:?}, active_pane={:?}",
-                x, y, term_width, self.app_mode, self.active_pane).ok();
-        }
 
         // Determine which pane we're in and get the appropriate rope and renderer
         let (rope, renderer, pane_start_x) = if self.app_mode == crate::AppMode::NotesEditor {
@@ -169,20 +165,12 @@ impl App {
             let actual_y = (y.saturating_sub(1) as usize) + renderer.viewport_y;
             let actual_x = text_x as usize + renderer.viewport_x;
 
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] pane_start_x={}, text_x={}, actual_x={}, actual_y={}, viewport_y={}",
-                    pane_start_x, text_x, actual_x, actual_y, renderer.viewport_y).ok();
-            }
 
             // Convert to character position in rope
             let line = actual_y.min(rope.len_lines().saturating_sub(1));
             let line_start = rope.line_to_char(line);
             let line_str = rope.line(line);
 
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] line={}, line_start={}, line_len={}",
-                    line, line_start, line_str.len_chars()).ok();
-            }
 
             // Find character at x position (simple approach, assumes monospace)
             let mut char_pos = 0;
@@ -203,16 +191,9 @@ impl App {
                 line_start + char_pos.min(line_str.len_chars())
             };
 
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] final_pos={} (line_start={} + char_pos={})",
-                    final_pos, line_start, char_pos).ok();
-            }
 
             Some(final_pos)
         } else {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[SCREEN_TO_TEXT] No renderer available for this pane!").ok();
-            }
             None
         }
     }
@@ -238,7 +219,7 @@ pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
 
         // Apply vertical scrolling
         if lines_to_scroll_y != 0 {
-            let max_y = app.rope.len_lines().saturating_sub(20);
+            let max_y = app.extraction_rope.len_lines().saturating_sub(20);
             let new_y = if lines_to_scroll_y > 0 {
                 (renderer.viewport_y + lines_to_scroll_y as usize).min(max_y)
             } else {
@@ -269,13 +250,6 @@ pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
     // Debug log all mouse events with more detail
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-        writeln!(file, "[MOUSE] Event: button={:?}, x={}, y={}, press={}, drag={}, shift={}, alt={}, ctrl={}",
-            event.button, event.x, event.y, event.is_press, event.is_drag,
-            event.modifiers.shift, event.modifiers.alt, event.modifiers.ctrl).ok();
-        writeln!(file, "[MOUSE] State: is_dragging={}, block_selection={:?}",
-            mouse_state.is_dragging, app.block_selection.is_some()).ok();
-    }
 
     // Get terminal width for split position calculation
     let (term_width, _term_height) = crate::kitty_native::KittyTerminal::size()?;
@@ -294,9 +268,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 return Ok(());
             }
             // Mouse drag - always block selection
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[MOUSE] DRAG EVENT MATCHED! x={}, y={}", x, y).ok();
-            }
             if let Some(end_pos) = app.screen_to_text_pos(x, y) {
                 // Determine which rope and selection to use based on mode and active pane
                 let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
@@ -325,11 +296,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     // Update helix selection to match block selection
                     *selection = block_sel.to_selection(rope);
 
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
-                        writeln!(file, "[MOUSE] Block selection: lines {}-{}, cols {}-{}",
-                            min_line, max_line, min_col, max_col).ok();
-                    }
                 } else {
                     // This shouldn't happen if click properly starts a block selection
                     // but handle it gracefully - for drag we always create block selection
@@ -343,9 +309,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, modifiers, .. } => {
             // Debug log click position
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                writeln!(file, "[MOUSE] Left click at ({}, {}) with modifiers: alt={}", x, y, modifiers.alt).ok();
-            }
 
             // In Notes mode, check for clicks on notes list (far left, 4 chars wide)
             if app.app_mode == crate::AppMode::NotesEditor && x <= 4 {
@@ -441,9 +404,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Left click - set cursor position
             if let Some(pos) = app.screen_to_text_pos(x, y) {
                 // Debug log text position
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    writeln!(file, "[MOUSE] Converted to text position: {}", pos).ok();
-                }
                 let now = Instant::now();
 
                 // Check for double-click
@@ -484,10 +444,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     mouse_state.last_click = None; // Reset to avoid triple-click
                 } else {
                     // Single click: move cursor and start block selection
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] Single click - moving cursor to pos {}", pos).ok();
-                        writeln!(file, "[MOUSE] Old selection: {:?}", selection).ok();
-                    }
 
                     // Only start block selection if Alt is held
                     let line = rope.char_to_line(pos);
@@ -511,22 +467,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         app.block_selection = None;
                     }
 
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        if modifiers.alt {
-                            writeln!(file, "[MOUSE] Starting block selection at col={}, line={}", col, line).ok();
-                        } else {
-                            writeln!(file, "[MOUSE] Regular click at col={}, line={}", col, line).ok();
-                        }
-                    }
 
                     *selection = Selection::point(pos);
 
                     // Virtual cursor column is no longer used in dual-pane mode
                     // Each pane tracks its own cursor independently
 
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] New selection: {:?}", selection).ok();
-                    }
 
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));
@@ -539,16 +485,10 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                 // Force update of the edit display
                 if let Some(renderer) = &mut app.edit_display {
-                    renderer.update_from_rope(&app.rope);
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                        writeln!(file, "[MOUSE] Updated renderer after cursor move").ok();
-                    }
+                    renderer.update_from_rope(&app.extraction_rope);
                 }
             } else {
                 // Debug log when click is outside text area
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    writeln!(file, "[MOUSE] Click at ({}, {}) is outside text area or couldn't convert", x, y).ok();
-                }
             }
         }
 

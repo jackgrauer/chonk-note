@@ -1,7 +1,7 @@
 // MINIMAL CHONKER - Just PDF text extraction to editable grid
 use anyhow::Result;
 // CROSSTERM ELIMINATED! Pure Kitty-native PDF viewer
-use kitty_native::{KittyTerminal, KeyCode};
+use kitty_native::KittyTerminal;
 // All crossterm eliminated - pure Kitty ANSI
 use std::{io::{self, Write}, path::PathBuf};
 use image::DynamicImage;
@@ -25,6 +25,7 @@ mod mouse;
 mod block_selection;
 mod notes_database;
 mod notes_mode;
+mod debug;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -74,16 +75,13 @@ pub struct App {
     pub extraction_method: ExtractionMethod,
     pub dual_pane_mode: bool,
 
-    // HELIX-CORE INTEGRATION! Professional text editing
-    pub rope: Rope,                    // Main text buffer (used for current active pane)
+    // Text editing with Helix-core
     pub extraction_rope: Rope,         // Extracted text from PDF (right pane)
     pub notes_rope: Rope,              // Notes text (left pane when in notes mode)
-    pub selection: Selection,          // Current pane cursor + selections
     pub extraction_selection: Selection,  // Right pane selection state
     pub notes_selection: Selection,    // Left pane (notes) selection state
-    pub history: History,              // Undo/redo for free!
-    pub block_selection: Option<BlockSelection>,  // Proper block selection with visual columns
-    pub virtual_cursor_col: Option<usize>,  // Virtual cursor column for navigating past line ends
+    pub history: History,              // Undo/redo (currently only single-pane)
+    pub block_selection: Option<BlockSelection>,  // Block selection (needs dual-pane support)
     pub active_pane: ActivePane,       // Which pane has focus
 
     // Notes list for sidebar
@@ -133,16 +131,13 @@ impl App {
             extraction_method: ExtractionMethod::Segments,
             dual_pane_mode: true,
 
-            // HELIX-CORE INTEGRATION!
-            rope: Rope::from(""),                    // Main active buffer
+            // Text editing
             extraction_rope: Rope::from(""),         // Extraction text (right pane)
             notes_rope: Rope::from(""),              // Notes text (left pane in notes mode)
-            selection: Selection::point(0),          // Cursor at position 0
             extraction_selection: Selection::point(0),
             notes_selection: Selection::point(0),
             history: History::default(),             // Empty history
             block_selection: None,                   // No block selection initially
-            virtual_cursor_col: None,                // No virtual cursor position initially
             active_pane: ActivePane::Right,          // Start with extraction pane active
 
             // Rendering
@@ -211,16 +206,13 @@ impl App {
             extraction_method: ExtractionMethod::Segments,
             dual_pane_mode: false,
 
-            // HELIX-CORE INTEGRATION!
-            rope: notes_rope.clone(),
+            // Text editing
             extraction_rope: Rope::from(""),
             notes_rope,
-            selection: notes_selection.clone(),
             extraction_selection: Selection::point(0),
             notes_selection,
             history: History::default(),
             block_selection: None,
-            virtual_cursor_col: None,
             active_pane: ActivePane::Left,  // Notes mode starts with left pane active
 
             // Rendering
@@ -308,16 +300,11 @@ impl App {
             .join("\n");
 
         self.extraction_rope = Rope::from_str(&text);
-        // If in PDF mode, update the main rope for editing
-        if self.app_mode == AppMode::PdfViewer {
-            self.rope = Rope::from_str(&text);
-        }
-        self.selection = Selection::point(0);  // Reset cursor to top-left
-        self.virtual_cursor_col = Some(0);  // Reset virtual cursor position
+        self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
 
         // Update renderer from rope and reset viewport to top-left
         if let Some(renderer) = &mut self.edit_display {
-            renderer.update_from_rope(&self.rope);
+            renderer.update_from_rope(&self.extraction_rope);
             // Reset viewport to show top-left of extracted text
             renderer.scroll_x = 0;
             renderer.scroll_y = 0;
@@ -325,7 +312,7 @@ impl App {
             renderer.viewport_y = 0;
         } else {
             let mut renderer = EditPanelRenderer::new(text_width, text_height);
-            renderer.update_from_rope(&self.rope);
+            renderer.update_from_rope(&self.extraction_rope);
             self.edit_display = Some(renderer);
         }
 
@@ -342,13 +329,9 @@ impl App {
         if self.current_page < self.total_pages - 1 {
             let _ = viuer_display::clear_graphics();
             self.current_page += 1;
-            // HELIX-CORE: Clear extraction rope and reset
+            // Clear extraction rope and reset
             self.extraction_rope = Rope::from("");
-            if self.app_mode == AppMode::PdfViewer {
-                self.rope = Rope::from("");
-            }
-            self.selection = Selection::point(0);
-            self.virtual_cursor_col = Some(0);  // Reset virtual cursor
+            self.extraction_selection = Selection::point(0);
             self.edit_display = None;
             self.current_page_image = None;
             self.needs_redraw = true;
@@ -359,13 +342,9 @@ impl App {
         if self.current_page > 0 {
             let _ = viuer_display::clear_graphics();
             self.current_page -= 1;
-            // HELIX-CORE: Clear extraction rope and reset
+            // Clear extraction rope and reset
             self.extraction_rope = Rope::from("");
-            if self.app_mode == AppMode::PdfViewer {
-                self.rope = Rope::from("");
-            }
-            self.selection = Selection::point(0);
-            self.virtual_cursor_col = Some(0);  // Reset virtual cursor
+            self.extraction_selection = Selection::point(0);
             self.edit_display = None;
             self.current_page_image = None;
             self.needs_redraw = true;
@@ -382,26 +361,9 @@ impl App {
     }
 
     // Toggle between PDF and Notes modes
-    // Switch active pane and save/restore appropriate selection states
+    // Switch active pane
     pub fn switch_active_pane(&mut self, pane: ActivePane) {
-        // Save current selection to the appropriate pane
-        match self.active_pane {
-            ActivePane::Left => self.notes_selection = self.selection.clone(),
-            ActivePane::Right => self.extraction_selection = self.selection.clone(),
-        }
-
-        // Switch to new pane and restore its selection
         self.active_pane = pane;
-        match pane {
-            ActivePane::Left => {
-                self.rope = self.notes_rope.clone();
-                self.selection = self.notes_selection.clone();
-            }
-            ActivePane::Right => {
-                self.rope = self.extraction_rope.clone();
-                self.selection = self.extraction_selection.clone();
-            }
-        }
         self.needs_redraw = true;
     }
 
@@ -459,8 +421,7 @@ impl App {
                     }
                 }
 
-                self.rope = self.notes_rope.clone();  // Make notes the active buffer
-                self.selection = Selection::point(0);
+                // Notes are already in notes_rope, no need to copy
                 self.status_message = "Notes Mode (auto-save) - Ctrl+Up/Down: Nav | Ctrl+O: Open | Ctrl+N: New | Ctrl+E: Back".to_string();
 
                 // Keep dual pane mode - notes on left, extraction on right
@@ -476,17 +437,14 @@ impl App {
                     return Ok(());
                 }
 
-                // Save notes before switching back
-                self.notes_rope = self.rope.clone();
+                // Notes are already saved in notes_rope
 
                 // Switch back to PDF mode
                 self.app_mode = AppMode::PdfViewer;
                 self.dual_pane_mode = true;
                 self.status_message = "PDF Mode - Ctrl+J/K: Pages | Ctrl+T: Extraction | Ctrl+E: Notes".to_string();
 
-                // Restore extraction text as active buffer
-                self.rope = self.extraction_rope.clone();
-                self.selection = Selection::point(0);
+                // Extraction text is already in extraction_rope
                 self.needs_redraw = true;
             }
         }
@@ -530,15 +488,10 @@ impl App {
                     .collect::<Vec<_>>()
                     .join("\n");
                 self.extraction_rope = Rope::from_str(&text);
-                // If in PDF mode, update the main rope for editing
-                if self.app_mode == AppMode::PdfViewer {
-                    self.rope = Rope::from_str(&text);
-                }
-                self.selection = Selection::point(0);  // Reset cursor to top-left
-                self.virtual_cursor_col = Some(0);  // Reset virtual cursor position
-                // HELIX-CORE: Update renderer from rope and reset viewport
+                self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
+                // Update renderer from rope and reset viewport
                 if let Some(renderer) = &mut self.edit_display {
-                    renderer.update_from_rope(&self.rope);
+                    renderer.update_from_rope(&self.extraction_rope);
                     // Reset viewport to show top-left of extracted text
                     renderer.scroll_x = 0;
                     renderer.scroll_y = 0;
@@ -697,13 +650,8 @@ async fn run_app(app: &mut App) -> Result<()> {
                 let notes_list_width = 4;  // Even more minimal - just for numbers
                 let remaining_width = term_width.saturating_sub(notes_list_width);  // No space for dividers
                 let notes_editor_width = remaining_width / 2;
-                let extraction_width = remaining_width - notes_editor_width;
+                let _extraction_width = remaining_width - notes_editor_width;
 
-                // Debug log
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    use std::io::Write;
-                    writeln!(file, "[RENDER] Notes mode - rendering {} notes in list", app.notes_list.len()).ok();
-                }
 
                 // Render notes list sidebar on far left
                 render_notes_list(&app, 0, 0, notes_list_width, term_height)?;
@@ -750,14 +698,9 @@ async fn run_app(app: &mut App) -> Result<()> {
             if let Some(input) = KittyTerminal::read_input()? {
                 match input {
                     kitty_native::InputEvent::Key(key) => {
-                        // Debug log key event
-                        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                            use std::io::Write;
-                            writeln!(file, "[MAIN] Received key event: {:?}", key).ok();
-                        }
 
                         // HELIX-CORE: Track selection changes
-                        let old_selection = app.selection.clone();
+                        let old_selection = app.extraction_selection.clone();
 
                         if !keyboard::handle_input(app, key).await? {
                             break;
@@ -767,7 +710,7 @@ async fn run_app(app: &mut App) -> Result<()> {
                         }
 
                         // HELIX-CORE: Check for changes
-                        let selection_changed = app.selection != old_selection;
+                        let selection_changed = app.extraction_selection != old_selection;
 
                         if selection_changed {
                             // Any selection change triggers redraw
@@ -775,11 +718,6 @@ async fn run_app(app: &mut App) -> Result<()> {
                         }
                     }
                     kitty_native::InputEvent::Mouse(mouse_event) => {
-                        // Debug log mouse event received
-                        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                            use std::io::Write;
-                            writeln!(file, "[MAIN] Received mouse event").ok();
-                        }
                         // Handle mouse events
                         mouse::handle_mouse(app, mouse_event, &mut mouse_state).await?;
                     }
@@ -962,7 +900,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 }
 
 /// Render the minimal notes list sidebar (just numbers)
-fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Result<()> {
     // No borders for minimal design - just a subtle divider line is drawn separately
 
     // Show notes as simple numbers

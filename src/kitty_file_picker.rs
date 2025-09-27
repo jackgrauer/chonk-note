@@ -2,9 +2,9 @@
 // Simple directory listing with arrow key navigation, no nucleo
 use std::path::PathBuf;
 use std::fs;
+use std::io::Write;
 use anyhow::Result;
 use crate::kitty_native::{KittyTerminal, KeyCode, KeyModifiers};
-use std::io::Write;
 
 pub enum FilePickerAction {
     Open(PathBuf),

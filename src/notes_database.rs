@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {

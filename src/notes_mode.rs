@@ -1,6 +1,6 @@
 // Notes mode for Chonker7
 use anyhow::Result;
-use helix_core::{Rope, Selection, Transaction, Range};
+use helix_core::{Rope, Selection};
 use crate::notes_database::{NotesDatabase, Note};
 
 pub struct NotesMode {
