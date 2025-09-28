@@ -128,6 +128,9 @@ pub struct App {
     pub pdf_zoom: f32,                // Zoom level for PDF pane
     pub text_zoom: f32,               // Zoom level for text editor pane
 
+    // Store block cut data for paste
+    pub block_clipboard: Option<Vec<String>>,  // Stores cut block data
+
 }
 
 impl App {
@@ -196,6 +199,9 @@ impl App {
             selected_note_index: 0,
             notes_list_scroll: 0,
             unsaved_changes: false,
+
+            // Block clipboard
+            block_clipboard: None,
         })
     }
 
@@ -275,6 +281,9 @@ impl App {
             selected_note_index: 0,
             notes_list_scroll: 0,
             unsaved_changes: false,
+
+            // Block clipboard
+            block_clipboard: None,
         })
     }
 

@@ -128,9 +128,9 @@ fn render(editor: &chonker7::simple_helix_editor::SimpleHelixEditor) -> Result<(
                     // Check if this line is in the block
                     let (start_pos, end_pos) = block.normalized();
 
-                    if line_num >= start_pos.line && line_num <= end_pos.line {
-                        let start_col = start_pos.column;
-                        let end_col = end_pos.column;
+                    if line_num >= start_pos.0 && line_num <= end_pos.0 {
+                        let start_col = start_pos.1;
+                        let end_col = end_pos.1;
 
                         // Before block
                         if start_col <= line.len() {
@@ -172,8 +172,8 @@ fn render(editor: &chonker7::simple_helix_editor::SimpleHelixEditor) -> Result<(
                 println!();
                 let (start, end) = block.normalized();
                 println!("Block: {}×{} chars",
-                    end.column - start.column,
-                    end.line - start.line + 1
+                    end.1 - start.1,
+                    end.0 - start.0 + 1
                 );
             }
         }

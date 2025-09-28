@@ -302,10 +302,15 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 // Handle block selection for both panes
                 // Block selection is now supported in both notes and extraction panes
                 {
-                    // Calculate visual column for proper handling of tabs/wide chars
-                    let rope_slice = rope.slice(..);
-                    let line_slice = rope_slice.line(end_line);
-                    let visual_col = char_idx_to_visual_col(line_slice, end_col);
+                    // Calculate visual column - but handle case where line doesn't exist
+                    let visual_col = if end_line < rope.len_lines() {
+                        let rope_slice = rope.slice(..);
+                        let line_slice = rope_slice.line(end_line);
+                        char_idx_to_visual_col(line_slice, end_col)
+                    } else {
+                        // Line doesn't exist yet, just use the column directly
+                        end_col
+                    };
 
                     if let Some(block_sel) = block_selection {
                         // Extend existing block selection
@@ -485,11 +490,13 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             let grid_col = x.saturating_sub(pane_start_x) as usize;
             let grid_row = y.saturating_sub(1) as usize;  // Terminal is 1-based
 
-            // Move the grid cursor to the clicked position
+            // Move the grid cursor to the clicked position (allows virtual space!)
             cursor.move_to(grid_row, grid_col);
 
-            // Try to get a text position for selection operations
+            // Update the selection based on cursor position
+            // Even if we're in virtual space, we need to handle clicks
             if let Some(pos) = cursor.to_char_offset(grid) {
+                // Cursor is at a valid text position
                 // Debug log text position
                 let now = Instant::now();
 
@@ -532,27 +539,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 } else {
                     // Single click: move cursor and start block selection
 
-                    // Only start block selection if Alt is held
+                    // Always start block selection on click (no Alt required!)
                     let line = rope.char_to_line(pos);
                     let line_start = rope.line_to_char(line);
                     let col = pos - line_start;
 
-                    // Block selection with Alt modifier works in both panes
-                    if modifiers.alt {
-                        // Calculate visual column for proper handling of tabs/wide chars
-                        let rope_slice = rope.slice(..);
-                        let line_slice = rope_slice.line(line);
-                        let visual_col = char_idx_to_visual_col(line_slice, col);
+                    // Calculate visual column for proper handling of tabs/wide chars
+                    let rope_slice = rope.slice(..);
+                    let line_slice = rope_slice.line(line);
+                    let visual_col = char_idx_to_visual_col(line_slice, col);
 
-                        // Start a new block selection with Alt modifier
-                        *block_selection = Some(BlockSelection::new(line, col));
-                        if let Some(block_sel) = block_selection {
-                            block_sel.anchor_visual_col = visual_col;
-                            block_sel.cursor_visual_col = visual_col;
-                        }
-                    } else {
-                        // Normal click without Alt - clear any block selection
-                        *block_selection = None;
+                    // Start a new block selection on every click
+                    *block_selection = Some(BlockSelection::new(line, col));
+                    if let Some(block_sel) = block_selection {
+                        block_sel.anchor_visual_col = visual_col;
+                        block_sel.cursor_visual_col = visual_col;
                     }
 
 
@@ -591,7 +592,75 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     }
                 }
             } else {
-                // Debug log when click is outside text area
+                // Cursor is in virtual space - still handle the click!
+                let now = Instant::now();
+
+                // We can still handle double-click in virtual space
+                let is_double_click = if let (Some(last_time), Some((last_x, last_y))) =
+                    (mouse_state.last_click, mouse_state.last_click_pos) {
+                    now.duration_since(last_time) < mouse_state.double_click_threshold &&
+                    (x as i32 - last_x as i32).abs() <= 2 &&
+                    (y as i32 - last_y as i32).abs() <= 2
+                } else {
+                    false
+                };
+
+                // Get the appropriate rope and selection based on which pane was clicked
+                let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
+                        crate::ActivePane::Right => (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
+                    }
+                } else {
+                    (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
+                };
+
+                if is_double_click {
+                    // For double-click in virtual space, select the whole line
+                    let line_idx = cursor.row.min(rope.len_lines().saturating_sub(1));
+                    let line_start = rope.line_to_char(line_idx);
+                    let line = rope.line(line_idx);
+                    let line_end = line_start + line.len_chars();
+                    *selection = Selection::single(line_start, line_end);
+                    mouse_state.last_click = None; // Reset to avoid triple-click
+                } else {
+                    // Single click in virtual space
+                    // Set the selection to the closest valid position (end of line)
+                    let line_idx = cursor.row.min(rope.len_lines().saturating_sub(1));
+                    let line_start = rope.line_to_char(line_idx);
+                    let line = rope.line(line_idx);
+                    let line_end = line_start + line.len_chars().saturating_sub(1);
+                    *selection = Selection::point(line_end);
+
+                    // Always start block selection (no Alt required!)
+                    *block_selection = Some(BlockSelection::new(cursor.row, cursor.col));
+
+                    mouse_state.last_click = Some(now);
+                    mouse_state.last_click_pos = Some((x, y));
+                    mouse_state.is_dragging = true;  // Set to true to catch motion events
+                }
+
+                app.needs_redraw = true;
+
+                // Force update of the appropriate display
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => {
+                            if let Some(renderer) = &mut app.notes_display {
+                                renderer.update_from_rope(&app.notes_rope);
+                            }
+                        }
+                        crate::ActivePane::Right => {
+                            if let Some(renderer) = &mut app.edit_display {
+                                renderer.update_from_rope(&app.extraction_rope);
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.update_from_rope(&app.extraction_rope);
+                    }
+                }
             }
         }
 

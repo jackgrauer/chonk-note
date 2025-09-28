@@ -82,8 +82,18 @@ impl VirtualGrid {
             // Remove the existing character at this position
             let next_pos = char_pos + 1;
             self.rope.remove(char_pos..next_pos.min(self.rope.len_chars()));
+            self.rope.insert(char_pos, &ch.to_string());
+        } else if char_pos == self.rope.len_chars() {
+            // We're at the exact end of the rope, just append
+            self.rope.insert(char_pos, &ch.to_string());
+        } else {
+            // char_pos is beyond rope length - this shouldn't happen after ensure_line_length
+            // but handle it gracefully by padding to the position
+            let padding_needed = char_pos - self.rope.len_chars();
+            let padding = " ".repeat(padding_needed);
+            self.rope.insert(self.rope.len_chars(), &padding);
+            self.rope.insert(self.rope.len_chars(), &ch.to_string());
         }
-        self.rope.insert(char_pos, &ch.to_string());
     }
 
     /// Get the actual line length (excluding virtual spaces)
@@ -153,6 +163,44 @@ impl VirtualGrid {
         for line_num in start_line..=end_line {
             for col in start_col..=end_col {
                 self.set_char_at(col, line_num, ' ');
+            }
+        }
+    }
+
+    /// Cut a block selection, replacing with spaces (non-collapsing)
+    pub fn cut_block(&mut self, selection: &crate::block_selection::BlockSelection) -> Vec<String> {
+        let ((start_line, start_col), (end_line, end_col)) = selection.normalized();
+        let mut cut_data = Vec::new();
+
+        for line_idx in start_line..=end_line {
+            let mut extracted = String::new();
+
+            // Extract characters from the line
+            for col in start_col..=end_col {
+                if let Some(ch) = self.get_char_at(col, line_idx) {
+                    extracted.push(ch);
+                } else {
+                    extracted.push(' ');
+                }
+            }
+            cut_data.push(extracted);
+
+            // Replace with spaces (non-collapsing)
+            for col in start_col..=end_col {
+                self.set_char_at(col, line_idx, ' ');
+            }
+        }
+
+        cut_data
+    }
+
+    /// Paste block data at the cursor position
+    pub fn paste_block(&mut self, cursor_line: usize, cursor_col: usize, data: &[String]) {
+        for (i, line_data) in data.iter().enumerate() {
+            let target_line = cursor_line + i;
+            for (j, ch) in line_data.chars().enumerate() {
+                let target_col = cursor_col + j;
+                self.set_char_at(target_col, target_line, ch);
             }
         }
     }

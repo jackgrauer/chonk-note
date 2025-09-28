@@ -268,40 +268,76 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char('x'), mods) if mods.contains(KeyModifiers::SUPER) => {
-            // Cut - copy to clipboard then delete selection
-            let text = extract_selection_from_rope(app);
-            if !text.is_empty() {
+            // Check for block selection first
+            if let Some(block_sel) = &app.extraction_block_selection {
+                // Use non-collapsing block cut
+                let cut_data = app.extraction_grid.cut_block(block_sel);
+                app.block_clipboard = Some(cut_data.clone());
+
+                // Also copy to system clipboard as plain text
+                let text = cut_data.join("\n");
                 copy_to_clipboard(&text)?;
 
-                // Save state before deletion for history
-                let state = State {
-                    doc: app.extraction_rope.clone(),
-                    selection: app.extraction_selection.clone(),
-                };
+                // Update rope from grid
+                app.extraction_rope = app.extraction_grid.rope.clone();
 
-                // Delete the selected text
-                let transaction = Transaction::delete(&app.extraction_rope, app.extraction_selection.ranges().into_iter().map(|r| (r.from(), r.to())));
+                // Clear block selection after cut
+                app.extraction_block_selection = None;
 
-                // Apply transaction
-                let success = transaction.apply(&mut app.extraction_rope);
+                app.status_message = format!("Cut block: {} lines", cut_data.len());
+            } else {
+                // Regular cut - copy to clipboard then delete selection
+                let text = extract_selection_from_rope(app);
+                if !text.is_empty() {
+                    copy_to_clipboard(&text)?;
 
-                if success {
-                    // Map selection through changes
-                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+                    // Save state before deletion for history
+                    let state = State {
+                        doc: app.extraction_rope.clone(),
+                        selection: app.extraction_selection.clone(),
+                    };
 
-                    // Commit to history for undo/redo
-                    app.history.commit_revision(&transaction, &state);
-                    app.status_message = "Cut".to_string();
+                    // Delete the selected text
+                    let transaction = Transaction::delete(&app.extraction_rope, app.extraction_selection.ranges().into_iter().map(|r| (r.from(), r.to())));
+
+                    // Apply transaction
+                    let success = transaction.apply(&mut app.extraction_rope);
+
+                    if success {
+                        // Map selection through changes
+                        app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+
+                        // Commit to history for undo/redo
+                        app.history.commit_revision(&transaction, &state);
+                        app.status_message = "Cut".to_string();
+                    }
                 }
             }
         }
 
         (KeyCode::Char('c'), mods) if mods.contains(KeyModifiers::SUPER) => {
-            // Copy
-            let text = extract_selection_from_rope(app);
-            if !text.is_empty() {
+            // Check for block selection first
+            if let Some(block_sel) = &app.extraction_block_selection {
+                // Copy block data
+                let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
+                let block_data = app.extraction_grid.get_block(
+                    start_col, start_line, end_col, end_line
+                );
+                app.block_clipboard = Some(block_data.clone());
+
+                // Also copy to system clipboard as plain text
+                let text = block_data.join("\n");
                 copy_to_clipboard(&text)?;
-                app.status_message = "Copied".to_string();
+
+                app.status_message = format!("Copied block: {} lines", block_data.len());
+            } else {
+                // Regular copy
+                let text = extract_selection_from_rope(app);
+                if !text.is_empty() {
+                    copy_to_clipboard(&text)?;
+                    app.block_clipboard = None; // Clear block clipboard on regular copy
+                    app.status_message = "Copied".to_string();
+                }
             }
         }
 
@@ -372,8 +408,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::SUPER) => {
-            // FULL HELIX: Professional paste with transactions
-            if let Ok(text) = paste_from_clipboard() {
+            // Check if we have block clipboard data to paste
+            if let Some(block_data) = &app.block_clipboard {
+                // Block paste at cursor position
+                let (row, col) = (app.extraction_cursor.row, app.extraction_cursor.col);
+                app.extraction_grid.paste_block(row, col, block_data);
+
+                // Update rope from grid
+                app.extraction_rope = app.extraction_grid.rope.clone();
+
+                app.status_message = format!("Pasted block: {} lines", block_data.len());
+                app.needs_redraw = true;
+            } else if let Ok(text) = paste_from_clipboard() {
+                // Regular paste with transactions
                 // Save state before transaction for history
                 let state = State {
                     doc: app.extraction_rope.clone(),
@@ -425,9 +472,64 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // Cut - Ctrl+X (in addition to Cmd+X)
         (KeyCode::Char('x'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-            // Debug to file
+            // In Notes mode, work with the appropriate grid and block selection
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // Ensure grids are synchronized with their ropes before operations
+                if app.active_pane == crate::ActivePane::Left {
+                    // Make sure notes_grid is in sync with notes_rope
+                    if app.notes_grid.rope.len_chars() != app.notes_rope.len_chars() {
+                        app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                    }
+                }
 
-            // Extract selected text
+                let (grid, block_selection) = match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_block_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_block_selection),
+                };
+
+                if let Some(block_sel) = block_selection {
+                    // Use non-collapsing block cut
+                    let cut_data = grid.cut_block(block_sel);
+                    app.block_clipboard = Some(cut_data.clone());
+
+                    // Also copy to system clipboard as plain text
+                    let text = cut_data.join("\n");
+                    copy_to_clipboard(&text)?;
+
+                    // Update the appropriate rope from grid
+                    match app.active_pane {
+                        crate::ActivePane::Left => app.notes_rope = grid.rope.clone(),
+                        crate::ActivePane::Right => app.extraction_rope = grid.rope.clone(),
+                    }
+
+                    // Clear block selection after cut
+                    *block_selection = None;
+
+                    app.status_message = format!("Cut block: {} lines", cut_data.len());
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+            } else if let Some(block_sel) = &app.extraction_block_selection {
+                // PDF mode with block selection
+                let cut_data = app.extraction_grid.cut_block(block_sel);
+                app.block_clipboard = Some(cut_data.clone());
+
+                // Also copy to system clipboard as plain text
+                let text = cut_data.join("\n");
+                copy_to_clipboard(&text)?;
+
+                // Update rope from grid
+                app.extraction_rope = app.extraction_grid.rope.clone();
+
+                // Clear block selection after cut
+                app.extraction_block_selection = None;
+
+                app.status_message = format!("Cut block: {} lines", cut_data.len());
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+
+            // Fall back to regular cut if no block selection
             let text = extract_selection_from_rope(app);
             if !text.is_empty() {
                 // Copy to clipboard
@@ -539,26 +641,83 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // Copy - Ctrl+C
         (KeyCode::Char('c'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-            // Debug to file
-
-            // Copy selected text to clipboard
-            let text = extract_selection_from_rope(app);
-            if !text.is_empty() {
-                copy_to_clipboard(&text)?;
-                app.status_message = format!("Copied {} characters", text.len());
-                app.needs_redraw = true;  // Force redraw to show status
-
+            // Check for block selection in the active pane
+            let block_sel = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => &app.notes_block_selection,
+                    crate::ActivePane::Right => &app.extraction_block_selection,
+                }
             } else {
-                app.status_message = "Nothing to copy".to_string();
+                &app.extraction_block_selection
+            };
+
+            if let Some(block_sel) = block_sel {
+                // Get the appropriate grid
+                let grid = if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => &app.notes_grid,
+                        crate::ActivePane::Right => &app.extraction_grid,
+                    }
+                } else {
+                    &app.extraction_grid
+                };
+
+                // Copy block data
+                let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
+                let block_data = grid.get_block(start_col, start_line, end_col, end_line);
+                app.block_clipboard = Some(block_data.clone());
+
+                // Also copy to system clipboard as plain text
+                let text = block_data.join("\n");
+                copy_to_clipboard(&text)?;
+
+                app.status_message = format!("Copied block: {} lines", block_data.len());
                 app.needs_redraw = true;
+            } else {
+                // Regular copy
+                let text = extract_selection_from_rope(app);
+                if !text.is_empty() {
+                    copy_to_clipboard(&text)?;
+                    app.block_clipboard = None; // Clear block clipboard on regular copy
+                    app.status_message = format!("Copied {} characters", text.len());
+                    app.needs_redraw = true;
+                } else {
+                    app.status_message = "Nothing to copy".to_string();
+                    app.needs_redraw = true;
+                }
             }
         }
 
         // Paste - Ctrl+V
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-            // Debug to file
+            // Check if we have block clipboard data to paste
+            if let Some(block_data) = &app.block_clipboard {
+                // In Notes mode, work with the appropriate grid and cursor
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    let (grid, cursor, rope) = match app.active_pane {
+                        crate::ActivePane::Left => {
+                            (&mut app.notes_grid, &app.notes_cursor, &mut app.notes_rope)
+                        }
+                        crate::ActivePane::Right => {
+                            (&mut app.extraction_grid, &app.extraction_cursor, &mut app.extraction_rope)
+                        }
+                    };
 
-            if let Ok(text) = paste_from_clipboard() {
+                    // Block paste at cursor position
+                    grid.paste_block(cursor.row, cursor.col, block_data);
+
+                    // Update rope from grid
+                    *rope = grid.rope.clone();
+                } else {
+                    // PDF mode - paste to extraction grid
+                    app.extraction_grid.paste_block(app.extraction_cursor.row, app.extraction_cursor.col, block_data);
+                    app.extraction_rope = app.extraction_grid.rope.clone();
+                }
+
+                app.status_message = format!("Pasted block: {} lines", block_data.len());
+                app.needs_redraw = true;
+            } else if let Ok(text) = paste_from_clipboard() {
+                // Regular paste
                 // In Notes mode, work with the appropriate rope and selection based on active pane
                 if app.app_mode == crate::AppMode::NotesEditor {
                     let (rope, selection) = match app.active_pane {

@@ -6,39 +6,57 @@ use crate::virtual_grid::VirtualGrid;
 pub struct GridCursor {
     pub row: usize,
     pub col: usize,
+    pub desired_col: Option<usize>, // Remember column for vertical movement
 }
 
 impl GridCursor {
     pub fn new() -> Self {
-        Self { row: 0, col: 0 }
+        Self {
+            row: 0,
+            col: 0,
+            desired_col: None,
+        }
     }
 
     pub fn move_up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
+            // Restore desired column for vertical movement
+            if let Some(desired) = self.desired_col {
+                self.col = desired;
+            }
         }
     }
 
     pub fn move_down(&mut self, max_rows: usize) {
         if self.row < max_rows.saturating_sub(1) {
             self.row += 1;
+            // Restore desired column for vertical movement
+            if let Some(desired) = self.desired_col {
+                self.col = desired;
+            }
         }
     }
 
     pub fn move_left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
+            // Reset desired column when moving horizontally
+            self.desired_col = Some(self.col);
         }
     }
 
     pub fn move_right(&mut self, _max_cols: usize) {
         // In grid mode, we allow moving as far right as needed
         self.col += 1;
+        // Reset desired column when moving horizontally
+        self.desired_col = Some(self.col);
     }
 
     pub fn move_to(&mut self, row: usize, col: usize) {
         self.row = row;
         self.col = col;
+        self.desired_col = Some(col);
     }
 
     /// Convert grid position to rope char offset
@@ -71,6 +89,10 @@ impl GridCursor {
         let line_start = grid.rope.line_to_char(row);
         let col = offset.saturating_sub(line_start);
 
-        Self { row, col }
+        Self {
+            row,
+            col,
+            desired_col: Some(col),
+        }
     }
 }
