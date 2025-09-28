@@ -262,8 +262,8 @@ impl EditPanelRenderer {
                     });
                     
                     if is_highlighted {
-                        // ANSI: Selection highlighting
-                        print!("\x1b[48;2;0;0;139m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
+                        // ANSI: Selection highlighting (soft blue background, bright text)
+                        print!("\x1b[48;2;50;100;150m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
                     } else {
                         write!(stdout, "{}", row[x])?;
                     }
@@ -355,6 +355,7 @@ impl EditPanelRenderer {
         max_height: u16,
         cursor: (usize, usize),
         block_selection: Option<&BlockSelection>,
+        show_cursor: bool,
     ) -> io::Result<()> {
         let mut stdout = io::stdout();
 
@@ -395,12 +396,12 @@ impl EditPanelRenderer {
 
                     let ch = row.get(x).copied().unwrap_or(' ');
 
-                    if is_cursor {
-                        // ANSI: Cursor highlighting (light color)
-                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
+                    if is_cursor && show_cursor {
+                        // ANSI: Bright cyan cursor for better visibility
+                        print!("\x1b[48;2;0;200;200m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_in_block {
-                        // ANSI: Block selection highlighting
-                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // ANSI: Block selection highlighting (soft purple)
+                        print!("\x1b[48;2;100;80;150m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -415,9 +416,9 @@ impl EditPanelRenderer {
                     // Check if cursor is in the virtual space (past line end)
                     for offset in 0..remaining_space {
                         let virtual_x = end_col + offset;
-                        if cursor.1 == buffer_y && cursor.0 == virtual_x {
-                            // Render cursor in virtual space
-                            print!("\x1b[48;2;80;80;200m \x1b[m");
+                        if cursor.1 == buffer_y && cursor.0 == virtual_x && show_cursor {
+                            // Render cursor in virtual space (bright cyan)
+                            print!("\x1b[48;2;0;200;200m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -444,6 +445,7 @@ impl EditPanelRenderer {
         cursor: (usize, usize),
         selection_start: Option<(usize, usize)>,
         selection_end: Option<(usize, usize)>,
+        show_cursor: bool,
     ) -> io::Result<()> {
         let mut stdout = io::stdout();
         
@@ -491,12 +493,12 @@ impl EditPanelRenderer {
                     
                     let ch = row.get(x).copied().unwrap_or(' ');
                     
-                    if is_cursor {
-                        // ANSI: Cursor highlighting (light color)
-                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
+                    if is_cursor && show_cursor {
+                        // ANSI: Bright cyan cursor for better visibility
+                        print!("\x1b[48;2;0;200;200m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_selected {
-                        // ANSI: Selection highlighting (same blue as block selection)
-                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // ANSI: Selection highlighting (soft blue background)
+                        print!("\x1b[48;2;50;100;150m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -510,9 +512,9 @@ impl EditPanelRenderer {
                     // Check if cursor is past line end (virtual position)
                     for offset in 0..remaining_space {
                         let virtual_x = end_col + offset;
-                        if cursor.1 == buffer_y && cursor.0 == virtual_x {
-                            // Render cursor in virtual space
-                            print!("\x1b[48;2;80;80;200m \x1b[m");
+                        if cursor.1 == buffer_y && cursor.0 == virtual_x && show_cursor {
+                            // Render cursor in virtual space (bright cyan)
+                            print!("\x1b[48;2;0;200;200m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -521,9 +523,9 @@ impl EditPanelRenderer {
             } else {
                 // Empty line - check if cursor is here
                 for x in 0..render_width as usize {
-                    if cursor.1 == buffer_y && cursor.0 == x {
-                        // Render cursor on empty line
-                        print!("\x1b[48;2;80;80;200m \x1b[m");
+                    if cursor.1 == buffer_y && cursor.0 == x && show_cursor {
+                        // Render cursor on empty line (bright cyan)
+                        print!("\x1b[48;2;0;200;200m \x1b[m");
                     } else {
                         write!(stdout, " ")?;
                     }

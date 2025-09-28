@@ -267,39 +267,44 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 app.needs_redraw = true;
                 return Ok(());
             }
-            // Mouse drag - always block selection
+            // Mouse drag - handle selection based on active pane
             if let Some(end_pos) = app.screen_to_text_pos(x, y) {
-                // Determine which rope and selection to use based on mode and active pane
-                let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                // Determine which rope, selection, and block selection to use based on mode and active pane
+                let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
                     match app.active_pane {
-                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection),
-                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection),
+                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
+                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
                     }
                 } else {
                     // In PDF mode, always use extraction rope
-                    (&app.extraction_rope, &mut app.extraction_selection)
+                    (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
                 };
 
                 let end_line = rope.char_to_line(end_pos);
                 let end_line_start = rope.line_to_char(end_line);
                 let end_col = end_pos - end_line_start;
 
-                // Calculate visual column for proper handling of tabs/wide chars
-                let rope_slice = rope.slice(..);
-                let line_slice = rope_slice.line(end_line);
-                let visual_col = char_idx_to_visual_col(line_slice, end_col);
+                // Handle block selection for both panes
+                // Block selection is now supported in both notes and extraction panes
+                {
+                    // Calculate visual column for proper handling of tabs/wide chars
+                    let rope_slice = rope.slice(..);
+                    let line_slice = rope_slice.line(end_line);
+                    let visual_col = char_idx_to_visual_col(line_slice, end_col);
 
-                if let Some(block_sel) = &mut app.block_selection {
-                    // Extend existing block selection
-                    block_sel.extend_to(end_line, end_col, visual_col);
+                    if let Some(block_sel) = block_selection {
+                        // Extend existing block selection
+                        block_sel.extend_to(end_line, end_col, visual_col);
 
-                    // Update helix selection to match block selection
-                    *selection = block_sel.to_selection(rope);
+                        // Update helix selection to match block selection
+                        *selection = block_sel.to_selection(rope);
 
-                } else {
-                    // This shouldn't happen if click properly starts a block selection
-                    // but handle it gracefully - for drag we always create block selection
-                    app.block_selection = Some(BlockSelection::new(end_line, end_col));
+                    } else {
+                        // No block selection active - use regular selection extension
+                        // The selection anchor was set during the initial click
+                        let anchor = selection.primary().anchor;
+                        *selection = Selection::single(anchor, end_pos);
+                    }
                 }
 
                 mouse_state.is_dragging = true;
@@ -316,7 +321,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 // Notes start at y=1 (0-based becomes 1-based in terminal)
                 let clicked_row = y.saturating_sub(1) as usize; // Convert to 0-based index
                 if clicked_row < app.notes_list.len() {
-                    // Select and load the clicked note
+                    // First, save the current note's changes back to the list
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        if let Some(ref current_note) = notes_mode.current_note {
+                            // Find the current note in the list and update it
+                            for note in app.notes_list.iter_mut() {
+                                if note.id == current_note.id {
+                                    // Update the note's content with the current editor content
+                                    note.content = app.notes_rope.to_string();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Now select and load the clicked note
                     app.selected_note_index = clicked_row;
 
                     if let Some(ref mut notes_mode) = app.notes_mode {
@@ -415,15 +434,15 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     false
                 };
 
-                // Determine which rope and selection to use based on pane
-                let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                // Determine which rope, selection, and block selection to use based on pane
+                let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
                     match app.active_pane {
-                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection),
-                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection),
+                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
+                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
                     }
                 } else {
                     // In PDF mode, always use extraction rope
-                    (&app.extraction_rope, &mut app.extraction_selection)
+                    (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
                 };
 
                 if is_double_click {
@@ -450,21 +469,22 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     let line_start = rope.line_to_char(line);
                     let col = pos - line_start;
 
+                    // Block selection with Alt modifier works in both panes
                     if modifiers.alt {
                         // Calculate visual column for proper handling of tabs/wide chars
                         let rope_slice = rope.slice(..);
                         let line_slice = rope_slice.line(line);
                         let visual_col = char_idx_to_visual_col(line_slice, col);
 
-                        // Start a new block selection only with Alt modifier
-                        app.block_selection = Some(BlockSelection::new(line, col));
-                        if let Some(block_sel) = &mut app.block_selection {
+                        // Start a new block selection with Alt modifier
+                        *block_selection = Some(BlockSelection::new(line, col));
+                        if let Some(block_sel) = block_selection {
                             block_sel.anchor_visual_col = visual_col;
                             block_sel.cursor_visual_col = visual_col;
                         }
                     } else {
                         // Normal click without Alt - clear any block selection
-                        app.block_selection = None;
+                        *block_selection = None;
                     }
 
 
@@ -483,9 +503,24 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                 app.needs_redraw = true;
 
-                // Force update of the edit display
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.update_from_rope(&app.extraction_rope);
+                // Force update of the appropriate display
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    match app.active_pane {
+                        crate::ActivePane::Left => {
+                            if let Some(renderer) = &mut app.notes_display {
+                                renderer.update_from_rope(&app.notes_rope);
+                            }
+                        }
+                        crate::ActivePane::Right => {
+                            if let Some(renderer) = &mut app.edit_display {
+                                renderer.update_from_rope(&app.extraction_rope);
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.update_from_rope(&app.extraction_rope);
+                    }
                 }
             } else {
                 // Debug log when click is outside text area

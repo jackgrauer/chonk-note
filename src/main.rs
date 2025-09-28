@@ -81,12 +81,15 @@ pub struct App {
     pub extraction_selection: Selection,  // Right pane selection state
     pub notes_selection: Selection,    // Left pane (notes) selection state
     pub history: History,              // Undo/redo (currently only single-pane)
-    pub block_selection: Option<BlockSelection>,  // Block selection (needs dual-pane support)
+    pub extraction_block_selection: Option<BlockSelection>,  // Block selection for extraction pane
+    pub notes_block_selection: Option<BlockSelection>,  // Block selection for notes pane
     pub active_pane: ActivePane,       // Which pane has focus
 
     // Notes list for sidebar
     pub notes_list: Vec<notes_database::Note>,
     pub selected_note_index: usize,    // Currently selected note in the list
+    pub notes_list_scroll: usize,      // Scroll offset for notes list
+    pub unsaved_changes: bool,          // Track if current note has unsaved changes
 
     // Rendering
     pub edit_display: Option<EditPanelRenderer>,
@@ -137,7 +140,8 @@ impl App {
             extraction_selection: Selection::point(0),
             notes_selection: Selection::point(0),
             history: History::default(),             // Empty history
-            block_selection: None,                   // No block selection initially
+            extraction_block_selection: None,        // No block selection initially
+            notes_block_selection: None,             // No block selection initially
             active_pane: ActivePane::Right,          // Start with extraction pane active
 
             // Rendering
@@ -176,6 +180,8 @@ impl App {
             // Notes list
             notes_list: Vec::new(),
             selected_note_index: 0,
+            notes_list_scroll: 0,
+            unsaved_changes: false,
         })
     }
 
@@ -212,7 +218,8 @@ impl App {
             extraction_selection: Selection::point(0),
             notes_selection,
             history: History::default(),
-            block_selection: None,
+            extraction_block_selection: None,
+            notes_block_selection: None,
             active_pane: ActivePane::Left,  // Notes mode starts with left pane active
 
             // Rendering
@@ -246,6 +253,8 @@ impl App {
             // Notes list
             notes_list,
             selected_note_index: 0,
+            notes_list_scroll: 0,
+            unsaved_changes: false,
         })
     }
 
@@ -811,27 +820,37 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         let display_width = width;
         let display_height = height;
 
-        // Render notes with standard selection
-        let (sel_start, sel_end) = if app.notes_selection.primary().len() > 0 && show_cursor {
-            let range = app.notes_selection.primary();
-            let start_line = app.notes_rope.char_to_line(range.from());
-            let end_line = app.notes_rope.char_to_line(range.to());
-            let start_line_char = app.notes_rope.line_to_char(start_line);
-            let end_line_char = app.notes_rope.line_to_char(end_line);
-            (
-                Some((range.from() - start_line_char, start_line)),
-                Some((range.to() - end_line_char, end_line))
-            )
+        // Render notes with block selection support
+        if app.notes_block_selection.is_some() {
+            renderer.render_with_block_selection(
+                content_x, content_y, display_width, display_height,
+                viewport_relative_cursor,
+                app.notes_block_selection.as_ref(),
+                show_cursor
+            )?;
         } else {
-            (None, None)
-        };
+            let (sel_start, sel_end) = if app.notes_selection.primary().len() > 0 && show_cursor {
+                let range = app.notes_selection.primary();
+                let start_line = app.notes_rope.char_to_line(range.from());
+                let end_line = app.notes_rope.char_to_line(range.to());
+                let start_line_char = app.notes_rope.line_to_char(start_line);
+                let end_line_char = app.notes_rope.line_to_char(end_line);
+                (
+                    Some((range.from() - start_line_char, start_line)),
+                    Some((range.to() - end_line_char, end_line))
+                )
+            } else {
+                (None, None)
+            };
 
-        renderer.render_with_cursor_and_selection(
-            content_x, content_y, display_width, display_height,
-            viewport_relative_cursor,
-            sel_start,
-            sel_end
-        )?;
+            renderer.render_with_cursor_and_selection(
+                content_x, content_y, display_width, display_height,
+                viewport_relative_cursor,
+                sel_start,
+                sel_end,
+                show_cursor
+            )?;
+        }
     }
 
     Ok(())
@@ -864,11 +883,12 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         // Always use normal rendering - text zoom doesn't work well in terminals
         // The zoom controls remain but just show the status without changing rendering
-        if app.block_selection.is_some() {
+        if app.extraction_block_selection.is_some() {
             renderer.render_with_block_selection(
                 content_x, content_y, display_width, display_height,
                 viewport_relative_cursor,
-                app.block_selection.as_ref()
+                app.extraction_block_selection.as_ref(),
+                show_cursor
             )?;
         } else {
             let (sel_start, sel_end) = if app.extraction_selection.primary().len() > 0 && show_cursor {
@@ -889,7 +909,8 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
                 content_x, content_y, display_width, display_height,
                 viewport_relative_cursor,
                 sel_start,
-                sel_end
+                sel_end,
+                show_cursor
             )?;
         }
 
@@ -910,33 +931,41 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
     } else {
         // Display notes as numbers with scrolling support
         let visible_count = (height - 2) as usize;
-        let start_index = if app.selected_note_index >= visible_count {
-            app.selected_note_index - visible_count + 1
-        } else {
-            0
-        };
+
+        // Use the scroll offset from app
+        let start_index = app.notes_list_scroll;
         let end_index = (start_index + visible_count).min(app.notes_list.len());
 
         for (display_pos, note_idx) in (start_index..end_index).enumerate() {
             let is_selected = note_idx == app.selected_note_index;
 
-            // Highlight selected note
+            // Highlight selected note with improved colors
             let (bg_color, text_color) = if is_selected {
-                ("\x1b[48;2;40;60;90m", "\x1b[38;2;200;220;255m")
+                ("\x1b[48;2;50;100;150m", "\x1b[38;2;255;255;255m")
             } else {
-                ("", "\x1b[38;2;120;120;120m")
+                ("", "\x1b[38;2;180;180;180m")
             };
 
             // Show note number (1-indexed for user friendliness)
             let note_num = note_idx + 1;
 
-            // Add a carrot indicator for selected note
-            let indicator = if is_selected { ">" } else { " " };
+            // Add indicator: > for selected
+            let indicator = if is_selected { "> " } else { "  " };
 
             // Clear the line and draw the indicator and note number
             print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
                 y + display_pos as u16 + 1, x,
                 bg_color, text_color, indicator, note_num);
+        }
+
+        // Show scroll indicators if needed
+        if start_index > 0 {
+            // Show up arrow at top
+            print!("\x1b[{};{}H\x1b[38;2;0;200;200m↑\x1b[0m", y, x + 2);
+        }
+        if end_index < app.notes_list.len() {
+            // Show down arrow at bottom
+            print!("\x1b[{};{}H\x1b[38;2;0;200;200m↓\x1b[0m", y + height - 1, x + 2);
         }
     }
 

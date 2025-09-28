@@ -28,6 +28,17 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Ctrl+N - Create new note (in notes mode)
                 // Always works with the notes pane (left pane) regardless of which is active
                 (KeyCode::Char('n'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                    // First, save the current note's changes back to the list
+                    if let Some(ref current_note) = notes.current_note {
+                        // Find the current note in the list and update it
+                        for note in app.notes_list.iter_mut() {
+                            if note.id == current_note.id {
+                                // Update the note's content with the current editor content
+                                note.content = app.notes_rope.to_string();
+                                break;
+                            }
+                        }
+                    }
 
                     if let Some(msg) = notes.handle_command(&mut app.notes_rope, &mut app.notes_selection, "new")? {
                         app.status_message = msg;
@@ -79,6 +90,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Ctrl+O - Open selected note
                 (KeyCode::Char('o'), mods) if mods.contains(KeyModifiers::CONTROL) => {
                     if !app.notes_list.is_empty() && app.selected_note_index < app.notes_list.len() {
+                        // First, save the current note's changes back to the list
+                        if let Some(ref current_note) = notes.current_note {
+                            // Find the current note in the list and update it
+                            for note in app.notes_list.iter_mut() {
+                                if note.id == current_note.id {
+                                    // Update the note's content with the current editor content
+                                    note.content = app.notes_rope.to_string();
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Now load the selected note
                         let selected_note = app.notes_list[app.selected_note_index].clone();
 
                         // Load the note content into the editor
@@ -369,7 +393,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.extraction_selection = Selection::single(0, doc_len);
 
                 // Clear block selection since we're doing regular selection
-                app.block_selection = None;
+                if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
                 app.needs_redraw = true;
                 app.status_message = "Selected all".to_string();
@@ -419,10 +450,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     let new_pos = sel_for_deletion.primary().from();
                     *selection = Selection::point(new_pos);
 
-                    // Block selection not supported in dual-pane mode yet
-
-                    // Note: History would need separate tracking per rope
-                    // For now, skip history in Notes mode
+                    app.status_message = format!("Cut {} characters", text.len());
+                    app.needs_redraw = true;
 
                 } else {
                     // PDF mode logic - use extraction_rope
@@ -433,14 +462,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     };
 
                     // Get the selection to use for deletion (block or regular)
-                    let selection = if let Some(block_sel) = &app.block_selection {
+                    let selection = if let Some(block_sel) = &app.extraction_block_selection {
                         block_sel.to_selection(&app.extraction_rope)
                     } else {
                         app.extraction_selection.clone()
                     };
 
                     // Delete the selected text using Transaction
-                    let transaction = if let Some(block_sel) = &app.block_selection {
+                    let transaction = if let Some(block_sel) = &app.extraction_block_selection {
                         let selection = block_sel.to_selection(&app.extraction_rope);
                         Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
                             let start = range.from();
@@ -470,7 +499,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.extraction_selection = Selection::point(new_pos);
 
                     // Clear any block selection
-                    app.block_selection = None;
+                    if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
                     // Add to history for undo support
                     app.history.commit_revision(&transaction, &state);
@@ -540,10 +576,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     let paste_end = sel_for_paste.primary().from() + text.len();
                     *selection = Selection::point(paste_end);
 
-                    // Block selection not supported in dual-pane mode yet
-
-                    // Note: History would need separate tracking per rope
-                    // For now, skip history in Notes mode
+                    app.status_message = format!("Pasted {} characters", text.len());
+                    app.needs_redraw = true;
 
                 } else {
                     // PDF mode logic - use extraction_rope
@@ -554,7 +588,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     };
 
                     // Get the selection to use for paste (block or regular)
-                    let selection = if let Some(block_sel) = &app.block_selection {
+                    let selection = if let Some(block_sel) = &app.extraction_block_selection {
                         block_sel.to_selection(&app.extraction_rope)
                     } else {
                         app.extraction_selection.clone()
@@ -573,7 +607,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.extraction_selection = Selection::point(paste_end);
 
                     // Clear any block selection
-                    app.block_selection = None;
+                    if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
                     // Add to history
                     app.history.commit_revision(&transaction, &state);
@@ -583,6 +624,247 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.needs_redraw = true;
                 app.status_message = "Pasted".to_string();
 
+            }
+        }
+
+        // Note selection shortcuts - Ctrl+1/2/3/4
+        (KeyCode::Char('1'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor && app.notes_list.len() > 0 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index = 0;
+                let selected_note = app.notes_list[0].clone();
+
+                // Load the note content
+                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                app.notes_selection = helix_core::Selection::point(0);
+                app.notes_block_selection = None;
+
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    notes_mode.current_note = Some(selected_note.clone());
+                }
+
+                // Update the display
+                if let Some(renderer) = &mut app.notes_display {
+                    renderer.update_from_rope(&app.notes_rope);
+                }
+
+                app.status_message = format!("Selected note 1: {}", selected_note.title);
+                app.needs_redraw = true;
+            }
+        }
+
+        (KeyCode::Char('2'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor && app.notes_list.len() > 1 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index = 1;
+                let selected_note = app.notes_list[1].clone();
+
+                // Load the note content
+                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                app.notes_selection = helix_core::Selection::point(0);
+                app.notes_block_selection = None;
+
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    notes_mode.current_note = Some(selected_note.clone());
+                }
+
+                // Update the display
+                if let Some(renderer) = &mut app.notes_display {
+                    renderer.update_from_rope(&app.notes_rope);
+                }
+
+                app.status_message = format!("Selected note 2: {}", selected_note.title);
+                app.needs_redraw = true;
+            }
+        }
+
+        (KeyCode::Char('3'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor && app.notes_list.len() > 2 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index = 2;
+                let selected_note = app.notes_list[2].clone();
+
+                // Load the note content
+                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                app.notes_selection = helix_core::Selection::point(0);
+                app.notes_block_selection = None;
+
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    notes_mode.current_note = Some(selected_note.clone());
+                }
+
+                // Update the display
+                if let Some(renderer) = &mut app.notes_display {
+                    renderer.update_from_rope(&app.notes_rope);
+                }
+
+                app.status_message = format!("Selected note 3: {}", selected_note.title);
+                app.needs_redraw = true;
+            }
+        }
+
+        (KeyCode::Char('4'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor && app.notes_list.len() > 3 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index = 3;
+                let selected_note = app.notes_list[3].clone();
+
+                // Load the note content
+                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                app.notes_selection = helix_core::Selection::point(0);
+                app.notes_block_selection = None;
+
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    notes_mode.current_note = Some(selected_note.clone());
+                }
+
+                // Update the display
+                if let Some(renderer) = &mut app.notes_display {
+                    renderer.update_from_rope(&app.notes_rope);
+                }
+
+                app.status_message = format!("Selected note 4: {}", selected_note.title);
+                app.needs_redraw = true;
+            }
+        }
+
+        // Ctrl+N - New note
+        (KeyCode::Char('n'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // Save current note before creating new
+                save_current_note_changes(app);
+
+                // Create a new note in the database
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    match notes_mode.db.create_note(
+                        format!("New Note {}", chrono::Utc::now().format("%Y-%m-%d %H:%M")),
+                        String::new(),
+                        vec![]
+                    ) {
+                        Ok(new_note) => {
+                            // Add to list and select it
+                            app.notes_list.insert(0, new_note.clone());
+                            app.selected_note_index = 0;
+
+                            // Load the new note
+                            app.notes_rope = helix_core::Rope::from("");
+                            app.notes_selection = helix_core::Selection::point(0);
+                            app.notes_block_selection = None;
+                            notes_mode.current_note = Some(new_note.clone());
+
+                            // Update display
+                            if let Some(renderer) = &mut app.notes_display {
+                                renderer.update_from_rope(&app.notes_rope);
+                            }
+
+                            app.status_message = format!("Created: {}", new_note.title);
+                            app.needs_redraw = true;
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Failed to create note: {}", e);
+                            app.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ctrl+D - Delete current note
+        (KeyCode::Char('d'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // Store note info before mutable borrow
+                let note_to_delete = if let Some(ref notes_mode) = app.notes_mode {
+                    notes_mode.current_note.clone()
+                } else {
+                    None
+                };
+
+                if let Some(current_note) = note_to_delete {
+                    // Delete from database
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        match notes_mode.db.delete_note(&current_note.id) {
+                            Ok(_) => {
+                                // Remove from list
+                                app.notes_list.retain(|n| n.id != current_note.id);
+
+                                // Select next note or clear if none
+                                if !app.notes_list.is_empty() {
+                                    app.selected_note_index = app.selected_note_index.min(app.notes_list.len() - 1);
+                                    let next_note = app.notes_list[app.selected_note_index].clone();
+
+                                    // Load the next note
+                                    app.notes_rope = helix_core::Rope::from(next_note.content.as_str());
+                                    app.notes_selection = helix_core::Selection::point(0);
+                                    app.notes_block_selection = None;
+                                    notes_mode.current_note = Some(next_note);
+
+                                    if let Some(renderer) = &mut app.notes_display {
+                                        renderer.update_from_rope(&app.notes_rope);
+                                    }
+                                } else {
+                                    // No notes left
+                                    app.notes_rope = helix_core::Rope::from("");
+                                    app.notes_selection = helix_core::Selection::point(0);
+                                    app.notes_block_selection = None;
+                                    notes_mode.current_note = None;
+
+                                    if let Some(renderer) = &mut app.notes_display {
+                                        renderer.update_from_rope(&app.notes_rope);
+                                    }
+                                }
+
+                                app.status_message = format!("Deleted: {}", current_note.title);
+                                app.needs_redraw = true;
+                            }
+                            Err(e) => {
+                                app.status_message = format!("Failed to delete note: {}", e);
+                                app.needs_redraw = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Removed Ctrl+S - notes now auto-save on every change
+
+        // Ctrl+R - Rename current note
+        (KeyCode::Char('r'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            if app.app_mode == crate::AppMode::NotesEditor {
+                if let Some(ref notes_mode) = app.notes_mode {
+                    if let Some(ref current_note) = notes_mode.current_note {
+                        // For now, generate a new name with timestamp
+                        // In a full implementation, you'd prompt for a new name
+                        let new_title = format!("Renamed Note {}", chrono::Utc::now().format("%H:%M:%S"));
+
+                        // Update in the list
+                        for note in app.notes_list.iter_mut() {
+                            if note.id == current_note.id {
+                                note.title = new_title.clone();
+                                break;
+                            }
+                        }
+
+                        // Update in database
+                        if let Some(ref mut notes_mode) = app.notes_mode {
+                            if let Some(ref mut current) = notes_mode.current_note {
+                                current.title = new_title.clone();
+                                // The actual database update happens on save
+                            }
+                        }
+
+                        app.status_message = format!("Renamed to: {}", new_title);
+                        app.needs_redraw = true;
+                    }
+                }
             }
         }
 
@@ -618,6 +900,75 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('e'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
             app.toggle_notes_mode()?;
             return Ok(true);
+        }
+
+        // Shift+Up/Down - Navigate notes list
+        (KeyCode::Up, mods) if mods.contains(KeyModifiers::SHIFT) && app.app_mode == crate::AppMode::NotesEditor => {
+            if app.selected_note_index > 0 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index -= 1;
+
+                // Adjust scroll if needed
+                if app.selected_note_index < app.notes_list_scroll {
+                    app.notes_list_scroll = app.selected_note_index;
+                }
+
+                // Load the selected note
+                if app.selected_note_index < app.notes_list.len() {
+                    let selected_note = app.notes_list[app.selected_note_index].clone();
+                    app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                    app.notes_selection = helix_core::Selection::point(0);
+                    app.notes_block_selection = None;
+
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        notes_mode.current_note = Some(selected_note.clone());
+                    }
+
+                    if let Some(renderer) = &mut app.notes_display {
+                        renderer.update_from_rope(&app.notes_rope);
+                    }
+
+                    app.status_message = format!("Selected: {}", selected_note.title);
+                    app.unsaved_changes = false;
+                }
+
+                app.needs_redraw = true;
+            }
+        }
+
+        (KeyCode::Down, mods) if mods.contains(KeyModifiers::SHIFT) && app.app_mode == crate::AppMode::NotesEditor => {
+            if app.selected_note_index < app.notes_list.len() - 1 {
+                // Save current note before switching
+                save_current_note_changes(app);
+
+                app.selected_note_index += 1;
+
+                // Adjust scroll if needed (assuming we show 20 notes at a time)
+                let visible_count = 20;
+                if app.selected_note_index >= app.notes_list_scroll + visible_count {
+                    app.notes_list_scroll = app.selected_note_index - visible_count + 1;
+                }
+
+                // Load the selected note
+                let selected_note = app.notes_list[app.selected_note_index].clone();
+                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                app.notes_selection = helix_core::Selection::point(0);
+                app.notes_block_selection = None;
+
+                if let Some(ref mut notes_mode) = app.notes_mode {
+                    notes_mode.current_note = Some(selected_note.clone());
+                }
+
+                if let Some(renderer) = &mut app.notes_display {
+                    renderer.update_from_rope(&app.notes_rope);
+                }
+
+                app.status_message = format!("Selected: {}", selected_note.title);
+                app.unsaved_changes = false;
+                app.needs_redraw = true;
+            }
         }
 
         // Previous page - Using PageUp
@@ -677,7 +1028,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             };
 
             // Clear any block selection when using arrow keys
-            app.block_selection = None;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
             let pos = selection.primary().head;
             let line = rope.char_to_line(pos);
@@ -708,7 +1066,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         (KeyCode::Down, mods) => {
             // Clear any block selection when using arrow keys
-            app.block_selection = None;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
             let pos = app.extraction_selection.primary().head;
             let line = app.extraction_rope.char_to_line(pos);
@@ -741,7 +1106,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         (KeyCode::Left, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
             // Clear any block selection when using arrow keys
-            app.block_selection = None;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
             let pos = app.extraction_selection.primary().head;
             let line = app.extraction_rope.char_to_line(pos);
@@ -771,7 +1143,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         (KeyCode::Right, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
             // Clear any block selection when using arrow keys
-            app.block_selection = None;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
 
             let pos = app.extraction_selection.primary().head;
             let line = app.extraction_rope.char_to_line(pos);
@@ -820,7 +1199,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             };
 
             // If on empty space with no selection, just move left instead of deleting
-            if is_on_space && app.extraction_selection.primary().len() == 0 && app.block_selection.is_none() {
+            if is_on_space && app.extraction_selection.primary().len() == 0 && app.extraction_block_selection.is_none() {
                 // Just move cursor left like pressing left arrow
                 if pos > 0 {
                     let new_pos = pos - 1;
@@ -842,7 +1221,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             };
 
             // Get the selection to use (block or regular)
-            let (transaction, clear_block) = if let Some(block_sel) = &app.block_selection {
+            let (transaction, clear_block) = if let Some(block_sel) = &app.extraction_block_selection {
                 // Block selection - replace with spaces to preserve layout
                 let selection = block_sel.to_selection(&app.extraction_rope);
 
@@ -889,7 +1268,14 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 // Clear block selection if we just deleted it
                 if clear_block {
-                    app.block_selection = None;
+                    if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
                 }
 
                 // Commit to history for undo/redo
@@ -969,11 +1355,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     // Map selection through changes (CRITICAL!)
                     *selection = selection.clone().map(transaction.changes());
 
+                    // Auto-save when editing notes
+                    if app.active_pane == crate::ActivePane::Left {
+                        // Update in-memory note
+                        save_current_note_changes(app);
+
+                        // Save to database immediately
+                        if let Some(ref notes_mode) = app.notes_mode {
+                            if let Some(ref current_note) = notes_mode.current_note {
+                                let content = app.notes_rope.to_string();
+                                if let Some(ref notes_mode) = app.notes_mode {
+                                    let _ = notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
+                                }
+                            }
+                        }
+                    }
+
                     // Note: History would need separate tracking per rope
                     // For now, skip history in Notes mode
 
                     // Clear virtual column when typing
                 }
+                app.needs_redraw = true;
             } else {
                 // Original PDF mode logic
                 // Save state before transaction for history
@@ -1013,17 +1416,33 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(true)
 }
 
+// Helper to save current note changes back to the list
+fn save_current_note_changes(app: &mut App) {
+    if let Some(ref notes) = app.notes_mode {
+        if let Some(ref current_note) = notes.current_note {
+            // Find the current note in the list and update it
+            for note in app.notes_list.iter_mut() {
+                if note.id == current_note.id {
+                    // Update the note's content with the current editor content
+                    note.content = app.notes_rope.to_string();
+                    break;
+                }
+            }
+        }
+    }
+}
+
 // HELIX-CORE: Extract selection from rope (handles both regular and block selection)
 fn extract_selection_from_rope(app: &App) -> String {
     // In Notes mode, check which pane is active and use the appropriate rope/selection
     let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
         match app.active_pane {
-            crate::ActivePane::Left => (&app.notes_rope, &app.notes_selection, &None),
-            crate::ActivePane::Right => (&app.extraction_rope, &app.extraction_selection, &None),
+            crate::ActivePane::Left => (&app.notes_rope, &app.notes_selection, &app.notes_block_selection),
+            crate::ActivePane::Right => (&app.extraction_rope, &app.extraction_selection, &app.extraction_block_selection),
         }
     } else {
         // In PDF mode, always use extraction_rope (right pane shows extraction text)
-        (&app.extraction_rope, &app.extraction_selection, &app.block_selection)
+        (&app.extraction_rope, &app.extraction_selection, &app.extraction_block_selection)
     };
 
     // First check if we have block selection
