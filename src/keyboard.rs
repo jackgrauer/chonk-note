@@ -8,6 +8,16 @@ use std::io::Write;
 // HELIX-CORE INTEGRATION! Professional text editing
 use helix_core::{Transaction, Selection, history::State, movement};
 
+// Helper function to update notes rope and sync the grid
+fn update_notes_with_content(app: &mut App, content: &str) {
+    app.notes_rope = helix_core::Rope::from(content);
+    app.notes_selection = helix_core::Selection::point(0);
+    app.notes_block_selection = None;
+
+    // CRITICAL: Update the grid with the new rope so cursor can move freely!
+    app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+    app.notes_cursor = crate::grid_cursor::GridCursor::new();
+}
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     // Try dual-pane handler first for Notes mode
@@ -106,12 +116,17 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         // Now load the selected note
                         let selected_note = app.notes_list[app.selected_note_index].clone();
 
-                        // Load the note content into the editor
-                        app.notes_rope = helix_core::Rope::from_str(&selected_note.content);
-                        app.notes_selection = Selection::point(0);
-
                         // Update the notes mode with the current note
                         notes.current_note = Some(selected_note.clone());
+
+                        // Store note for later use outside the borrow
+                        app.needs_redraw = true;
+                    }
+
+                    // Load outside the notes_mode borrow
+                    if app.selected_note_index < app.notes_list.len() {
+                        let selected_note = app.notes_list[app.selected_note_index].clone();
+                        update_notes_with_content(app, &selected_note.content);
 
                         // Update the display
                         if let Some(renderer) = &mut app.notes_display {
@@ -121,7 +136,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         // Switch focus to the notes editor pane
                         app.switch_active_pane(crate::ActivePane::Left);
                         app.status_message = format!("Opened: {}", selected_note.title);
-                        app.needs_redraw = true;
                     }
                     return Ok(true);
                 }
@@ -638,9 +652,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let selected_note = app.notes_list[0].clone();
 
                 // Load the note content
-                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                app.notes_selection = helix_core::Selection::point(0);
-                app.notes_block_selection = None;
+                update_notes_with_content(app, &selected_note.content);
 
                 if let Some(ref mut notes_mode) = app.notes_mode {
                     notes_mode.current_note = Some(selected_note.clone());
@@ -665,9 +677,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let selected_note = app.notes_list[1].clone();
 
                 // Load the note content
-                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                app.notes_selection = helix_core::Selection::point(0);
-                app.notes_block_selection = None;
+                update_notes_with_content(app, &selected_note.content);
 
                 if let Some(ref mut notes_mode) = app.notes_mode {
                     notes_mode.current_note = Some(selected_note.clone());
@@ -692,9 +702,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let selected_note = app.notes_list[2].clone();
 
                 // Load the note content
-                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                app.notes_selection = helix_core::Selection::point(0);
-                app.notes_block_selection = None;
+                update_notes_with_content(app, &selected_note.content);
 
                 if let Some(ref mut notes_mode) = app.notes_mode {
                     notes_mode.current_note = Some(selected_note.clone());
@@ -719,9 +727,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let selected_note = app.notes_list[3].clone();
 
                 // Load the note content
-                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                app.notes_selection = helix_core::Selection::point(0);
-                app.notes_block_selection = None;
+                update_notes_with_content(app, &selected_note.content);
 
                 if let Some(ref mut notes_mode) = app.notes_mode {
                     notes_mode.current_note = Some(selected_note.clone());
@@ -755,16 +761,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                             app.notes_list.insert(0, new_note.clone());
                             app.selected_note_index = 0;
 
-                            // Load the new note
-                            app.notes_rope = helix_core::Rope::from("");
-                            app.notes_selection = helix_core::Selection::point(0);
-                            app.notes_block_selection = None;
+                            // Store current note before dropping the borrow
                             notes_mode.current_note = Some(new_note.clone());
-
-                            // Update display
-                            if let Some(renderer) = &mut app.notes_display {
-                                renderer.update_from_rope(&app.notes_rope);
-                            }
 
                             app.status_message = format!("Created: {}", new_note.title);
                             app.needs_redraw = true;
@@ -773,6 +771,16 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                             app.status_message = format!("Failed to create note: {}", e);
                             app.needs_redraw = true;
                         }
+                    }
+                }
+
+                // Load the new empty note content outside the borrow
+                if app.selected_note_index == 0 && !app.notes_list.is_empty() {
+                    update_notes_with_content(app, "");
+
+                    // Update display
+                    if let Some(renderer) = &mut app.notes_display {
+                        renderer.update_from_rope(&app.notes_rope);
                     }
                 }
             }
@@ -790,45 +798,51 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 if let Some(current_note) = note_to_delete {
                     // Delete from database
-                    if let Some(ref mut notes_mode) = app.notes_mode {
-                        match notes_mode.db.delete_note(&current_note.id) {
-                            Ok(_) => {
-                                // Remove from list
-                                app.notes_list.retain(|n| n.id != current_note.id);
+                    let delete_result = if let Some(ref notes_mode) = app.notes_mode {
+                        notes_mode.db.delete_note(&current_note.id)
+                    } else {
+                        Ok(())
+                    };
 
-                                // Select next note or clear if none
-                                if !app.notes_list.is_empty() {
-                                    app.selected_note_index = app.selected_note_index.min(app.notes_list.len() - 1);
-                                    let next_note = app.notes_list[app.selected_note_index].clone();
+                    match delete_result {
+                        Ok(_) => {
+                            // Remove from list
+                            app.notes_list.retain(|n| n.id != current_note.id);
 
-                                    // Load the next note
-                                    app.notes_rope = helix_core::Rope::from(next_note.content.as_str());
-                                    app.notes_selection = helix_core::Selection::point(0);
-                                    app.notes_block_selection = None;
+                            // Select next note or clear if none
+                            if !app.notes_list.is_empty() {
+                                app.selected_note_index = app.selected_note_index.min(app.notes_list.len() - 1);
+                                let next_note = app.notes_list[app.selected_note_index].clone();
+
+                                // Load the next note
+                                update_notes_with_content(app, &next_note.content);
+
+                                if let Some(ref mut notes_mode) = app.notes_mode {
                                     notes_mode.current_note = Some(next_note);
-
-                                    if let Some(renderer) = &mut app.notes_display {
-                                        renderer.update_from_rope(&app.notes_rope);
-                                    }
-                                } else {
-                                    // No notes left
-                                    app.notes_rope = helix_core::Rope::from("");
-                                    app.notes_selection = helix_core::Selection::point(0);
-                                    app.notes_block_selection = None;
-                                    notes_mode.current_note = None;
-
-                                    if let Some(renderer) = &mut app.notes_display {
-                                        renderer.update_from_rope(&app.notes_rope);
-                                    }
                                 }
 
-                                app.status_message = format!("Deleted: {}", current_note.title);
-                                app.needs_redraw = true;
+                                if let Some(renderer) = &mut app.notes_display {
+                                    renderer.update_from_rope(&app.notes_rope);
+                                }
+                            } else {
+                                // No notes left
+                                update_notes_with_content(app, "");
+
+                                if let Some(ref mut notes_mode) = app.notes_mode {
+                                    notes_mode.current_note = None;
+                                }
+
+                                if let Some(renderer) = &mut app.notes_display {
+                                    renderer.update_from_rope(&app.notes_rope);
+                                }
                             }
-                            Err(e) => {
-                                app.status_message = format!("Failed to delete note: {}", e);
-                                app.needs_redraw = true;
-                            }
+
+                            app.status_message = format!("Deleted: {}", current_note.title);
+                            app.needs_redraw = true;
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Failed to delete note: {}", e);
+                            app.needs_redraw = true;
                         }
                     }
                 }
@@ -919,9 +933,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Load the selected note
                 if app.selected_note_index < app.notes_list.len() {
                     let selected_note = app.notes_list[app.selected_note_index].clone();
-                    app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                    app.notes_selection = helix_core::Selection::point(0);
-                    app.notes_block_selection = None;
+                    update_notes_with_content(app, &selected_note.content);
 
                     if let Some(ref mut notes_mode) = app.notes_mode {
                         notes_mode.current_note = Some(selected_note.clone());
@@ -954,9 +966,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
                 // Load the selected note
                 let selected_note = app.notes_list[app.selected_note_index].clone();
-                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                app.notes_selection = helix_core::Selection::point(0);
-                app.notes_block_selection = None;
+                update_notes_with_content(app, &selected_note.content);
 
                 if let Some(ref mut notes_mode) = app.notes_mode {
                     notes_mode.current_note = Some(selected_note.clone());

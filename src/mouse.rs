@@ -361,6 +361,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         // Load the note content
                         app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
                         app.notes_selection = helix_core::Selection::point(0);
+
+                        // Update the grid with the new rope!
+                        app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                        app.notes_cursor = crate::grid_cursor::GridCursor::new();
+
                         notes_mode.current_note = Some(selected_note.clone());
 
                         // Update the display

@@ -675,7 +675,7 @@ async fn run_app(app: &mut App) -> Result<()> {
             stdout.flush()?;
 
             // Save cursor position
-            print!("\x1b[s]");
+            print!("\x1b[s");
 
             // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
@@ -708,7 +708,7 @@ async fn run_app(app: &mut App) -> Result<()> {
             }
 
             // Restore cursor position
-            print!("\x1b[u]");
+            print!("\x1b[u");
             stdout.flush()?;
 
             // Status bar disabled to prevent debug flood
