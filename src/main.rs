@@ -939,11 +939,11 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
         for (display_pos, note_idx) in (start_index..end_index).enumerate() {
             let is_selected = note_idx == app.selected_note_index;
 
-            // Highlight selected note with improved colors
+            // Highlight selected note with Material Design colors
             let (bg_color, text_color) = if is_selected {
-                ("\x1b[48;2;50;100;150m", "\x1b[38;2;255;255;255m")
+                ("\x1b[48;2;255;193;7m", "\x1b[38;2;0;0;0m")  // Material amber with black text
             } else {
-                ("", "\x1b[38;2;180;180;180m")
+                ("", "\x1b[38;2;189;189;189m")  // Material grey
             };
 
             // Show note number (1-indexed for user friendliness)
@@ -960,12 +960,12 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
 
         // Show scroll indicators if needed
         if start_index > 0 {
-            // Show up arrow at top
-            print!("\x1b[{};{}H\x1b[38;2;0;200;200m↑\x1b[0m", y, x + 2);
+            // Show up arrow at top (Material green)
+            print!("\x1b[{};{}H\x1b[38;2;76;175;80m↑\x1b[0m", y, x + 2);
         }
         if end_index < app.notes_list.len() {
-            // Show down arrow at bottom
-            print!("\x1b[{};{}H\x1b[38;2;0;200;200m↓\x1b[0m", y + height - 1, x + 2);
+            // Show down arrow at bottom (Material green)
+            print!("\x1b[{};{}H\x1b[38;2;76;175;80m↓\x1b[0m", y + height - 1, x + 2);
         }
     }
 

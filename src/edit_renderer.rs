@@ -262,8 +262,8 @@ impl EditPanelRenderer {
                     });
                     
                     if is_highlighted {
-                        // ANSI: Selection highlighting (soft blue background, bright text)
-                        print!("\x1b[48;2;50;100;150m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
+                        // ANSI: Selection highlighting (Material indigo background, bright text)
+                        print!("\x1b[48;2;63;81;181m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
                     } else {
                         write!(stdout, "{}", row[x])?;
                     }
@@ -397,11 +397,11 @@ impl EditPanelRenderer {
                     let ch = row.get(x).copied().unwrap_or(' ');
 
                     if is_cursor && show_cursor {
-                        // ANSI: Bright cyan cursor for better visibility
-                        print!("\x1b[48;2;0;200;200m\x1b[38;2;0;0;0m{}\x1b[m", ch);
+                        // ANSI: Material teal cursor for better visibility
+                        print!("\x1b[48;2;0;188;212m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_in_block {
-                        // ANSI: Block selection highlighting (soft purple)
-                        print!("\x1b[48;2;100;80;150m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // ANSI: Block selection highlighting (Material purple)
+                        print!("\x1b[48;2;156;39;176m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -417,8 +417,8 @@ impl EditPanelRenderer {
                     for offset in 0..remaining_space {
                         let virtual_x = end_col + offset;
                         if cursor.1 == buffer_y && cursor.0 == virtual_x && show_cursor {
-                            // Render cursor in virtual space (bright cyan)
-                            print!("\x1b[48;2;0;200;200m \x1b[m");
+                            // Render cursor in virtual space (Material teal)
+                            print!("\x1b[48;2;0;188;212m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -494,11 +494,11 @@ impl EditPanelRenderer {
                     let ch = row.get(x).copied().unwrap_or(' ');
                     
                     if is_cursor && show_cursor {
-                        // ANSI: Bright cyan cursor for better visibility
-                        print!("\x1b[48;2;0;200;200m\x1b[38;2;0;0;0m{}\x1b[m", ch);
+                        // ANSI: Material teal cursor for better visibility
+                        print!("\x1b[48;2;0;188;212m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_selected {
-                        // ANSI: Selection highlighting (soft blue background)
-                        print!("\x1b[48;2;50;100;150m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // ANSI: Selection highlighting (Material indigo background)
+                        print!("\x1b[48;2;63;81;181m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -513,8 +513,8 @@ impl EditPanelRenderer {
                     for offset in 0..remaining_space {
                         let virtual_x = end_col + offset;
                         if cursor.1 == buffer_y && cursor.0 == virtual_x && show_cursor {
-                            // Render cursor in virtual space (bright cyan)
-                            print!("\x1b[48;2;0;200;200m \x1b[m");
+                            // Render cursor in virtual space (Material teal)
+                            print!("\x1b[48;2;0;188;212m \x1b[m");
                         } else {
                             write!(stdout, " ")?;
                         }
@@ -524,8 +524,8 @@ impl EditPanelRenderer {
                 // Empty line - check if cursor is here
                 for x in 0..render_width as usize {
                     if cursor.1 == buffer_y && cursor.0 == x && show_cursor {
-                        // Render cursor on empty line (bright cyan)
-                        print!("\x1b[48;2;0;200;200m \x1b[m");
+                        // Render cursor on empty line (Material teal)
+                        print!("\x1b[48;2;0;188;212m \x1b[m");
                     } else {
                         write!(stdout, " ")?;
                     }
