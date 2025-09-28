@@ -1,5 +1,6 @@
 // MINIMAL KEYBOARD HANDLING
 use crate::App;
+use crate::grid_cursor::GridCursor;
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::Write;
@@ -1015,18 +1016,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
 
-        // BASIC MOVEMENT - Arrow keys (no acceleration)
+        // BASIC MOVEMENT - Arrow keys (grid-based!)
         (KeyCode::Up, mods) => {
-            // Get the correct rope and selection based on mode and active pane
-            let (rope, selection) = if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => (&mut app.notes_rope, &mut app.notes_selection),
-                    crate::ActivePane::Right => (&mut app.extraction_rope, &mut app.extraction_selection),
-                }
-            } else {
-                (&mut app.extraction_rope, &mut app.extraction_selection)
-            };
-
             // Clear any block selection when using arrow keys
             if app.app_mode == crate::AppMode::NotesEditor {
                 match app.active_pane {
@@ -1037,29 +1028,35 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.extraction_block_selection = None;
             }
 
-            let pos = selection.primary().head;
-            let line = rope.char_to_line(pos);
-            let lines_to_move = 1.min(line);  // Don't go past start
+            // Get the correct grid cursor based on mode and active pane
+            let (grid, cursor, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection),
+                }
+            } else {
+                (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection)
+            };
 
-            if lines_to_move > 0 {
-                // Calculate virtual column from current position
-                let line_start = rope.line_to_char(line);
-                let virtual_col = pos - line_start;
+            // Move cursor up in the grid (no text boundary constraints!)
+            cursor.move_up();
 
-                let new_line = line - lines_to_move;
-                let line_start = rope.line_to_char(new_line);
-                let line_len = rope.line(new_line).len_chars().saturating_sub(1);
-
-                // Position cursor at virtual column, allowing it to go past line end
-                let new_pos = line_start + virtual_col.min(line_len);
-
+            // If we can map to a real text position, update the Helix selection too
+            // (for text operations like copy/paste)
+            if let Some(char_pos) = cursor.to_char_offset(grid) {
                 if mods.contains(KeyModifiers::SHIFT) {
                     // Extend selection - keep anchor, move head
                     let anchor = selection.primary().anchor;
-                    *selection = Selection::single(anchor, new_pos);
+                    *selection = Selection::single(anchor, char_pos);
                 } else {
                     // Just move cursor
-                    *selection = Selection::point(new_pos);
+                    *selection = Selection::point(char_pos);
+                }
+            } else {
+                // Cursor is in virtual space - clear any text selection
+                if !mods.contains(KeyModifiers::SHIFT) {
+                    let pos = grid.rope.line_to_char(cursor.row.min(grid.rope.len_lines().saturating_sub(1)));
+                    *selection = Selection::point(pos);
                 }
             }
         }
@@ -1075,31 +1072,33 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.extraction_block_selection = None;
             }
 
-            let pos = app.extraction_selection.primary().head;
-            let line = app.extraction_rope.char_to_line(pos);
-            let max_line = app.extraction_rope.len_lines() - 1;
-            let lines_to_move = 1.min(max_line - line);  // Don't go past end
+            // Get the correct grid cursor based on mode and active pane
+            let (grid, cursor, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection),
+                }
+            } else {
+                (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection)
+            };
 
-            if lines_to_move > 0 {
-                // Calculate virtual column from current position
-                let line_start = app.extraction_rope.line_to_char(line);
-                let virtual_col = pos - line_start;
+            // Allow moving down even past the last line of text!
+            let max_rows = 200;  // Allow scrolling down to row 200 even if there's no text
+            cursor.move_down(max_rows);
 
-                let new_line = line + lines_to_move;
-                let line_start = app.extraction_rope.line_to_char(new_line);
-                let line_len = app.extraction_rope.line(new_line).len_chars().saturating_sub(1);
-
-                // Position cursor at virtual column, allowing it to go past line end
-                // The selection will be at the actual line position
-                let new_pos = line_start + virtual_col.min(line_len);
-
+            // If we can map to a real text position, update the Helix selection too
+            if let Some(char_pos) = cursor.to_char_offset(grid) {
                 if mods.contains(KeyModifiers::SHIFT) {
-                    // Extend selection - keep anchor, move head
-                    let anchor = app.extraction_selection.primary().anchor;
-                    app.extraction_selection = Selection::single(anchor, new_pos);
+                    let anchor = selection.primary().anchor;
+                    *selection = Selection::single(anchor, char_pos);
                 } else {
-                    // Just move cursor
-                    app.extraction_selection = Selection::point(new_pos);
+                    *selection = Selection::point(char_pos);
+                }
+            } else {
+                // Cursor is in virtual space - clear any text selection
+                if !mods.contains(KeyModifiers::SHIFT) {
+                    let pos = grid.rope.line_to_char(cursor.row.min(grid.rope.len_lines().saturating_sub(1)));
+                    *selection = Selection::point(pos);
                 }
             }
         }
@@ -1115,28 +1114,32 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.extraction_block_selection = None;
             }
 
-            let pos = app.extraction_selection.primary().head;
-            let line = app.extraction_rope.char_to_line(pos);
-            let line_start = app.extraction_rope.line_to_char(line);
-            let col = pos - line_start;
+            // Get the correct grid cursor based on mode and active pane
+            let (grid, cursor, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection),
+                }
+            } else {
+                (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection)
+            };
 
-            // BOUNDARY CHECK: Don't go past the start of the current line
-            // This enforces the left boundary on every row, not just row 0
-            let max_movement = col.min(1);
+            // Move left in grid
+            cursor.move_left();
 
-            if max_movement > 0 {
-                let new_pos = pos - max_movement;
-
-                // Update virtual cursor column based on new position
-                let _new_col = col - max_movement;
-
+            // Update the Helix selection if we can map to a real text position
+            if let Some(char_pos) = cursor.to_char_offset(grid) {
                 if mods.contains(KeyModifiers::SHIFT) {
-                    // Extend selection - keep anchor, move head
-                    let anchor = app.extraction_selection.primary().anchor;
-                    app.extraction_selection = Selection::single(anchor, new_pos);
+                    let anchor = selection.primary().anchor;
+                    *selection = Selection::single(anchor, char_pos);
                 } else {
-                    // Just move cursor
-                    app.extraction_selection = Selection::point(new_pos);
+                    *selection = Selection::point(char_pos);
+                }
+            } else {
+                // In virtual space
+                if !mods.contains(KeyModifiers::SHIFT) {
+                    let pos = grid.rope.line_to_char(cursor.row.min(grid.rope.len_lines().saturating_sub(1)));
+                    *selection = Selection::point(pos);
                 }
             }
         }
@@ -1152,35 +1155,40 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.extraction_block_selection = None;
             }
 
-            let pos = app.extraction_selection.primary().head;
-            let line = app.extraction_rope.char_to_line(pos);
-            let line_start = app.extraction_rope.line_to_char(line);
-            let current_col = pos - line_start;
-
-            // Get the maximum valid position in the document
-            let max_pos = app.extraction_rope.len_chars().saturating_sub(1);
-
-            // For Right arrow, use current column
-            let virtual_col = current_col;
-
-            // Now increment from the virtual position with boundary check
-            let new_virtual_col = virtual_col.saturating_add(1);
-
-            // Get the line length to stay within document bounds
-            let line_slice = app.extraction_rope.line(line);
-            let line_len = line_slice.len_chars().saturating_sub(1); // Exclude newline
-
-            // Document position tracks virtual position when possible, but caps at line end
-            // BOUNDARY CHECK: Also ensure we never exceed the document's maximum position
-            let new_pos = (line_start + new_virtual_col.min(line_len)).min(max_pos);
-
-            if mods.contains(KeyModifiers::SHIFT) {
-                // Extend selection - keep anchor, move head
-                let anchor = app.extraction_selection.primary().anchor;
-                app.extraction_selection = Selection::single(anchor, new_pos);
+            // Get the correct grid cursor based on mode and active pane
+            let (grid, cursor, selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection),
+                }
             } else {
-                // Just move cursor
-                app.extraction_selection = Selection::point(new_pos);
+                (&mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_selection)
+            };
+
+            // Move right in grid - no limit! Go as far right as you want!
+            cursor.move_right(1000);  // Arbitrary large number, cursor will handle it
+
+            // Update the Helix selection if we can map to a real text position
+            if let Some(char_pos) = cursor.to_char_offset(grid) {
+                if mods.contains(KeyModifiers::SHIFT) {
+                    let anchor = selection.primary().anchor;
+                    *selection = Selection::single(anchor, char_pos);
+                } else {
+                    *selection = Selection::point(char_pos);
+                }
+            } else {
+                // In virtual space to the right of text
+                if !mods.contains(KeyModifiers::SHIFT) {
+                    // Position at end of current line
+                    let line_end = if cursor.row < grid.rope.len_lines() {
+                        let line_start = grid.rope.line_to_char(cursor.row);
+                        let line = grid.rope.line(cursor.row);
+                        line_start + line.len_chars().saturating_sub(1)
+                    } else {
+                        grid.rope.len_chars()
+                    };
+                    *selection = Selection::point(line_end);
+                }
             }
 
             // Force redraw to show virtual cursor movement
@@ -1328,77 +1336,123 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
-            // In Notes mode, work with the appropriate rope and selection based on active pane
+            // In Notes mode, work with the appropriate rope, selection, grid, and cursor based on active pane
             if app.app_mode == crate::AppMode::NotesEditor {
-                let (rope, selection) = match app.active_pane {
+                let (rope, selection, grid, cursor) = match app.active_pane {
                     crate::ActivePane::Left => {
-                        (&mut app.notes_rope, &mut app.notes_selection)
+                        (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor)
                     }
                     crate::ActivePane::Right => {
-                        (&mut app.extraction_rope, &mut app.extraction_selection)
+                        (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor)
                     }
                 };
 
-                // Save state before transaction for history
-                let _state = State {
-                    doc: rope.clone(),
-                    selection: selection.clone(),
-                };
+                // Check if cursor is in virtual space
+                if cursor.to_char_offset(grid).is_none() {
+                    // We're in virtual space - need to ensure the line exists and pad with spaces
+                    grid.ensure_line_length(cursor.row, cursor.col + 1);
+                    grid.set_char_at(cursor.col, cursor.row, c);
 
-                // CORRECT HELIX: The real Ferrari engine!
-                let transaction = Transaction::insert(rope, selection, c.to_string().into());
+                    // Update the rope from the grid
+                    *rope = grid.rope.clone();
 
-                // Apply transaction (modifies rope in-place)
-                let success = transaction.apply(rope);
+                    // Move cursor right
+                    cursor.col += 1;
 
-                if success {
-                    // Map selection through changes (CRITICAL!)
-                    *selection = selection.clone().map(transaction.changes());
+                    // Update selection to match cursor if we can
+                    if let Some(char_pos) = cursor.to_char_offset(grid) {
+                        *selection = Selection::point(char_pos);
+                    }
+                } else {
+                    // Normal character insertion - use existing Helix transaction
+                    // Save state before transaction for history
+                    let _state = State {
+                        doc: rope.clone(),
+                        selection: selection.clone(),
+                    };
 
-                    // Auto-save when editing notes
-                    if app.active_pane == crate::ActivePane::Left {
-                        // Update in-memory note
-                        save_current_note_changes(app);
+                    // CORRECT HELIX: The real Ferrari engine!
+                    let transaction = Transaction::insert(rope, selection, c.to_string().into());
 
-                        // Save to database immediately
-                        if let Some(ref notes_mode) = app.notes_mode {
-                            if let Some(ref current_note) = notes_mode.current_note {
-                                let content = app.notes_rope.to_string();
-                                if let Some(ref notes_mode) = app.notes_mode {
-                                    let _ = notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
-                                }
+                    // Apply transaction (modifies rope in-place)
+                    let success = transaction.apply(rope);
+
+                    if success {
+                        // Map selection through changes (CRITICAL!)
+                        *selection = selection.clone().map(transaction.changes());
+
+                        // Update grid cursor to match new selection position
+                        *cursor = GridCursor::from_char_offset(selection.primary().head, grid);
+
+                        // Update the grid with the new rope
+                        grid.rope = rope.clone();
+                    }
+                }
+
+                // Auto-save when editing notes (after borrows are released)
+                if app.active_pane == crate::ActivePane::Left {
+                    // Update in-memory note
+                    save_current_note_changes(app);
+
+                    // Save to database immediately
+                    if let Some(ref notes_mode) = app.notes_mode {
+                        if let Some(ref current_note) = notes_mode.current_note {
+                            let content = app.notes_rope.to_string();
+                            if let Some(ref notes_mode) = app.notes_mode {
+                                let _ = notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
                             }
                         }
                     }
-
-                    // Note: History would need separate tracking per rope
-                    // For now, skip history in Notes mode
-
-                    // Clear virtual column when typing
                 }
+
                 app.needs_redraw = true;
             } else {
-                // Original PDF mode logic
-                // Save state before transaction for history
-                let state = State {
-                    doc: app.extraction_rope.clone(),
-                    selection: app.extraction_selection.clone(),
-                };
+                // PDF mode - also use grid cursor
+                // Check if cursor is in virtual space
+                if app.extraction_cursor.to_char_offset(&app.extraction_grid).is_none() {
+                    // We're in virtual space - need to ensure the line exists and pad with spaces
+                    app.extraction_grid.ensure_line_length(app.extraction_cursor.row, app.extraction_cursor.col + 1);
+                    app.extraction_grid.set_char_at(app.extraction_cursor.col, app.extraction_cursor.row, c);
 
-                // CORRECT HELIX: The real Ferrari engine!
-                let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, c.to_string().into());
+                    // Update the rope from the grid
+                    app.extraction_rope = app.extraction_grid.rope.clone();
 
-                // Apply transaction (modifies rope in-place)
-                let success = transaction.apply(&mut app.extraction_rope);
+                    // Move cursor right
+                    app.extraction_cursor.col += 1;
 
-                if success {
-                    // Map selection through changes (CRITICAL!)
-                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+                    // Update selection to match cursor if we can
+                    if let Some(char_pos) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
+                        app.extraction_selection = Selection::point(char_pos);
+                    }
+                } else {
+                    // Normal character insertion
+                    // Save state before transaction for history
+                    let state = State {
+                        doc: app.extraction_rope.clone(),
+                        selection: app.extraction_selection.clone(),
+                    };
 
-                    // Commit to history for undo/redo
-                    app.history.commit_revision(&transaction, &state);
+                    // CORRECT HELIX: The real Ferrari engine!
+                    let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, c.to_string().into());
 
-                    // Clear virtual column when typing
+                    // Apply transaction (modifies rope in-place)
+                    let success = transaction.apply(&mut app.extraction_rope);
+
+                    if success {
+                        // Map selection through changes (CRITICAL!)
+                        app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+
+                        // Update grid cursor to match new selection position
+                        app.extraction_cursor = GridCursor::from_char_offset(
+                            app.extraction_selection.primary().head, &app.extraction_grid
+                        );
+
+                        // Update the grid with the new rope
+                        app.extraction_grid.rope = app.extraction_rope.clone();
+
+                        // Commit to history for undo/redo
+                        app.history.commit_revision(&transaction, &state);
+                    }
                 }
             }
         }

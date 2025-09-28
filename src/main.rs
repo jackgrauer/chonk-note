@@ -27,6 +27,7 @@ mod notes_database;
 mod notes_mode;
 mod debug;
 mod virtual_grid;
+mod grid_cursor;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -79,12 +80,18 @@ pub struct App {
     // Text editing with Helix-core
     pub extraction_rope: Rope,         // Extracted text from PDF (right pane)
     pub notes_rope: Rope,              // Notes text (left pane when in notes mode)
-    pub extraction_selection: Selection,  // Right pane selection state
-    pub notes_selection: Selection,    // Left pane (notes) selection state
+    pub extraction_selection: Selection,  // Right pane selection state (for Helix operations)
+    pub notes_selection: Selection,    // Left pane (notes) selection state (for Helix operations)
     pub history: History,              // Undo/redo (currently only single-pane)
     pub extraction_block_selection: Option<BlockSelection>,  // Block selection for extraction pane
     pub notes_block_selection: Option<BlockSelection>,  // Block selection for notes pane
     pub active_pane: ActivePane,       // Which pane has focus
+
+    // Grid-based cursors for true grid movement
+    pub extraction_grid: virtual_grid::VirtualGrid,    // Grid for extraction pane
+    pub notes_grid: virtual_grid::VirtualGrid,         // Grid for notes pane
+    pub extraction_cursor: grid_cursor::GridCursor,    // Grid cursor for extraction
+    pub notes_cursor: grid_cursor::GridCursor,         // Grid cursor for notes
 
     // Notes list for sidebar
     pub notes_list: Vec<notes_database::Note>,
@@ -144,6 +151,12 @@ impl App {
             extraction_block_selection: None,        // No block selection initially
             notes_block_selection: None,             // No block selection initially
             active_pane: ActivePane::Right,          // Start with extraction pane active
+
+            // Grid-based cursors
+            extraction_grid: virtual_grid::VirtualGrid::new(Rope::from("")),
+            notes_grid: virtual_grid::VirtualGrid::new(Rope::from("")),
+            extraction_cursor: grid_cursor::GridCursor::new(),
+            notes_cursor: grid_cursor::GridCursor::new(),
 
             // Rendering
             edit_display: None,
@@ -215,13 +228,19 @@ impl App {
 
             // Text editing
             extraction_rope: Rope::from(""),
-            notes_rope,
+            notes_rope: notes_rope.clone(),
             extraction_selection: Selection::point(0),
             notes_selection,
             history: History::default(),
             extraction_block_selection: None,
             notes_block_selection: None,
             active_pane: ActivePane::Left,  // Notes mode starts with left pane active
+
+            // Grid-based cursors
+            extraction_grid: virtual_grid::VirtualGrid::new(Rope::from("")),
+            notes_grid: virtual_grid::VirtualGrid::new(notes_rope),
+            extraction_cursor: grid_cursor::GridCursor::new(),
+            notes_cursor: grid_cursor::GridCursor::new(),
 
             // Rendering
             edit_display: None,
@@ -311,6 +330,10 @@ impl App {
 
         self.extraction_rope = Rope::from_str(&text);
         self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
+
+        // Update the extraction grid with the new rope
+        self.extraction_grid = virtual_grid::VirtualGrid::new(self.extraction_rope.clone());
+        self.extraction_cursor = grid_cursor::GridCursor::new();  // Reset cursor to 0,0
 
         // Update renderer from rope and reset viewport to top-left
         if let Some(renderer) = &mut self.edit_display {
@@ -806,10 +829,9 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         // Only show cursor if this pane is active
         let show_cursor = app.active_pane == ActivePane::Left;
 
-        let cursor_pos = app.notes_selection.primary().head;
-        let cursor_line = app.notes_rope.char_to_line(cursor_pos);
-        let line_start = app.notes_rope.line_to_char(cursor_line);
-        let cursor_col = cursor_pos - line_start;
+        // Use grid cursor position (can be in virtual space!)
+        let cursor_line = app.notes_cursor.row;
+        let cursor_col = app.notes_cursor.col;
 
         renderer.follow_cursor(cursor_col, cursor_line, 3);
 
@@ -867,10 +889,9 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
         // Only show cursor if this pane is active
         let show_cursor = app.active_pane == ActivePane::Right;
 
-        let cursor_pos = app.extraction_selection.primary().head;
-        let cursor_line = app.extraction_rope.char_to_line(cursor_pos);
-        let line_start = app.extraction_rope.line_to_char(cursor_line);
-        let cursor_col = cursor_pos - line_start;
+        // Use grid cursor position (can be in virtual space!)
+        let cursor_line = app.extraction_cursor.row;
+        let cursor_col = app.extraction_cursor.col;
 
         renderer.follow_cursor(cursor_col, cursor_line, 3);
 

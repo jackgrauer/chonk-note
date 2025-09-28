@@ -268,21 +268,36 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 return Ok(());
             }
             // Mouse drag - handle selection based on active pane
-            if let Some(end_pos) = app.screen_to_text_pos(x, y) {
-                // Determine which rope, selection, and block selection to use based on mode and active pane
-                let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
-                    match app.active_pane {
-                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
-                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
-                    }
-                } else {
-                    // In PDF mode, always use extraction rope
-                    (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
-                };
+            // Determine which grid, cursor, rope, selection, and block selection to use
+            let (grid, cursor, rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
+                    crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_cursor, &app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
+                }
+            } else {
+                // In PDF mode, always use extraction
+                (&mut app.extraction_grid, &mut app.extraction_cursor, &app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
+            };
 
-                let end_line = rope.char_to_line(end_pos);
-                let end_line_start = rope.line_to_char(end_line);
-                let end_col = end_pos - end_line_start;
+            // Calculate grid position for drag end
+            let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
+                if x < term_width / 2 {
+                    4  // Notes editor starts after notes list
+                } else {
+                    term_width / 2  // Extraction text starts at midpoint
+                }
+            } else {
+                current_split  // In PDF mode
+            };
+
+            let grid_col = x.saturating_sub(pane_start_x) as usize;
+            let grid_row = y.saturating_sub(1) as usize;  // Terminal is 1-based
+
+            // Move the grid cursor to the drag position
+            cursor.move_to(grid_row, grid_col);
+
+            let end_line = grid_row;
+            let end_col = grid_col;
 
                 // Handle block selection for both panes
                 // Block selection is now supported in both notes and extraction panes
@@ -303,13 +318,15 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         // No block selection active - use regular selection extension
                         // The selection anchor was set during the initial click
                         let anchor = selection.primary().anchor;
-                        *selection = Selection::single(anchor, end_pos);
+                        // Try to get char position from grid cursor
+                        if let Some(end_pos) = cursor.to_char_offset(grid) {
+                            *selection = Selection::single(anchor, end_pos);
+                        }
                     }
                 }
 
                 mouse_state.is_dragging = true;
                 app.needs_redraw = true;
-            }
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, modifiers, .. } => {
@@ -420,8 +437,54 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
             }
 
-            // Left click - set cursor position
-            if let Some(pos) = app.screen_to_text_pos(x, y) {
+            // Left click - set cursor position using grid
+            // First determine which pane was clicked
+            let (grid, cursor) = if app.app_mode == crate::AppMode::NotesEditor {
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x > notes_list_width && x < extraction_start_x {
+                    // Clicked in notes editor
+                    (&mut app.notes_grid, &mut app.notes_cursor)
+                } else if x >= extraction_start_x {
+                    // Clicked in extraction text
+                    (&mut app.extraction_grid, &mut app.extraction_cursor)
+                } else {
+                    // Clicked in notes list (handled elsewhere)
+                    return Ok(());
+                }
+            } else {
+                // In PDF mode
+                if x < current_split {
+                    // Clicked in PDF pane
+                    return Ok(());
+                } else {
+                    // Clicked in extraction pane
+                    (&mut app.extraction_grid, &mut app.extraction_cursor)
+                }
+            };
+
+            // Calculate grid position (allow clicking anywhere!)
+            let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
+                if x < term_width / 2 {
+                    4  // Notes editor starts after notes list
+                } else {
+                    term_width / 2  // Extraction text starts at midpoint
+                }
+            } else {
+                current_split  // In PDF mode
+            };
+
+            let grid_col = x.saturating_sub(pane_start_x) as usize;
+            let grid_row = y.saturating_sub(1) as usize;  // Terminal is 1-based
+
+            // Move the grid cursor to the clicked position
+            cursor.move_to(grid_row, grid_col);
+
+            // Try to get a text position for selection operations
+            if let Some(pos) = cursor.to_char_offset(grid) {
                 // Debug log text position
                 let now = Instant::now();
 
