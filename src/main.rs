@@ -26,6 +26,7 @@ mod block_selection;
 mod notes_database;
 mod notes_mode;
 mod debug;
+mod virtual_grid;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;

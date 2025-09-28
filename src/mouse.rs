@@ -251,8 +251,8 @@ pub fn apply_smooth_scroll(app: &mut App, mouse_state: &mut MouseState) {
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
     // Debug log all mouse events with more detail
 
-    // Get terminal width for split position calculation
-    let (term_width, _term_height) = crate::kitty_native::KittyTerminal::size()?;
+    // Get terminal width and height for split position and scrolling calculation
+    let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
     let current_split = app.split_position.unwrap_or(term_width / 2);
 
     match event {
@@ -537,90 +537,224 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         // Remove the old motion handler - we handle drag with is_drag now
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, modifiers, .. } => {
-            if x <= current_split {
-                // PDF pane scrolling
-                if modifiers.shift {
-                    // Horizontal scroll with Shift+Scroll
-                    app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, determine which pane to scroll
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x <= notes_list_width {
+                    // Scrolling in notes list - scroll the list
+                    if app.notes_list_scroll > 0 {
+                        app.notes_list_scroll = app.notes_list_scroll.saturating_sub(1);
+                        app.needs_redraw = true;
+                    }
+                } else if x < extraction_start_x {
+                    // Scrolling in notes editor pane
+                    if let Some(renderer) = &mut app.notes_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_left(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_up(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 } else {
-                    // Vertical scroll
-                    app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
+                    // Scrolling in extraction text pane
+                    if let Some(renderer) = &mut app.edit_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_left(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_up(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 }
-                app.needs_redraw = true;
             } else {
-                // Text pane scrolling
-                if let Some(renderer) = &mut app.edit_display {
+                // PDF mode - original behavior
+                if x <= current_split {
+                    // PDF pane scrolling
                     if modifiers.shift {
                         // Horizontal scroll with Shift+Scroll
-                        renderer.scroll_left(5);
+                        app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
                     } else {
                         // Vertical scroll
-                        renderer.scroll_up(3);
+                        app.pdf_scroll_y = app.pdf_scroll_y.saturating_sub(3);
                     }
                     app.needs_redraw = true;
+                } else {
+                    // Text pane scrolling
+                    if let Some(renderer) = &mut app.edit_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_left(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_up(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 }
             }
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
-            if x <= current_split {
-                // PDF pane scrolling
-                let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
-                let pdf_viewport_height = term_height.saturating_sub(3);
-                let pdf_viewport_width = current_split.saturating_sub(3);
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, determine which pane to scroll
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
-                if modifiers.shift {
-                    // Horizontal scroll with Shift+Scroll
-                    let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
-                    app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
+                if x <= notes_list_width {
+                    // Scrolling in notes list - scroll the list
+                    let visible_count = (term_height - 2) as usize;
+                    let max_scroll = app.notes_list.len().saturating_sub(visible_count);
+                    if app.notes_list_scroll < max_scroll {
+                        app.notes_list_scroll += 1;
+                        app.needs_redraw = true;
+                    }
+                } else if x < extraction_start_x {
+                    // Scrolling in notes editor pane
+                    if let Some(renderer) = &mut app.notes_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_right(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_down(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 } else {
-                    // Vertical scroll
-                    let max_scroll_y = app.pdf_full_height.saturating_sub(pdf_viewport_height);
-                    app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll_y);
+                    // Scrolling in extraction text pane
+                    if let Some(renderer) = &mut app.edit_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_right(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_down(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 }
-                app.needs_redraw = true;
             } else {
-                // Text pane scrolling
-                if let Some(renderer) = &mut app.edit_display {
+                // PDF mode - original behavior
+                if x <= current_split {
+                    // PDF pane scrolling
+                    let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
+                    let pdf_viewport_height = term_height.saturating_sub(3);
+                    let pdf_viewport_width = current_split.saturating_sub(3);
+
                     if modifiers.shift {
                         // Horizontal scroll with Shift+Scroll
-                        renderer.scroll_right(5);
+                        let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
+                        app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
                     } else {
                         // Vertical scroll
-                        renderer.scroll_down(3);
+                        let max_scroll_y = app.pdf_full_height.saturating_sub(pdf_viewport_height);
+                        app.pdf_scroll_y = (app.pdf_scroll_y + 3).min(max_scroll_y);
                     }
                     app.needs_redraw = true;
+                } else {
+                    // Text pane scrolling
+                    if let Some(renderer) = &mut app.edit_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_right(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_down(3);
+                        }
+                        app.needs_redraw = true;
+                    }
                 }
             }
         }
 
         // Horizontal swipe gestures
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
-            if x <= current_split {
-                // PDF pane - scroll left (decrease scroll_x)
-                app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
-                app.needs_redraw = true;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, determine which pane to scroll
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x <= notes_list_width {
+                    // Notes list doesn't need horizontal scrolling
+                } else if x < extraction_start_x {
+                    // Scrolling in notes editor pane - scroll left
+                    if let Some(renderer) = &mut app.notes_display {
+                        renderer.scroll_left(5);
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane - scroll left
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_left(5);
+                        app.needs_redraw = true;
+                    }
+                }
             } else {
-                // Text pane - scroll left
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_left(5);
+                // PDF mode - original behavior
+                if x <= current_split {
+                    // PDF pane - scroll left (decrease scroll_x)
+                    app.pdf_scroll_x = app.pdf_scroll_x.saturating_sub(5);
                     app.needs_redraw = true;
+                } else {
+                    // Text pane - scroll left
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_left(5);
+                        app.needs_redraw = true;
+                    }
                 }
             }
         }
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
-            if x <= current_split {
-                // PDF pane - scroll right (increase scroll_x)
-                let pdf_viewport_width = current_split.saturating_sub(3);
-                let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
-                app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
-                app.needs_redraw = true;
+            if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, determine which pane to scroll
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x <= notes_list_width {
+                    // Notes list doesn't need horizontal scrolling
+                } else if x < extraction_start_x {
+                    // Scrolling in notes editor pane - scroll right
+                    if let Some(renderer) = &mut app.notes_display {
+                        renderer.scroll_right(5);
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane - scroll right
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_right(5);
+                        app.needs_redraw = true;
+                    }
+                }
             } else {
-                // Text pane - scroll right
-                if let Some(renderer) = &mut app.edit_display {
-                    renderer.scroll_right(5);
+                // PDF mode - original behavior
+                if x <= current_split {
+                    // PDF pane - scroll right (increase scroll_x)
+                    let pdf_viewport_width = current_split.saturating_sub(3);
+                    let max_scroll_x = app.pdf_full_width.saturating_sub(pdf_viewport_width);
+                    app.pdf_scroll_x = (app.pdf_scroll_x + 5).min(max_scroll_x);
                     app.needs_redraw = true;
+                } else {
+                    // Text pane - scroll right
+                    if let Some(renderer) = &mut app.edit_display {
+                        renderer.scroll_right(5);
+                        app.needs_redraw = true;
+                    }
                 }
             }
         }
