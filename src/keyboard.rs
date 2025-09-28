@@ -487,42 +487,88 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     crate::ActivePane::Right => (&mut app.extraction_grid, &mut app.extraction_block_selection),
                 };
 
-                if let Some(block_sel) = block_selection {
+                if let Some(block_sel) = block_selection.take() {  // Use take() to get ownership
                     // Use non-collapsing block cut
-                    let cut_data = grid.cut_block(block_sel);
+                    let cut_data = grid.cut_block(&block_sel);
                     app.block_clipboard = Some(cut_data.clone());
 
                     // Also copy to system clipboard as plain text
                     let text = cut_data.join("\n");
                     copy_to_clipboard(&text)?;
 
-                    // Update the appropriate rope from grid
-                    match app.active_pane {
-                        crate::ActivePane::Left => app.notes_rope = grid.rope.clone(),
-                        crate::ActivePane::Right => app.extraction_rope = grid.rope.clone(),
-                    }
+                    // Get the start position of the cut area
+                    let ((start_line, start_col), _) = block_sel.normalized();
 
-                    // Clear block selection after cut
-                    *block_selection = None;
+                    // Update the appropriate rope and cursor from grid
+                    match app.active_pane {
+                        crate::ActivePane::Left => {
+                            app.notes_rope = grid.rope.clone();
+                            app.notes_cursor.move_to(start_line, start_col);
+
+                            // Update helix selection to match cursor
+                            if let Some(char_offset) = app.notes_cursor.to_char_offset(&app.notes_grid) {
+                                app.notes_selection = helix_core::Selection::point(char_offset);
+                            } else {
+                                let line_start = if start_line < app.notes_rope.len_lines() {
+                                    app.notes_rope.line_to_char(start_line)
+                                } else {
+                                    app.notes_rope.len_chars()
+                                };
+                                app.notes_selection = helix_core::Selection::point(line_start);
+                            }
+                        },
+                        crate::ActivePane::Right => {
+                            app.extraction_rope = grid.rope.clone();
+                            app.extraction_cursor.move_to(start_line, start_col);
+
+                            // Update helix selection to match cursor
+                            if let Some(char_offset) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
+                                app.extraction_selection = helix_core::Selection::point(char_offset);
+                            } else {
+                                let line_start = if start_line < app.extraction_rope.len_lines() {
+                                    app.extraction_rope.line_to_char(start_line)
+                                } else {
+                                    app.extraction_rope.len_chars()
+                                };
+                                app.extraction_selection = helix_core::Selection::point(line_start);
+                            }
+                        },
+                    }
 
                     app.status_message = format!("Cut block: {} lines", cut_data.len());
                     app.needs_redraw = true;
                     return Ok(true);
                 }
-            } else if let Some(block_sel) = &app.extraction_block_selection {
+            } else if let Some(block_sel) = app.extraction_block_selection.take() {
                 // PDF mode with block selection
-                let cut_data = app.extraction_grid.cut_block(block_sel);
+                let cut_data = app.extraction_grid.cut_block(&block_sel);
                 app.block_clipboard = Some(cut_data.clone());
 
                 // Also copy to system clipboard as plain text
                 let text = cut_data.join("\n");
                 copy_to_clipboard(&text)?;
 
+                // Get the start position before updating rope
+                let ((start_line, start_col), _) = block_sel.normalized();
+
                 // Update rope from grid
                 app.extraction_rope = app.extraction_grid.rope.clone();
 
-                // Clear block selection after cut
-                app.extraction_block_selection = None;
+                // Update the cursor and selection to the start of the cut area
+                app.extraction_cursor.move_to(start_line, start_col);
+
+                // Set the helix selection to a point at the cursor position
+                if let Some(char_offset) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
+                    app.extraction_selection = helix_core::Selection::point(char_offset);
+                } else {
+                    // If we're in virtual space, just set to nearest valid position
+                    let line_start = if start_line < app.extraction_rope.len_lines() {
+                        app.extraction_rope.line_to_char(start_line)
+                    } else {
+                        app.extraction_rope.len_chars()
+                    };
+                    app.extraction_selection = helix_core::Selection::point(line_start);
+                }
 
                 app.status_message = format!("Cut block: {} lines", cut_data.len());
                 app.needs_redraw = true;
