@@ -255,6 +255,51 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
     let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
     let current_split = app.split_position.unwrap_or(term_width / 2);
 
+    // Update debug info if enabled
+    if app.debug_mode {
+        app.last_mouse_pos = (event.x, event.y);
+
+        // Create coordinate system for conversions
+        let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
+
+        // Get document coordinates
+        let doc_coords = coord_sys.screen_to_document(event.x, event.y);
+
+        // Get viewport info
+        let (viewport_x, viewport_y) = if app.app_mode == crate::AppMode::NotesEditor {
+            match app.active_pane {
+                crate::ActivePane::Left => {
+                    app.notes_display.as_ref()
+                        .map(|r| (r.viewport_x, r.viewport_y))
+                        .unwrap_or((0, 0))
+                }
+                crate::ActivePane::Right => {
+                    app.edit_display.as_ref()
+                        .map(|r| (r.viewport_x, r.viewport_y))
+                        .unwrap_or((0, 0))
+                }
+            }
+        } else {
+            app.edit_display.as_ref()
+                .map(|r| (r.viewport_x, r.viewport_y))
+                .unwrap_or((0, 0))
+        };
+
+        // Get cursor position
+        let (cursor_row, cursor_col) = match app.active_pane {
+            crate::ActivePane::Left => (app.notes_cursor.row, app.notes_cursor.col),
+            crate::ActivePane::Right => (app.extraction_cursor.row, app.extraction_cursor.col),
+        };
+
+        app.debug_info = Some(crate::debug_overlay::DebugInfo {
+            mouse_screen: (event.x, event.y),
+            mouse_document: doc_coords.unwrap_or((0, 0)),
+            cursor_grid: (cursor_row, cursor_col),
+            viewport: (viewport_x, viewport_y),
+            active_pane: format!("{:?}", app.active_pane),
+        });
+    }
+
     match event {
         // Handle drag events FIRST before regular clicks
         MouseEvent { is_drag: true, x, y, .. } => {
@@ -561,6 +606,34 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             // Move the grid cursor to the clicked position (allows virtual space!)
             cursor.move_to(grid_row, grid_col);
+
+            // Log coordinate transformation if debugging
+            if app.debug_mode {
+                crate::logger::log_coordinate_event(
+                    "Click",
+                    (x, y),
+                    (pane_col, pane_row),
+                    (grid_col, grid_row),
+                    (if app.app_mode == crate::AppMode::NotesEditor {
+                        match app.active_pane {
+                            crate::ActivePane::Left => {
+                                app.notes_display.as_ref()
+                                    .map(|r| (r.viewport_x, r.viewport_y))
+                                    .unwrap_or((0, 0))
+                            }
+                            crate::ActivePane::Right => {
+                                app.edit_display.as_ref()
+                                    .map(|r| (r.viewport_x, r.viewport_y))
+                                    .unwrap_or((0, 0))
+                            }
+                        }
+                    } else {
+                        app.edit_display.as_ref()
+                            .map(|r| (r.viewport_x, r.viewport_y))
+                            .unwrap_or((0, 0))
+                    })
+                );
+            }
 
             // Update the selection based on cursor position
             // Even if we're in virtual space, we need to handle clicks
