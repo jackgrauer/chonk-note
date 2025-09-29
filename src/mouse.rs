@@ -607,6 +607,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Move the grid cursor to the clicked position (allows virtual space!)
             cursor.move_to(grid_row, grid_col);
 
+            // Minimal logging - just one line, doesn't change behavior
+            crate::minimal_debug::log_click(x, y, grid_row, grid_col);
+
             // Log coordinate transformation if debugging
             if app.debug_mode {
                 crate::logger::log_coordinate_event(

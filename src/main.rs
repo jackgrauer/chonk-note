@@ -33,6 +33,7 @@ mod coordinate_system;
 mod logger;
 mod visual_debugger;
 mod coordinate_validator;
+mod minimal_debug;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
