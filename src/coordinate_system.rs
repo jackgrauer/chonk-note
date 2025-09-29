@@ -7,9 +7,41 @@ pub struct CoordinateSystem<'a> {
     term_height: u16,
 }
 
+/// All the coordinate info we need for a click
+pub struct ClickCoordinates {
+    pub pane: Pane,
+    pub pane_relative: (usize, usize),
+    pub document: (usize, usize),
+    pub grid: (usize, usize),
+}
+
 impl<'a> CoordinateSystem<'a> {
     pub fn new(app: &'a App, term_width: u16, term_height: u16) -> Self {
         Self { app, term_width, term_height }
+    }
+
+    /// THE function that handles all click coordinate conversion
+    pub fn process_click(&self, screen_x: u16, screen_y: u16) -> Option<ClickCoordinates> {
+        let pane = self.which_pane(screen_x)?;
+
+        // Get pane-relative coordinates
+        let pane_start_x = self.get_pane_start_x(pane)?;
+        let pane_x = screen_x.saturating_sub(pane_start_x) as usize;
+        let pane_y = screen_y as usize; // Already 0-based from kitty
+
+        // Get viewport offset for this pane
+        let (viewport_x, viewport_y) = self.get_viewport_offset(pane)?;
+
+        // Calculate document position
+        let doc_x = pane_x + viewport_x;
+        let doc_y = pane_y + viewport_y;
+
+        Some(ClickCoordinates {
+            pane,
+            pane_relative: (pane_x, pane_y),
+            document: (doc_x, doc_y),
+            grid: (doc_x, doc_y), // For grid-based cursor, these are the same
+        })
     }
 
     /// Convert screen coordinates to document coordinates

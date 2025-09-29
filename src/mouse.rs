@@ -255,50 +255,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
     let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
     let current_split = app.split_position.unwrap_or(term_width / 2);
 
-    // Update debug info if enabled
-    if app.debug_mode {
-        app.last_mouse_pos = (event.x, event.y);
-
-        // Create coordinate system for conversions
-        let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
-
-        // Get document coordinates
-        let doc_coords = coord_sys.screen_to_document(event.x, event.y);
-
-        // Get viewport info
-        let (viewport_x, viewport_y) = if app.app_mode == crate::AppMode::NotesEditor {
-            match app.active_pane {
-                crate::ActivePane::Left => {
-                    app.notes_display.as_ref()
-                        .map(|r| (r.viewport_x, r.viewport_y))
-                        .unwrap_or((0, 0))
-                }
-                crate::ActivePane::Right => {
-                    app.edit_display.as_ref()
-                        .map(|r| (r.viewport_x, r.viewport_y))
-                        .unwrap_or((0, 0))
-                }
-            }
-        } else {
-            app.edit_display.as_ref()
-                .map(|r| (r.viewport_x, r.viewport_y))
-                .unwrap_or((0, 0))
-        };
-
-        // Get cursor position
-        let (cursor_row, cursor_col) = match app.active_pane {
-            crate::ActivePane::Left => (app.notes_cursor.row, app.notes_cursor.col),
-            crate::ActivePane::Right => (app.extraction_cursor.row, app.extraction_cursor.col),
-        };
-
-        app.debug_info = Some(crate::debug_overlay::DebugInfo {
-            mouse_screen: (event.x, event.y),
-            mouse_document: doc_coords.unwrap_or((0, 0)),
-            cursor_grid: (cursor_row, cursor_col),
-            viewport: (viewport_x, viewport_y),
-            active_pane: format!("{:?}", app.active_pane),
-        });
-    }
 
     match event {
         // Handle drag events FIRST before regular clicks
@@ -312,8 +268,18 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 app.needs_redraw = true;
                 return Ok(());
             }
-            // Mouse drag - handle selection based on active pane
-            // Determine which grid, cursor, rope, selection, and block selection to use
+            // USE THE COORDINATE SYSTEM for drag too!
+            // Calculate coordinates FIRST before borrowing mutably
+            let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
+            let coords = match coord_sys.process_click(x, y) {
+                Some(c) => c,
+                None => return Ok(()), // Drag outside valid area
+            };
+
+            let end_line = coords.grid.1;
+            let end_col = coords.grid.0;
+
+            // NOW determine which grid, cursor, rope, selection, and block selection to use
             let (grid, cursor, rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
                 match app.active_pane {
                     crate::ActivePane::Left => (&mut app.notes_grid, &mut app.notes_cursor, &app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
@@ -324,59 +290,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 (&mut app.extraction_grid, &mut app.extraction_cursor, &app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
             };
 
-            // Calculate grid position for drag end
-            let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
-                let notes_list_width = 4;
-                let remaining_width = term_width.saturating_sub(notes_list_width);
-                let notes_editor_width = remaining_width / 2;
-                let extraction_start_x = notes_list_width + notes_editor_width;
-
-                match app.active_pane {
-                    crate::ActivePane::Left => notes_list_width,  // Notes editor (no divider)
-                    crate::ActivePane::Right => extraction_start_x,  // Extraction text (no divider)
-                }
-            } else {
-                current_split  // In PDF mode (no divider)
-            };
-
-            // Calculate the position relative to the pane
-            let pane_col = x.saturating_sub(pane_start_x) as usize;
-            let pane_row = y as usize;  // Terminal coordinates are already 0-based from kitty
-
-            // Add viewport scroll offset to get the actual document position
-            let (grid_col, grid_row) = if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => {
-                        // Notes pane - get scroll offset from notes renderer
-                        if let Some(renderer) = &app.notes_display {
-                            (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                        } else {
-                            (pane_col, pane_row)
-                        }
-                    }
-                    crate::ActivePane::Right => {
-                        // Extraction pane - get scroll offset from extraction renderer
-                        if let Some(renderer) = &app.edit_display {
-                            (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                        } else {
-                            (pane_col, pane_row)
-                        }
-                    }
-                }
-            } else {
-                // PDF mode - extraction pane
-                if let Some(renderer) = &app.edit_display {
-                    (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                } else {
-                    (pane_col, pane_row)
-                }
-            };
-
-            // Move the grid cursor to the drag position
-            cursor.move_to(grid_row, grid_col);
-
-            let end_line = grid_row;
-            let end_col = grid_col;
+            // Move cursor to drag position
+            cursor.move_to(end_line, end_col);
 
                 // Handle block selection for both panes
                 // Block selection is now supported in both notes and extraction panes
@@ -526,117 +441,25 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
             }
 
-            // Left click - set cursor position using grid
-            // First determine which pane was clicked
-            let (grid, cursor) = if app.app_mode == crate::AppMode::NotesEditor {
-                let notes_list_width = 4;
-                let remaining_width = term_width.saturating_sub(notes_list_width);
-                let notes_editor_width = remaining_width / 2;
-                let extraction_start_x = notes_list_width + notes_editor_width;
+            // USE THE COORDINATE SYSTEM - ALL MATH IN ONE PLACE
+            let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
 
-                if x > notes_list_width && x < extraction_start_x {
-                    // Clicked in notes editor
-                    (&mut app.notes_grid, &mut app.notes_cursor)
-                } else if x >= extraction_start_x {
-                    // Clicked in extraction text
-                    (&mut app.extraction_grid, &mut app.extraction_cursor)
-                } else {
-                    // Clicked in notes list (handled elsewhere)
-                    return Ok(());
-                }
-            } else {
-                // In PDF mode
-                if x < current_split {
-                    // Clicked in PDF pane
-                    return Ok(());
-                } else {
-                    // Clicked in extraction pane
-                    (&mut app.extraction_grid, &mut app.extraction_cursor)
-                }
+            // Process click through the abstraction layer
+            let coords = match coord_sys.process_click(x, y) {
+                Some(c) => c,
+                None => return Ok(()), // Click was outside valid area
             };
 
-            // Calculate grid position (allow clicking anywhere!)
-            let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
-                let notes_list_width = 4;
-                let remaining_width = term_width.saturating_sub(notes_list_width);
-                let notes_editor_width = remaining_width / 2;
-                let extraction_start_x = notes_list_width + notes_editor_width;
-
-                if x > notes_list_width && x < extraction_start_x {
-                    notes_list_width  // Notes editor starts right after notes list (no divider)
-                } else {
-                    extraction_start_x  // Extraction text starts right after notes editor (no divider)
-                }
-            } else {
-                current_split  // In PDF mode (no divider)
+            // Check which pane and get the right cursor/grid
+            use crate::coordinate_system::Pane;
+            let (grid, cursor) = match coords.pane {
+                Pane::NotesEditor => (&mut app.notes_grid, &mut app.notes_cursor),
+                Pane::Extraction => (&mut app.extraction_grid, &mut app.extraction_cursor),
+                Pane::NotesList | Pane::Pdf => return Ok(()), // These are handled elsewhere
             };
 
-            // Calculate the position relative to the pane
-            let pane_col = x.saturating_sub(pane_start_x) as usize;
-            let pane_row = y as usize;  // Terminal coordinates are already 0-based from kitty
-
-            // Add viewport scroll offset to get the actual document position
-            let (grid_col, grid_row) = if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => {
-                        // Notes pane - get scroll offset from notes renderer
-                        if let Some(renderer) = &app.notes_display {
-                            (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                        } else {
-                            (pane_col, pane_row)
-                        }
-                    }
-                    crate::ActivePane::Right => {
-                        // Extraction pane - get scroll offset from extraction renderer
-                        if let Some(renderer) = &app.edit_display {
-                            (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                        } else {
-                            (pane_col, pane_row)
-                        }
-                    }
-                }
-            } else {
-                // PDF mode - extraction pane
-                if let Some(renderer) = &app.edit_display {
-                    (pane_col + renderer.viewport_x, pane_row + renderer.viewport_y)
-                } else {
-                    (pane_col, pane_row)
-                }
-            };
-
-            // Move the grid cursor to the clicked position (allows virtual space!)
-            cursor.move_to(grid_row, grid_col);
-
-            // Minimal logging - just one line, doesn't change behavior
-            crate::minimal_debug::log_click(x, y, grid_row, grid_col);
-
-            // Log coordinate transformation if debugging
-            if app.debug_mode {
-                crate::logger::log_coordinate_event(
-                    "Click",
-                    (x, y),
-                    (pane_col, pane_row),
-                    (grid_col, grid_row),
-                    (if app.app_mode == crate::AppMode::NotesEditor {
-                        match app.active_pane {
-                            crate::ActivePane::Left => {
-                                app.notes_display.as_ref()
-                                    .map(|r| (r.viewport_x, r.viewport_y))
-                                    .unwrap_or((0, 0))
-                            }
-                            crate::ActivePane::Right => {
-                                app.edit_display.as_ref()
-                                    .map(|r| (r.viewport_x, r.viewport_y))
-                                    .unwrap_or((0, 0))
-                            }
-                        }
-                    } else {
-                        app.edit_display.as_ref()
-                            .map(|r| (r.viewport_x, r.viewport_y))
-                            .unwrap_or((0, 0))
-                    })
-                );
-            }
+            // Move cursor to the calculated grid position
+            cursor.move_to(coords.grid.1, coords.grid.0);
 
             // Update the selection based on cursor position
             // Even if we're in virtual space, we need to handle clicks

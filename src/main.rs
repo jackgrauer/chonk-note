@@ -28,12 +28,7 @@ mod notes_mode;
 mod debug;
 mod virtual_grid;
 mod grid_cursor;
-mod debug_overlay;
 mod coordinate_system;
-mod logger;
-mod visual_debugger;
-mod coordinate_validator;
-mod minimal_debug;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -136,11 +131,6 @@ pub struct App {
 
     // Store block cut data for paste
     pub block_clipboard: Option<Vec<String>>,  // Stores cut block data
-
-    // Debug information
-    pub debug_info: Option<debug_overlay::DebugInfo>,
-    pub debug_mode: bool,
-    pub last_mouse_pos: (u16, u16),
 }
 
 impl App {
@@ -212,11 +202,6 @@ impl App {
 
             // Block clipboard
             block_clipboard: None,
-
-            // Debug information
-            debug_info: None,
-            debug_mode: std::env::var("CHONKER_DEBUG").is_ok(),
-            last_mouse_pos: (0, 0),
         })
     }
 
@@ -299,11 +284,6 @@ impl App {
 
             // Block clipboard
             block_clipboard: None,
-
-            // Debug information
-            debug_info: None,
-            debug_mode: std::env::var("CHONKER_DEBUG").is_ok(),
-            last_mouse_pos: (0, 0),
         })
     }
 
@@ -740,30 +720,6 @@ async fn run_app(app: &mut App) -> Result<()> {
             print!("\x1b[u");
             stdout.flush()?;
 
-            // Render debug overlay if enabled
-            if app.debug_mode {
-                // Always show a small debug box in top-right corner
-                let debug_x = term_width.saturating_sub(25);
-                print!("{}", visual_debugger::render_debug_panel(&app, debug_x, 0));
-
-                if let Some(ref debug_info) = app.debug_info {
-                    // Render in title bar (non-intrusive)
-                    print!("{}", debug_info.render());
-
-                    // Also render status line at bottom if in verbose debug mode
-                    if std::env::var("CHONKER_DEBUG_VERBOSE").is_ok() {
-                        KittyTerminal::move_to(0, term_height - 1)?;
-                        print!("{}", debug_overlay::render_status_line(debug_info, term_width));
-                    }
-                }
-
-                // Draw cursor crosshairs if in ultra debug mode
-                if std::env::var("CHONKER_DEBUG_ULTRA").is_ok() {
-                    print!("{}", visual_debugger::render_cursor_debug(&app, term_width, term_height));
-                }
-
-                stdout.flush()?;
-            }
 
             // Status bar disabled to prevent debug flood
             // render_status_bar(&mut stdout, app, term_width, term_height)?;
