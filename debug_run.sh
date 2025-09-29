@@ -22,9 +22,10 @@ export CHONKER_DEBUG=1
 export CHONKER_LOG=1
 export DYLD_LIBRARY_PATH=./lib
 
-# Run with the test file by default, or use provided argument
+# Run in notes mode by default for testing, or use provided argument
 if [ $# -eq 0 ]; then
-    ./target/release/chonker7 /tmp/chonker7_test.txt
+    echo "Starting in Notes mode (use './debug_run.sh file.pdf' for PDF mode)"
+    ./target/release/chonker7 notes
 else
     ./target/release/chonker7 "$@"
 fi

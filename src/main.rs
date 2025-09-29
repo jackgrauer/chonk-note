@@ -31,6 +31,8 @@ mod grid_cursor;
 mod debug_overlay;
 mod coordinate_system;
 mod logger;
+mod visual_debugger;
+mod coordinate_validator;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -739,6 +741,10 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render debug overlay if enabled
             if app.debug_mode {
+                // Always show a small debug box in top-right corner
+                let debug_x = term_width.saturating_sub(25);
+                print!("{}", visual_debugger::render_debug_panel(&app, debug_x, 0));
+
                 if let Some(ref debug_info) = app.debug_info {
                     // Render in title bar (non-intrusive)
                     print!("{}", debug_info.render());
@@ -748,8 +754,14 @@ async fn run_app(app: &mut App) -> Result<()> {
                         KittyTerminal::move_to(0, term_height - 1)?;
                         print!("{}", debug_overlay::render_status_line(debug_info, term_width));
                     }
-                    stdout.flush()?;
                 }
+
+                // Draw cursor crosshairs if in ultra debug mode
+                if std::env::var("CHONKER_DEBUG_ULTRA").is_ok() {
+                    print!("{}", visual_debugger::render_cursor_debug(&app, term_width, term_height));
+                }
+
+                stdout.flush()?;
             }
 
             // Status bar disabled to prevent debug flood
