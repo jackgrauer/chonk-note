@@ -546,26 +546,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
 
                 app.needs_redraw = true;
-
-                // Force update of the appropriate display
-                if app.app_mode == crate::AppMode::NotesEditor {
-                    match app.active_pane {
-                        crate::ActivePane::Left => {
-                            if let Some(renderer) = &mut app.notes_display {
-                                renderer.update_from_rope(&app.notes_rope);
-                            }
-                        }
-                        crate::ActivePane::Right => {
-                            if let Some(renderer) = &mut app.edit_display {
-                                renderer.update_from_rope(&app.extraction_rope);
-                            }
-                        }
-                    }
-                } else {
-                    if let Some(renderer) = &mut app.edit_display {
-                        renderer.update_from_rope(&app.extraction_rope);
-                    }
-                }
+                // Removed duplicate display update to prevent flicker - needs_redraw is sufficient
             } else {
                 // Cursor is in virtual space - still handle the click!
                 let now = Instant::now();
@@ -621,26 +602,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 }
 
                 app.needs_redraw = true;
-
-                // Force update of the appropriate display
-                if app.app_mode == crate::AppMode::NotesEditor {
-                    match app.active_pane {
-                        crate::ActivePane::Left => {
-                            if let Some(renderer) = &mut app.notes_display {
-                                renderer.update_from_rope(&app.notes_rope);
-                            }
-                        }
-                        crate::ActivePane::Right => {
-                            if let Some(renderer) = &mut app.edit_display {
-                                renderer.update_from_rope(&app.extraction_rope);
-                            }
-                        }
-                    }
-                } else {
-                    if let Some(renderer) = &mut app.edit_display {
-                        renderer.update_from_rope(&app.extraction_rope);
-                    }
-                }
+                // Removed duplicate display update to prevent flicker - needs_redraw is sufficient
             }
         }
 

@@ -872,16 +872,21 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
                 show_cursor
             )?;
         } else {
-            let (sel_start, sel_end) = if app.notes_selection.primary().len() > 0 && show_cursor {
+            let (sel_start, sel_end) = if show_cursor {
                 let range = app.notes_selection.primary();
-                let start_line = app.notes_rope.char_to_line(range.from());
-                let end_line = app.notes_rope.char_to_line(range.to());
-                let start_line_char = app.notes_rope.line_to_char(start_line);
-                let end_line_char = app.notes_rope.line_to_char(end_line);
-                (
-                    Some((range.from() - start_line_char, start_line)),
-                    Some((range.to() - end_line_char, end_line))
-                )
+                // Only show selection highlighting if it's not collapsed to a point
+                if range.from() != range.to() {
+                    let start_line = app.notes_rope.char_to_line(range.from());
+                    let end_line = app.notes_rope.char_to_line(range.to());
+                    let start_line_char = app.notes_rope.line_to_char(start_line);
+                    let end_line_char = app.notes_rope.line_to_char(end_line);
+                    (
+                        Some((range.from() - start_line_char, start_line)),
+                        Some((range.to() - end_line_char, end_line))
+                    )
+                } else {
+                    (None, None)
+                }
             } else {
                 (None, None)
             };
@@ -935,16 +940,21 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
                 show_cursor
             )?;
         } else {
-            let (sel_start, sel_end) = if app.extraction_selection.primary().len() > 0 && show_cursor {
+            let (sel_start, sel_end) = if show_cursor {
                 let range = app.extraction_selection.primary();
-                let start_line = app.extraction_rope.char_to_line(range.from());
-                let end_line = app.extraction_rope.char_to_line(range.to());
-                let start_line_char = app.extraction_rope.line_to_char(start_line);
-                let end_line_char = app.extraction_rope.line_to_char(end_line);
-                (
-                    Some((range.from() - start_line_char, start_line)),
-                    Some((range.to() - end_line_char, end_line))
-                )
+                // Only show selection highlighting if it's not collapsed to a point
+                if range.from() != range.to() {
+                    let start_line = app.extraction_rope.char_to_line(range.from());
+                    let end_line = app.extraction_rope.char_to_line(range.to());
+                    let start_line_char = app.extraction_rope.line_to_char(start_line);
+                    let end_line_char = app.extraction_rope.line_to_char(end_line);
+                    (
+                        Some((range.from() - start_line_char, start_line)),
+                        Some((range.to() - end_line_char, end_line))
+                    )
+                } else {
+                    (None, None)
+                }
             } else {
                 (None, None)
             };
