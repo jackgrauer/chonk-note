@@ -1233,6 +1233,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // BASIC MOVEMENT - Arrow keys (grid-based!)
         (KeyCode::Up, mods) => {
+            eprintln!("DEBUG: Up arrow pressed, mods: {:?}", mods);
             // Clear any block selection when using arrow keys
             if app.app_mode == crate::AppMode::NotesEditor {
                 match app.active_pane {

@@ -66,83 +66,21 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
             Ok(true)
         }
 
-        // Arrow keys for navigation
+        // Arrow keys - handled in main keyboard.rs for grid-aware movement
         (KeyCode::Left, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
-            let pos = selection.primary().head;
-            if pos > 0 {
-                let new_pos = pos - 1;
-                if mods.contains(KeyModifiers::SHIFT) {
-                    let anchor = selection.primary().anchor;
-                    *selection = Selection::single(anchor, new_pos);
-                } else {
-                    *selection = Selection::point(new_pos);
-                }
-                app.needs_redraw = true;
-            }
-            Ok(true)
+            Ok(false) // Fall through to main handler
         }
 
         (KeyCode::Right, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
-            let pos = selection.primary().head;
-            if pos < rope.len_chars() {
-                let new_pos = pos + 1;
-                if mods.contains(KeyModifiers::SHIFT) {
-                    let anchor = selection.primary().anchor;
-                    *selection = Selection::single(anchor, new_pos);
-                } else {
-                    *selection = Selection::point(new_pos);
-                }
-                app.needs_redraw = true;
-            }
-            Ok(true)
+            Ok(false) // Fall through to main handler
         }
 
         (KeyCode::Up, mods) => {
-            let pos = selection.primary().head;
-            let line = rope.char_to_line(pos);
-            if line > 0 {
-                let line_start = rope.line_to_char(line);
-                let col = pos - line_start;
-
-                let new_line = line - 1;
-                let new_line_start = rope.line_to_char(new_line);
-                let new_line_len = rope.line(new_line).len_chars().saturating_sub(1);
-                let new_pos = new_line_start + col.min(new_line_len);
-
-                if mods.contains(KeyModifiers::SHIFT) {
-                    let anchor = selection.primary().anchor;
-                    *selection = Selection::single(anchor, new_pos);
-                } else {
-                    *selection = Selection::point(new_pos);
-                }
-                app.needs_redraw = true;
-            }
-            Ok(true)
+            Ok(false) // Fall through to main handler
         }
 
         (KeyCode::Down, mods) => {
-            let pos = selection.primary().head;
-            let line = rope.char_to_line(pos);
-            let max_line = rope.len_lines() - 1;
-
-            if line < max_line {
-                let line_start = rope.line_to_char(line);
-                let col = pos - line_start;
-
-                let new_line = line + 1;
-                let new_line_start = rope.line_to_char(new_line);
-                let new_line_len = rope.line(new_line).len_chars().saturating_sub(1);
-                let new_pos = new_line_start + col.min(new_line_len);
-
-                if mods.contains(KeyModifiers::SHIFT) {
-                    let anchor = selection.primary().anchor;
-                    *selection = Selection::single(anchor, new_pos);
-                } else {
-                    *selection = Selection::point(new_pos);
-                }
-                app.needs_redraw = true;
-            }
-            Ok(true)
+            Ok(false) // Fall through to main handler
         }
 
         // Let other keys fall through
