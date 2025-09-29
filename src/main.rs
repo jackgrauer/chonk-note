@@ -844,7 +844,9 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
 
         renderer.follow_cursor(cursor_col, cursor_line, 3);
 
-        let viewport_relative_cursor = (cursor_col, cursor_line);
+        // The cursor position for rendering should be absolute (in buffer coordinates)
+        // Not relative to viewport
+        let absolute_cursor = (cursor_col, cursor_line);
 
         // Use full space - no padding
         let content_x = x;
@@ -856,7 +858,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         if app.notes_block_selection.is_some() {
             renderer.render_with_block_selection(
                 content_x, content_y, display_width, display_height,
-                viewport_relative_cursor,
+                absolute_cursor,
                 app.notes_block_selection.as_ref(),
                 show_cursor
             )?;
@@ -877,7 +879,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
 
             renderer.render_with_cursor_and_selection(
                 content_x, content_y, display_width, display_height,
-                viewport_relative_cursor,
+                absolute_cursor,
                 sel_start,
                 sel_end,
                 show_cursor
@@ -904,7 +906,9 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
         renderer.follow_cursor(cursor_col, cursor_line, 3);
 
-        let viewport_relative_cursor = (cursor_col, cursor_line);
+        // The cursor position for rendering should be absolute (in buffer coordinates)
+        // Not relative to viewport
+        let absolute_cursor = (cursor_col, cursor_line);
 
         // Use full space - no padding
         let content_x = x;
@@ -917,7 +921,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
         if app.extraction_block_selection.is_some() {
             renderer.render_with_block_selection(
                 content_x, content_y, display_width, display_height,
-                viewport_relative_cursor,
+                absolute_cursor,
                 app.extraction_block_selection.as_ref(),
                 show_cursor
             )?;
@@ -938,7 +942,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 
             renderer.render_with_cursor_and_selection(
                 content_x, content_y, display_width, display_height,
-                viewport_relative_cursor,
+                absolute_cursor,
                 sel_start,
                 sel_end,
                 show_cursor

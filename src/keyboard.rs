@@ -1274,6 +1274,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     *selection = Selection::point(pos);
                 }
             }
+            app.needs_redraw = true;
         }
 
         (KeyCode::Down, mods) => {
@@ -1316,6 +1317,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     *selection = Selection::point(pos);
                 }
             }
+            app.needs_redraw = true;
         }
 
         (KeyCode::Left, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {
@@ -1357,6 +1359,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     *selection = Selection::point(pos);
                 }
             }
+            app.needs_redraw = true;
         }
 
         (KeyCode::Right, mods) if !mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::ALT) => {

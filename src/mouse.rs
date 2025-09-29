@@ -281,17 +281,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             // Calculate grid position for drag end
             let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
-                if x < term_width / 2 {
-                    4  // Notes editor starts after notes list
-                } else {
-                    term_width / 2  // Extraction text starts at midpoint
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                match app.active_pane {
+                    crate::ActivePane::Left => notes_list_width,  // Notes editor (no divider)
+                    crate::ActivePane::Right => extraction_start_x,  // Extraction text (no divider)
                 }
             } else {
-                current_split  // In PDF mode
+                current_split  // In PDF mode (no divider)
             };
 
             let grid_col = x.saturating_sub(pane_start_x) as usize;
-            let grid_row = y.saturating_sub(1) as usize;  // Terminal is 1-based
+            let grid_row = y as usize;  // Terminal coordinates are already 0-based from kitty
 
             // Move the grid cursor to the drag position
             cursor.move_to(grid_row, grid_col);
@@ -478,27 +482,33 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             // Calculate grid position (allow clicking anywhere!)
             let pane_start_x = if app.app_mode == crate::AppMode::NotesEditor {
-                if x < term_width / 2 {
-                    4  // Notes editor starts after notes list
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
+
+                if x > notes_list_width && x < extraction_start_x {
+                    notes_list_width  // Notes editor starts right after notes list (no divider)
                 } else {
-                    term_width / 2  // Extraction text starts at midpoint
+                    extraction_start_x  // Extraction text starts right after notes editor (no divider)
                 }
             } else {
-                current_split  // In PDF mode
+                current_split  // In PDF mode (no divider)
             };
 
             let grid_col = x.saturating_sub(pane_start_x) as usize;
-            let grid_row = y.saturating_sub(1) as usize;  // Terminal is 1-based
+            let grid_row = y as usize;  // Terminal coordinates are already 0-based from kitty
 
             // Move the grid cursor to the clicked position (allows virtual space!)
             cursor.move_to(grid_row, grid_col);
 
             // Update the selection based on cursor position
             // Even if we're in virtual space, we need to handle clicks
+            let now = Instant::now();
+
             if let Some(pos) = cursor.to_char_offset(grid) {
                 // Cursor is at a valid text position
                 // Debug log text position
-                let now = Instant::now();
 
                 // Check for double-click
                 let is_double_click = if let (Some(last_time), Some((last_x, last_y))) =
