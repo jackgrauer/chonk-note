@@ -313,13 +313,17 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         // Update helix selection to match block selection
                         *selection = block_sel.to_selection(rope);
 
-                    } else {
-                        // No block selection active - use regular selection extension
-                        // The selection anchor was set during the initial click
-                        let anchor = selection.primary().anchor;
-                        // Try to get char position from grid cursor
-                        if let Some(end_pos) = cursor.to_char_offset(grid) {
-                            *selection = Selection::single(anchor, end_pos);
+                    } else if mouse_state.is_dragging {
+                        // Start block selection on first drag movement
+                        *block_selection = Some(BlockSelection::new(end_line, end_col));
+                        if let Some(block_sel) = block_selection {
+                            block_sel.anchor_visual_col = visual_col;
+                            block_sel.cursor_visual_col = visual_col;
+                        }
+
+                        // Also set selection
+                        if let Some(pos) = cursor.to_char_offset(grid) {
+                            *selection = Selection::point(pos);
                         }
                     }
                 }
@@ -521,12 +525,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     let line_slice = rope_slice.line(line);
                     let visual_col = char_idx_to_visual_col(line_slice, col);
 
-                    // Start a new block selection on every click
-                    *block_selection = Some(BlockSelection::new(line, col));
-                    if let Some(block_sel) = block_selection {
-                        block_sel.anchor_visual_col = visual_col;
-                        block_sel.cursor_visual_col = visual_col;
-                    }
+                    // Clear any existing block selection first
+                    *block_selection = None;
+
+                    // Don't start block selection on single click - only on drag
+                    // This prevents ghost cursors from appearing
 
 
                     *selection = Selection::point(pos);
@@ -609,8 +612,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         *selection = Selection::point(rope.len_chars());
                     }
 
-                    // Always start block selection (no Alt required!)
-                    *block_selection = Some(BlockSelection::new(cursor.row, cursor.col));
+                    // Clear any existing block selection on single click
+                    *block_selection = None;
 
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));

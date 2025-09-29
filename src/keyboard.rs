@@ -1,5 +1,5 @@
 // MINIMAL KEYBOARD HANDLING
-use crate::App;
+use crate::{App, AppMode, ActivePane};
 use crate::grid_cursor::GridCursor;
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
@@ -230,7 +230,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.extraction_selection = Selection::point(start);
 
                     // Commit to history for undo/redo
-                    app.history.commit_revision(&transaction, &state);
+                    app.extraction_history.commit_revision(&transaction, &state);
                 }
             }
         }
@@ -256,7 +256,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.extraction_selection = Selection::point(line_start);
 
                     // Commit to history for undo/redo
-                    app.history.commit_revision(&transaction, &state);
+                    app.extraction_history.commit_revision(&transaction, &state);
                 }
             }
         }
@@ -270,6 +270,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('x'), mods) if mods.contains(KeyModifiers::SUPER) => {
             // Check for block selection first
             if let Some(block_sel) = &app.extraction_block_selection {
+                // Save state before cut for history
+                let old_rope = app.extraction_rope.clone();
+                let old_selection = app.extraction_selection.clone();
+
                 // Use non-collapsing block cut
                 let cut_data = app.extraction_grid.cut_block(block_sel);
                 app.block_clipboard = Some(cut_data.clone());
@@ -281,37 +285,24 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Update rope from grid
                 app.extraction_rope = app.extraction_grid.rope.clone();
 
+                // Create transaction for history
+                let transaction = Transaction::change(
+                    &old_rope,
+                    std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
+                );
+                let state = State {
+                    doc: old_rope,
+                    selection: old_selection,
+                };
+                app.extraction_history.commit_revision(&transaction, &state);
+
                 // Clear block selection after cut
                 app.extraction_block_selection = None;
 
                 app.status_message = format!("Cut block: {} lines", cut_data.len());
             } else {
-                // Regular cut - copy to clipboard then delete selection
-                let text = extract_selection_from_rope(app);
-                if !text.is_empty() {
-                    copy_to_clipboard(&text)?;
-
-                    // Save state before deletion for history
-                    let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
-                    };
-
-                    // Delete the selected text
-                    let transaction = Transaction::delete(&app.extraction_rope, app.extraction_selection.ranges().into_iter().map(|r| (r.from(), r.to())));
-
-                    // Apply transaction
-                    let success = transaction.apply(&mut app.extraction_rope);
-
-                    if success {
-                        // Map selection through changes
-                        app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
-
-                        // Commit to history for undo/redo
-                        app.history.commit_revision(&transaction, &state);
-                        app.status_message = "Cut".to_string();
-                    }
-                }
+                // No block selection - just clear any text in clipboard
+                app.status_message = "No selection to cut".to_string();
             }
         }
 
@@ -341,31 +332,34 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        // On macOS, Cmd key is being reported as CONTROL by Kitty
-        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
-            // Debug to file
+        // Ctrl+Z: Undo
+        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Get the appropriate history and rope based on active pane
+            let (history, rope, selection, renderer) = if app.app_mode == AppMode::NotesEditor {
+                match app.active_pane {
+                    ActivePane::Left => (&mut app.notes_history, &mut app.notes_rope, &mut app.notes_selection, &mut app.notes_display),
+                    ActivePane::Right => (&mut app.extraction_history, &mut app.extraction_rope, &mut app.extraction_selection, &mut app.edit_display),
+                }
+            } else {
+                // PDF mode - always use extraction
+                (&mut app.extraction_history, &mut app.extraction_rope, &mut app.extraction_selection, &mut app.edit_display)
+            };
 
-            // CORRECT HELIX: Undo with proper API!
-            if let Some(transaction) = app.history.undo() {
-                // Clone the transaction since we get a reference from history
+            // Perform undo
+            if let Some(transaction) = history.undo() {
                 let transaction = transaction.clone();
-                // Apply undo transaction (in-place)
-                let success = transaction.apply(&mut app.extraction_rope);
+                let success = transaction.apply(rope);
 
                 if success {
                     // Map selection through changes
-                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+                    *selection = selection.clone().map(transaction.changes());
                     app.status_message = "Undo".to_string();
-
-                    // CRITICAL: Trigger redraw after undo!
                     app.needs_redraw = true;
 
-                    // Update the edit display renderer
-                    if let Some(renderer) = &mut app.edit_display {
-                        renderer.update_from_rope(&app.extraction_rope);
+                    // Update the renderer
+                    if let Some(r) = renderer {
+                        r.update_from_rope(rope);
                     }
-
-                    // Debug to file
                 } else {
                     app.status_message = "Undo failed".to_string();
                 }
@@ -374,31 +368,34 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        // On macOS, Cmd key is being reported as CONTROL by Kitty
-        (KeyCode::Char('z'), mods) if mods.contains(KeyModifiers::CONTROL) && mods.contains(KeyModifiers::SHIFT) => {
-            // Debug to file
+        // Ctrl+U: Redo
+        (KeyCode::Char('u'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Get the appropriate history and rope based on active pane
+            let (history, rope, selection, renderer) = if app.app_mode == AppMode::NotesEditor {
+                match app.active_pane {
+                    ActivePane::Left => (&mut app.notes_history, &mut app.notes_rope, &mut app.notes_selection, &mut app.notes_display),
+                    ActivePane::Right => (&mut app.extraction_history, &mut app.extraction_rope, &mut app.extraction_selection, &mut app.edit_display),
+                }
+            } else {
+                // PDF mode - always use extraction
+                (&mut app.extraction_history, &mut app.extraction_rope, &mut app.extraction_selection, &mut app.edit_display)
+            };
 
-            // CORRECT HELIX: Redo with proper API!
-            if let Some(transaction) = app.history.redo() {
-                // Clone the transaction since we get a reference from history
+            // Perform redo
+            if let Some(transaction) = history.redo() {
                 let transaction = transaction.clone();
-                // Apply redo transaction (in-place)
-                let success = transaction.apply(&mut app.extraction_rope);
+                let success = transaction.apply(rope);
 
                 if success {
                     // Map selection through changes
-                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+                    *selection = selection.clone().map(transaction.changes());
                     app.status_message = "Redo".to_string();
-
-                    // CRITICAL: Trigger redraw after redo!
                     app.needs_redraw = true;
 
-                    // Update the edit display renderer
-                    if let Some(renderer) = &mut app.edit_display {
-                        renderer.update_from_rope(&app.extraction_rope);
+                    // Update the renderer
+                    if let Some(r) = renderer {
+                        r.update_from_rope(rope);
                     }
-
-                    // Debug to file
                 } else {
                     app.status_message = "Redo failed".to_string();
                 }
@@ -408,39 +405,35 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::SUPER) => {
-            // Check if we have block clipboard data to paste
-            if let Some(block_data) = &app.block_clipboard {
-                // Block paste at cursor position
+            // Get text from clipboard
+            if let Ok(text) = paste_from_clipboard() {
+                // Save state before paste for history
+                let old_rope = app.extraction_rope.clone();
+                let old_selection = app.extraction_selection.clone();
+
+                // Convert text to block data (split by lines)
+                let block_data: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+
+                // Paste at cursor position using grid
                 let (row, col) = (app.extraction_cursor.row, app.extraction_cursor.col);
-                app.extraction_grid.paste_block(row, col, block_data);
+                app.extraction_grid.paste_block(row, col, &block_data);
 
                 // Update rope from grid
                 app.extraction_rope = app.extraction_grid.rope.clone();
 
-                app.status_message = format!("Pasted block: {} lines", block_data.len());
-                app.needs_redraw = true;
-            } else if let Ok(text) = paste_from_clipboard() {
-                // Regular paste with transactions
-                // Save state before transaction for history
+                // Create transaction for history
+                let transaction = Transaction::change(
+                    &old_rope,
+                    std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
+                );
                 let state = State {
-                    doc: app.extraction_rope.clone(),
-                    selection: app.extraction_selection.clone(),
+                    doc: old_rope,
+                    selection: old_selection,
                 };
+                app.extraction_history.commit_revision(&transaction, &state);
 
-                // CORRECT HELIX: Paste with Ferrari engine!
-                let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, text.into());
-
-                // Apply and get new rope
-                let success = transaction.apply(&mut app.extraction_rope);
-
-                if success {
-                    // Map selection through changes
-                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
-
-                    // Commit to history for undo/redo
-                    app.history.commit_revision(&transaction, &state);
-                    app.status_message = "Pasted".to_string();
-                }
+                app.status_message = format!("Pasted {} lines", block_data.len());
+                app.needs_redraw = true;
             }
         }
 
@@ -575,114 +568,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 return Ok(true);
             }
 
-            // Fall back to regular cut if no block selection
-            let text = extract_selection_from_rope(app);
-            if !text.is_empty() {
-                // Copy to clipboard
-                copy_to_clipboard(&text)?;
-
-                // In Notes mode, work with the appropriate rope and selection based on active pane
-                if app.app_mode == crate::AppMode::NotesEditor {
-                    let (rope, selection) = match app.active_pane {
-                        crate::ActivePane::Left => {
-                            (&mut app.notes_rope, &mut app.notes_selection)
-                        }
-                        crate::ActivePane::Right => {
-                            (&mut app.extraction_rope, &mut app.extraction_selection)
-                        }
-                    };
-
-                    // Save state before deletion for history
-                    let _state = State {
-                        doc: rope.clone(),
-                        selection: selection.clone(),
-                    };
-
-                    // Get the selection to use for deletion
-                    let sel_for_deletion = selection.clone();
-
-                    // Delete the selected text using Transaction
-                    let transaction = Transaction::change_by_selection(&rope, &selection, |range| {
-                        (range.from(), range.to(), None)
-                    });
-
-                    // Apply transaction
-                    transaction.apply(rope);
-
-                    // Update selection to collapsed position at deletion point
-                    let new_pos = sel_for_deletion.primary().from();
-                    *selection = Selection::point(new_pos);
-
-                    app.status_message = format!("Cut {} characters", text.len());
-                    app.needs_redraw = true;
-
-                } else {
-                    // PDF mode logic - use extraction_rope
-                    // Save state before deletion for history
-                    let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
-                    };
-
-                    // Get the selection to use for deletion (block or regular)
-                    let selection = if let Some(block_sel) = &app.extraction_block_selection {
-                        block_sel.to_selection(&app.extraction_rope)
-                    } else {
-                        app.extraction_selection.clone()
-                    };
-
-                    // Delete the selected text using Transaction
-                    let transaction = if let Some(block_sel) = &app.extraction_block_selection {
-                        let selection = block_sel.to_selection(&app.extraction_rope);
-                        Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
-                            let start = range.from();
-                            let end = range.to();
-                            let text = app.extraction_rope.slice(start..end);
-                            let mut replacement = String::new();
-                            for ch in text.chars() {
-                                if ch == '\n' || ch == '\r' {
-                                    replacement.push(ch);
-                                } else {
-                                    replacement.push(' ');
-                                }
-                            }
-                            (start, end, Some(replacement.into()))
-                        })
-                    } else {
-                        Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
-                            (range.from(), range.to(), None)
-                        })
-                    };
-
-                    // Apply transaction
-                    transaction.apply(&mut app.extraction_rope);
-
-                    // Update selection to collapsed position at deletion point
-                    let new_pos = selection.primary().from();
-                    app.extraction_selection = Selection::point(new_pos);
-
-                    // Clear any block selection
-                    if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => app.notes_block_selection = None,
-                    crate::ActivePane::Right => app.extraction_block_selection = None,
-                }
-            } else {
-                app.extraction_block_selection = None;
-            }
-
-                    // Add to history for undo support
-                    app.history.commit_revision(&transaction, &state);
-                }
-
-                // Force re-render
-                app.needs_redraw = true;
-                app.status_message = format!("Cut {} characters", text.len());
-
-            } else {
-                app.status_message = "Nothing to cut".to_string();
-                app.needs_redraw = true;
-            }
+            // No block selection - show message
+            app.status_message = "No block selection to cut".to_string();
+            app.needs_redraw = true;
+            return Ok(true);  // Important: return to prevent falling through to other handlers
         }
 
         // Copy - Ctrl+C
@@ -763,87 +652,66 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.status_message = format!("Pasted block: {} lines", block_data.len());
                 app.needs_redraw = true;
             } else if let Ok(text) = paste_from_clipboard() {
-                // Regular paste
-                // In Notes mode, work with the appropriate rope and selection based on active pane
+                // Convert clipboard text to block data for grid-based paste
+                let block_data: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+
+                // In Notes mode, work with the appropriate grid, cursor, rope and history
                 if app.app_mode == crate::AppMode::NotesEditor {
-                    let (rope, selection) = match app.active_pane {
+                    let (grid, cursor, rope, history, selection) = match app.active_pane {
                         crate::ActivePane::Left => {
-                            (&mut app.notes_rope, &mut app.notes_selection)
+                            (&mut app.notes_grid, &app.notes_cursor, &mut app.notes_rope,
+                             &mut app.notes_history, &mut app.notes_selection)
                         }
                         crate::ActivePane::Right => {
-                            (&mut app.extraction_rope, &mut app.extraction_selection)
+                            (&mut app.extraction_grid, &app.extraction_cursor, &mut app.extraction_rope,
+                             &mut app.extraction_history, &mut app.extraction_selection)
                         }
                     };
 
-                    // Save state before transaction for history
-                    let _state = State {
-                        doc: rope.clone(),
-                        selection: selection.clone(),
+                    // Save state before paste for history
+                    let old_rope = rope.clone();
+                    let old_selection = selection.clone();
+
+                    // Paste using grid at cursor position
+                    grid.paste_block(cursor.row, cursor.col, &block_data);
+
+                    // Update rope from grid
+                    *rope = grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &old_rope,
+                        std::iter::once((0, old_rope.len_chars(), Some(rope.to_string().into())))
+                    );
+                    let state = State {
+                        doc: old_rope,
+                        selection: old_selection,
                     };
-
-                    // Get the selection to use for paste
-                    let sel_for_paste = selection.clone();
-
-                    // Create paste transaction
-                    let transaction = Transaction::change_by_selection(&rope, &sel_for_paste, |range| {
-                        (range.from(), range.to(), Some(text.clone().into()))
-                    });
-
-                    // Apply and get new rope
-                    transaction.apply(rope);
-
-                    // Move cursor to end of pasted text
-                    let paste_end = sel_for_paste.primary().from() + text.len();
-                    *selection = Selection::point(paste_end);
-
-                    app.status_message = format!("Pasted {} characters", text.len());
-                    app.needs_redraw = true;
+                    history.commit_revision(&transaction, &state);
 
                 } else {
-                    // PDF mode logic - use extraction_rope
-                    // Save state before transaction for history
+                    // PDF mode - save state before paste for history
+                    let old_rope = app.extraction_rope.clone();
+                    let old_selection = app.extraction_selection.clone();
+
+                    // Paste to extraction grid
+                    app.extraction_grid.paste_block(app.extraction_cursor.row, app.extraction_cursor.col, &block_data);
+                    app.extraction_rope = app.extraction_grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &old_rope,
+                        std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
+                    );
                     let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
+                        doc: old_rope,
+                        selection: old_selection,
                     };
-
-                    // Get the selection to use for paste (block or regular)
-                    let selection = if let Some(block_sel) = &app.extraction_block_selection {
-                        block_sel.to_selection(&app.extraction_rope)
-                    } else {
-                        app.extraction_selection.clone()
-                    };
-
-                    // Create paste transaction
-                    let transaction = Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
-                        (range.from(), range.to(), Some(text.clone().into()))
-                    });
-
-                    // Apply and get new rope
-                    transaction.apply(&mut app.extraction_rope);
-
-                    // Move cursor to end of pasted text
-                    let paste_end = selection.primary().from() + text.len();
-                    app.extraction_selection = Selection::point(paste_end);
-
-                    // Clear any block selection
-                    if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => app.notes_block_selection = None,
-                    crate::ActivePane::Right => app.extraction_block_selection = None,
-                }
-            } else {
-                app.extraction_block_selection = None;
-            }
-
-                    // Add to history
-                    app.history.commit_revision(&transaction, &state);
+                    app.extraction_history.commit_revision(&transaction, &state);
                 }
 
-                // Force update
+                app.status_message = format!("Pasted {} lines", block_data.len());
                 app.needs_redraw = true;
-                app.status_message = "Pasted".to_string();
-
             }
         }
 
@@ -1506,7 +1374,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 }
 
                 // Commit to history for undo/redo
-                app.history.commit_revision(&transaction, &state);
+                app.extraction_history.commit_revision(&transaction, &state);
             }
         }
 
@@ -1550,7 +1418,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Set virtual column to where we actually are (at the end of spaces)
 
                 // Commit to history for undo/redo
-                app.history.commit_revision(&transaction, &state);
+                app.extraction_history.commit_revision(&transaction, &state);
             }
         }
 
@@ -1670,7 +1538,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         app.extraction_grid.rope = app.extraction_rope.clone();
 
                         // Commit to history for undo/redo
-                        app.history.commit_revision(&transaction, &state);
+                        app.extraction_history.commit_revision(&transaction, &state);
                     }
                 }
             }
@@ -1779,6 +1647,9 @@ fn paste_from_clipboard() -> Result<String> {
         return Err(anyhow::anyhow!("pbpaste failed with status: {}", output.status));
     }
 
-    String::from_utf8(output.stdout)
-        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 from pbpaste: {}", e))
+    let text = String::from_utf8(output.stdout)
+        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 from pbpaste: {}", e))?;
+
+    // Filter out ANSI codes and control characters from pasted text
+    Ok(crate::text_filter::clean_text_for_insertion(&text))
 }

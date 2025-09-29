@@ -29,6 +29,7 @@ mod debug;
 mod virtual_grid;
 mod grid_cursor;
 mod coordinate_system;
+mod text_filter;
 
 use edit_renderer::EditPanelRenderer;
 use mouse::MouseState;
@@ -83,7 +84,8 @@ pub struct App {
     pub notes_rope: Rope,              // Notes text (left pane when in notes mode)
     pub extraction_selection: Selection,  // Right pane selection state (for Helix operations)
     pub notes_selection: Selection,    // Left pane (notes) selection state (for Helix operations)
-    pub history: History,              // Undo/redo (currently only single-pane)
+    pub extraction_history: History,   // Undo/redo for extraction pane
+    pub notes_history: History,        // Undo/redo for notes pane
     pub extraction_block_selection: Option<BlockSelection>,  // Block selection for extraction pane
     pub notes_block_selection: Option<BlockSelection>,  // Block selection for notes pane
     pub active_pane: ActivePane,       // Which pane has focus
@@ -150,7 +152,8 @@ impl App {
             notes_rope: Rope::from(""),              // Notes text (left pane in notes mode)
             extraction_selection: Selection::point(0),
             notes_selection: Selection::point(0),
-            history: History::default(),             // Empty history
+            extraction_history: History::default(),  // Empty history for extraction
+            notes_history: History::default(),       // Empty history for notes
             extraction_block_selection: None,        // No block selection initially
             notes_block_selection: None,             // No block selection initially
             active_pane: ActivePane::Right,          // Start with extraction pane active
@@ -237,7 +240,8 @@ impl App {
             notes_rope: notes_rope.clone(),
             extraction_selection: Selection::point(0),
             notes_selection,
-            history: History::default(),
+            extraction_history: History::default(),
+            notes_history: History::default(),
             extraction_block_selection: None,
             notes_block_selection: None,
             active_pane: ActivePane::Left,  // Notes mode starts with left pane active
@@ -337,7 +341,9 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
 
-        self.extraction_rope = Rope::from_str(&text);
+        // Filter out any ANSI codes from extracted text
+        let cleaned_text = text_filter::clean_text_for_insertion(&text);
+        self.extraction_rope = Rope::from_str(&cleaned_text);
         self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
 
         // Update the extraction grid with the new rope
@@ -529,7 +535,9 @@ impl App {
                     .map(|row| row.iter().collect::<String>())
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.extraction_rope = Rope::from_str(&text);
+                // Filter out any ANSI codes from extracted text
+        let cleaned_text = text_filter::clean_text_for_insertion(&text);
+        self.extraction_rope = Rope::from_str(&cleaned_text);
                 self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
                 // Update renderer from rope and reset viewport
                 if let Some(renderer) = &mut self.edit_display {
