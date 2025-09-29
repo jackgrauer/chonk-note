@@ -465,7 +465,10 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Even if we're in virtual space, we need to handle clicks
             let now = Instant::now();
 
-            if let Some(pos) = cursor.to_char_offset(grid) {
+            // Try to get text position, but handle virtual space too
+            let char_pos = cursor.to_char_offset(grid);
+
+            if let Some(pos) = char_pos {
                 // Cursor is at a valid text position
                 // Debug log text position
 
@@ -594,12 +597,17 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     mouse_state.last_click = None; // Reset to avoid triple-click
                 } else {
                     // Single click in virtual space
-                    // Set the selection to the closest valid position (end of line)
-                    let line_idx = cursor.row.min(rope.len_lines().saturating_sub(1));
-                    let line_start = rope.line_to_char(line_idx);
-                    let line = rope.line(line_idx);
-                    let line_end = line_start + line.len_chars().saturating_sub(1);
-                    *selection = Selection::point(line_end);
+                    // For virtual space, we need to handle clicking beyond existing text
+                    if cursor.row < rope.len_lines() {
+                        // Clicking on a line that exists
+                        let line_start = rope.line_to_char(cursor.row);
+                        let line = rope.line(cursor.row);
+                        let line_end = line_start + line.len_chars().saturating_sub(1);
+                        *selection = Selection::point(line_end);
+                    } else {
+                        // Clicking beyond all text - position at end of document
+                        *selection = Selection::point(rope.len_chars());
+                    }
 
                     // Always start block selection (no Alt required!)
                     *block_selection = Some(BlockSelection::new(cursor.row, cursor.col));
