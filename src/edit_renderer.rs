@@ -425,8 +425,34 @@ impl EditPanelRenderer {
                     }
                 }
             } else {
-                // Clear the rest of the viewport
-                write!(stdout, "{:width$}", "", width = render_width as usize)?;
+                // Handle virtual space rows (beyond text content)
+                // Check if cursor is on this virtual row
+                if cursor.1 == buffer_y && show_cursor {
+                    // Render spaces up to the cursor position
+                    let cursor_col = cursor.0.saturating_sub(self.scroll_x as usize);
+
+                    if cursor_col < render_width as usize {
+                        // Render spaces before cursor
+                        for _ in 0..cursor_col {
+                            write!(stdout, " ")?;
+                        }
+
+                        // Render cursor in virtual space (Material teal)
+                        print!("\x1b[48;2;0;188;212m \x1b[m");
+
+                        // Fill rest of line with spaces
+                        let remaining = render_width as usize - cursor_col - 1;
+                        if remaining > 0 {
+                            write!(stdout, "{:width$}", "", width = remaining)?;
+                        }
+                    } else {
+                        // Cursor is scrolled off to the right
+                        write!(stdout, "{:width$}", "", width = render_width as usize)?;
+                    }
+                } else {
+                    // No cursor on this line, just clear
+                    write!(stdout, "{:width$}", "", width = render_width as usize)?;
+                }
             }
         }
 

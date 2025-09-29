@@ -12,18 +12,54 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
-    // Get the active rope and selection
-    let (rope, selection) = match app.active_pane {
-        ActivePane::Left => (&mut app.notes_rope, &mut app.notes_selection),
-        ActivePane::Right => (&mut app.extraction_rope, &mut app.extraction_selection),
+    // Get the active rope, selection, and grid cursor
+    let (rope, selection, grid_cursor) = match app.active_pane {
+        ActivePane::Left => (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_cursor),
+        ActivePane::Right => (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_cursor),
     };
 
     match (key.code, key.modifiers) {
         // Basic character input
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
-            let transaction = Transaction::insert(rope, selection, c.to_string().into());
-            transaction.apply(rope);
-            *selection = selection.clone().map(transaction.changes());
+            // Use grid cursor position for insertion
+            let cursor_row = grid_cursor.row;
+            let cursor_col = grid_cursor.col;
+
+            // Ensure the line exists
+            while rope.len_lines() <= cursor_row {
+                let newline_pos = rope.len_chars();
+                rope.insert(newline_pos, "\n");
+            }
+
+            // Get the line boundaries
+            let line_start = rope.line_to_char(cursor_row);
+            let line_end = if cursor_row + 1 < rope.len_lines() {
+                rope.line_to_char(cursor_row + 1).saturating_sub(1) // Exclude newline
+            } else {
+                rope.len_chars()
+            };
+
+            let line_len = line_end.saturating_sub(line_start);
+
+            // If cursor is beyond line end, pad with spaces
+            if cursor_col > line_len {
+                let padding = " ".repeat(cursor_col - line_len);
+                rope.insert(line_end, &padding);
+            }
+
+            // Calculate the actual insertion position
+            let insert_pos = line_start + cursor_col;
+
+            // Insert the character
+            rope.insert(insert_pos, &c.to_string());
+
+            // Move cursor right
+            grid_cursor.col += 1;
+            grid_cursor.desired_col = Some(grid_cursor.col);
+
+            // Update selection to match cursor
+            *selection = Selection::point(insert_pos + 1);
+
             app.needs_redraw = true;
 
             // Auto-save for notes pane
@@ -35,28 +71,95 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
 
         // Backspace
         (KeyCode::Backspace, mods) if !mods.contains(KeyModifiers::ALT) && !mods.contains(KeyModifiers::SUPER) => {
-            if selection.primary().head > 0 {
-                let transaction = Transaction::delete(rope, std::iter::once((
-                    selection.primary().head.saturating_sub(1),
-                    selection.primary().head
-                )));
-                transaction.apply(rope);
-                *selection = selection.clone().map(transaction.changes());
-                app.needs_redraw = true;
+            if grid_cursor.col > 0 {
+                // Move cursor left
+                grid_cursor.col -= 1;
+                grid_cursor.desired_col = Some(grid_cursor.col);
 
-                // Auto-save for notes pane
-                if app.active_pane == ActivePane::Left {
-                    auto_save_note(app)?;
+                // Calculate position to delete
+                if grid_cursor.row < rope.len_lines() {
+                    let line_start = rope.line_to_char(grid_cursor.row);
+                    let delete_pos = line_start + grid_cursor.col;
+
+                    // Only delete if there's actually a character there
+                    if delete_pos < rope.len_chars() {
+                        let next_pos = delete_pos + 1;
+                        rope.remove(delete_pos..next_pos.min(rope.len_chars()));
+
+                        // Update selection to match cursor
+                        *selection = Selection::point(delete_pos);
+                    }
                 }
+            } else if grid_cursor.row > 0 {
+                // At beginning of line, move to end of previous line
+                grid_cursor.row -= 1;
+
+                if grid_cursor.row < rope.len_lines() {
+                    let line = rope.line(grid_cursor.row);
+                    let line_len = line.len_chars().saturating_sub(1); // Exclude newline
+                    grid_cursor.col = line_len;
+                    grid_cursor.desired_col = Some(grid_cursor.col);
+
+                    // Delete the newline character
+                    let line_end = rope.line_to_char(grid_cursor.row + 1).saturating_sub(1);
+                    if line_end < rope.len_chars() {
+                        rope.remove(line_end..line_end + 1);
+                        *selection = Selection::point(line_end);
+                    }
+                }
+            }
+
+            app.needs_redraw = true;
+
+            // Auto-save for notes pane
+            if app.active_pane == ActivePane::Left {
+                auto_save_note(app)?;
             }
             Ok(true)
         }
 
         // Enter
         (KeyCode::Enter, _) => {
-            let transaction = Transaction::insert(rope, selection, "\n".into());
-            transaction.apply(rope);
-            *selection = selection.clone().map(transaction.changes());
+            // Insert newline at cursor position
+            let cursor_row = grid_cursor.row;
+            let cursor_col = grid_cursor.col;
+
+            // Ensure the line exists
+            while rope.len_lines() <= cursor_row {
+                let newline_pos = rope.len_chars();
+                rope.insert(newline_pos, "\n");
+            }
+
+            // Get the line boundaries
+            let line_start = rope.line_to_char(cursor_row);
+            let line_end = if cursor_row + 1 < rope.len_lines() {
+                rope.line_to_char(cursor_row + 1).saturating_sub(1) // Exclude newline
+            } else {
+                rope.len_chars()
+            };
+
+            let line_len = line_end.saturating_sub(line_start);
+
+            // If cursor is beyond line end, pad with spaces up to cursor
+            if cursor_col > line_len {
+                let padding = " ".repeat(cursor_col - line_len);
+                rope.insert(line_end, &padding);
+            }
+
+            // Calculate the actual insertion position
+            let insert_pos = line_start + cursor_col;
+
+            // Insert newline
+            rope.insert(insert_pos, "\n");
+
+            // Move cursor to beginning of next line
+            grid_cursor.row += 1;
+            grid_cursor.col = 0;
+            grid_cursor.desired_col = Some(0);
+
+            // Update selection to match cursor
+            *selection = Selection::point(insert_pos + 1);
+
             app.needs_redraw = true;
 
             // Auto-save for notes pane
