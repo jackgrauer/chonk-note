@@ -13,8 +13,8 @@ tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "fs", "time
 # Terminal UI
 crossterm = "0.28"  # TODO: Still used by edit_renderer and old file_picker
 
-# PDF
-pdfium-render = { version = "0.8", features = ["thread_safe"] }
+# PDF - using pdfalto instead of pdfium
+# pdfium removed - using pdfalto + leptess only
 image = "0.25"  # Single image version
 
 # Image display in terminal

@@ -15,7 +15,7 @@ use helix_core::{
 
 mod content_extractor;
 mod edit_renderer;
-mod pdf_renderer;
+// mod pdf_renderer; // Removed - using pdfalto instead
 mod kitty_file_picker;
 mod viuer_display;
 mod keyboard;
@@ -39,7 +39,6 @@ use block_selection::BlockSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExtractionMethod {
-    Segments,    // Current PDFium segments method
     PdfAlto,     // PDFAlto-style word-by-word extraction
     LeptessOCR,  // Leptess OCR extraction
 }
@@ -144,7 +143,7 @@ impl App {
             current_page: start_page.saturating_sub(1),
             total_pages,
             current_page_image: None,
-            extraction_method: ExtractionMethod::Segments,
+            extraction_method: ExtractionMethod::PdfAlto,
             dual_pane_mode: true,
 
             // Text editing
@@ -232,7 +231,7 @@ impl App {
             current_page: 0,
             total_pages: 0,
             current_page_image: None,
-            extraction_method: ExtractionMethod::Segments,
+            extraction_method: ExtractionMethod::PdfAlto,
             dual_pane_mode: false,
 
             // Text editing
@@ -292,14 +291,41 @@ impl App {
     }
 
     pub async fn load_pdf_page(&mut self) -> Result<()> {
+        use std::process::Command;
+        use tempfile::NamedTempFile;
+
         // Apply zoom to the base size when rendering (reduced by 25% for better text alignment)
         let base_width = 900;  // Was 1200, reduced by 25%
         let base_height = 1200; // Was 1600, reduced by 25%
         let zoomed_width = (base_width as f32 * self.pdf_zoom) as u32;
         let zoomed_height = (base_height as f32 * self.pdf_zoom) as u32;
 
-        // Render page at zoomed size
-        let image = pdf_renderer::render_pdf_page(&self.pdf_path, self.current_page, zoomed_width, zoomed_height)?;
+        // Use pdftoppm to render PDF page to PNG
+        let temp_file = NamedTempFile::with_suffix(".png")?;
+        let image_path = temp_file.path();
+
+        let page_arg = format!("{}", self.current_page + 1); // pdftoppm uses 1-indexed pages
+        let scale = (zoomed_width as f32 / 612.0).max(zoomed_height as f32 / 792.0); // PDF points to pixels
+        let scale_arg = format!("{}", scale);
+
+        let output = Command::new("pdftoppm")
+            .arg("-png")
+            .arg("-f").arg(&page_arg)
+            .arg("-l").arg(&page_arg)
+            .arg("-scale-to-x").arg(format!("{}", zoomed_width))
+            .arg("-scale-to-y").arg(format!("{}", zoomed_height))
+            .arg("-singlefile")
+            .arg(&self.pdf_path)
+            .arg(image_path.with_extension(""))
+            .output()?;
+
+        let image = if output.status.success() {
+            // Load the rendered image
+            image::open(image_path).unwrap_or_else(|_| image::DynamicImage::new_rgb8(zoomed_width, zoomed_height))
+        } else {
+            // Fallback to placeholder if pdftoppm fails
+            image::DynamicImage::new_rgb8(zoomed_width, zoomed_height)
+        };
 
         // Update PDF dimensions - convert from pixels to terminal cells
         // Typical terminal cell is about 7x14 pixels
@@ -365,7 +391,6 @@ impl App {
         }
 
         let method_name = match self.extraction_method {
-            ExtractionMethod::Segments => "Segments",
             ExtractionMethod::PdfAlto => "PDFAlto",
             ExtractionMethod::LeptessOCR => "OCR",
         };
@@ -502,14 +527,12 @@ impl App {
     // Toggle between extraction methods
     pub async fn toggle_extraction_method(&mut self) -> Result<()> {
         self.extraction_method = match self.extraction_method {
-            ExtractionMethod::Segments => ExtractionMethod::PdfAlto,
             ExtractionMethod::PdfAlto => ExtractionMethod::LeptessOCR,
-            ExtractionMethod::LeptessOCR => ExtractionMethod::Segments,
+            ExtractionMethod::LeptessOCR => ExtractionMethod::PdfAlto,
         };
 
         // Show immediate feedback before processing
         let method_name = match self.extraction_method {
-            ExtractionMethod::Segments => "Segments",
             ExtractionMethod::PdfAlto => "PDFAlto",
             ExtractionMethod::LeptessOCR => "OCR",
         };

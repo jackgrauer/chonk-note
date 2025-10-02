@@ -6,12 +6,8 @@ use std::path::Path;
 
 /// Render a PDF page to an image
 pub fn render_pdf_page(pdf_path: &Path, page_num: usize, width: u32, height: u32) -> Result<DynamicImage> {
-    // Create PDFium instance
-    let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(
-            Pdfium::pdfium_platform_library_name_at_path("./lib/")
-        )?
-    );
+    // Create PDFium instance using static bindings
+    let pdfium = Pdfium::default();
     
     // Load the PDF document
     let document = pdfium.load_pdf_from_file(pdf_path, None)?;
