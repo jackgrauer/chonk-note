@@ -262,9 +262,20 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Check if we're dragging the divider
             if app.is_dragging_divider {
                 // Update split position based on mouse X, with constraints
-                let min_split = term_width / 4;  // Minimum 25% for each pane
-                let max_split = term_width * 3 / 4;  // Maximum 75% for each pane
-                app.split_position = Some(x.max(min_split).min(max_split));
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    // In Notes mode, split is relative to notes list width
+                    let notes_list_width = 4;
+                    let remaining_width = term_width.saturating_sub(notes_list_width);
+                    let min_split = remaining_width / 4;  // Minimum 25% for notes editor
+                    let max_split = remaining_width * 3 / 4;  // Maximum 75% for notes editor
+                    let relative_x = x.saturating_sub(notes_list_width);
+                    app.split_position = Some(relative_x.max(min_split).min(max_split));
+                } else {
+                    // PDF mode - split is absolute
+                    let min_split = term_width / 4;  // Minimum 25% for each pane
+                    let max_split = term_width * 3 / 4;  // Maximum 75% for each pane
+                    app.split_position = Some(x.max(min_split).min(max_split));
+                }
                 app.needs_redraw = true;
                 return Ok(());
             }
@@ -430,7 +441,16 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             }
 
             // Check if click is exactly on the divider column (much more precise now)
-            if x == current_split {
+            let divider_x = if app.app_mode == crate::AppMode::NotesEditor {
+                // In Notes mode, divider is at notes_list + notes_editor_width
+                let notes_list_width = 4;
+                notes_list_width + current_split
+            } else {
+                // In PDF mode, divider is at current_split
+                current_split
+            };
+
+            if x == divider_x {
                 app.is_dragging_divider = true;
                 app.needs_redraw = true;
                 return Ok(());

@@ -719,22 +719,26 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
-                // In notes mode, show three panes: notes list | notes editor | extraction text
-                let notes_list_width = 4;  // Even more minimal - just for numbers
-                let remaining_width = term_width.saturating_sub(notes_list_width);  // No space for dividers
-                let notes_editor_width = remaining_width / 2;
-                let _extraction_width = remaining_width - notes_editor_width;
+                // In notes mode, show three panes: notes list | notes editor | divider | extraction text
+                let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
 
+                // Use split_position for notes mode too
+                let notes_editor_width = app.split_position.unwrap_or(remaining_width / 2);
 
                 // Render notes list sidebar on far left
                 render_notes_list(&app, 0, 0, notes_list_width, term_height)?;
 
-                // No divider - go straight to notes editor
+                // Render notes editor
                 let notes_start_x = notes_list_width;
                 render_notes_pane(&mut *app, notes_start_x, 0, notes_editor_width, term_height)?;
 
-                // No divider - extraction text right after notes editor
-                let extraction_start_x = notes_start_x + notes_editor_width;
+                // Render divider between notes editor and extraction pane
+                let divider_x = notes_start_x + notes_editor_width;
+                render_divider(divider_x, term_height)?;
+
+                // Render extraction pane after divider
+                let extraction_start_x = divider_x + 1;
                 if extraction_start_x < term_width {
                     let actual_extraction_width = term_width.saturating_sub(extraction_start_x);
                     render_text_pane(&mut *app, extraction_start_x, 0, actual_extraction_width, term_height)?;

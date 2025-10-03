@@ -62,14 +62,17 @@ impl<'a> CoordinateSystem<'a> {
         if self.app.app_mode == AppMode::NotesEditor {
             let notes_list_width = 4;
             let remaining = self.term_width.saturating_sub(notes_list_width);
-            let notes_editor_width = remaining / 2;
-            let extraction_start = notes_list_width + notes_editor_width;
+            let notes_editor_width = self.app.split_position.unwrap_or(remaining / 2);
+            let divider_x = notes_list_width + notes_editor_width;
+            let extraction_start = divider_x + 1;
 
             // Explicit boundary handling to prevent edge cases
             if screen_x < notes_list_width {
                 Some(Pane::NotesList)
-            } else if screen_x < extraction_start {
+            } else if screen_x < divider_x {
                 Some(Pane::NotesEditor)
+            } else if screen_x == divider_x {
+                None // Click is on divider itself, not in a pane
             } else {
                 Some(Pane::Extraction)
             }
@@ -115,8 +118,12 @@ impl<'a> CoordinateSystem<'a> {
             Pane::NotesList => Some(0),
             Pane::NotesEditor => Some(4),
             Pane::Extraction if self.app.app_mode == AppMode::NotesEditor => {
-                let remaining = self.term_width.saturating_sub(4);
-                Some(4 + remaining / 2)
+                // Extraction pane starts after divider in Notes mode
+                let notes_list_width = 4;
+                let remaining = self.term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = self.app.split_position.unwrap_or(remaining / 2);
+                let divider_x = notes_list_width + notes_editor_width;
+                Some(divider_x + 1)
             }
             Pane::Extraction => {
                 // Extraction pane starts after the divider column in PDF mode
