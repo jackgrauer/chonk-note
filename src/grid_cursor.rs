@@ -85,9 +85,17 @@ impl GridCursor {
 
     /// Create a GridCursor from a rope char offset
     pub fn from_char_offset(offset: usize, grid: &VirtualGrid) -> Self {
-        let row = grid.rope.char_to_line(offset);
+        // Clamp offset to valid range to prevent panic
+        let rope_len = grid.rope.len_chars();
+        if rope_len == 0 {
+            return Self::new();
+        }
+
+        let clamped_offset = offset.min(rope_len - 1);
+
+        let row = grid.rope.char_to_line(clamped_offset);
         let line_start = grid.rope.line_to_char(row);
-        let col = offset.saturating_sub(line_start);
+        let col = clamped_offset.saturating_sub(line_start);
 
         Self {
             row,
