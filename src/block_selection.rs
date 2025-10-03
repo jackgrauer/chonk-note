@@ -49,11 +49,11 @@ impl BlockSelection {
         let (start_line, start_col) = self.start;
         let (end_line, end_col) = self.end;
 
+        // For lines, always normalize
         let min_line = start_line.min(end_line);
         let max_line = start_line.max(end_line);
 
-        // Always ensure we select at least from column 0 when dragging left
-        // This prevents the selection from "flipping" direction
+        // For columns, use min/max but that's correct - we want the rectangular region
         let min_col = start_col.min(end_col);
         let max_col = start_col.max(end_col);
 

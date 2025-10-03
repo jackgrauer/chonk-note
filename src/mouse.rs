@@ -276,6 +276,22 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 None => return Ok(()), // Drag outside valid area
             };
 
+            // Check if we've dragged into a different pane - if so, ignore this drag event
+            // This prevents selection from "flipping" when dragging past pane edge
+            let current_pane_matches = if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => coords.pane == crate::coordinate_system::Pane::NotesEditor,
+                    crate::ActivePane::Right => coords.pane == crate::coordinate_system::Pane::Extraction,
+                }
+            } else {
+                coords.pane == crate::coordinate_system::Pane::Extraction
+            };
+
+            // If drag moved into different pane or divider, ignore it
+            if !current_pane_matches {
+                return Ok(());
+            }
+
             let end_line = coords.grid.1;
             let end_col = coords.grid.0;
 
@@ -307,8 +323,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     };
 
                     if let Some(block_sel) = block_selection {
+                        // Prevent selection from extending past pane boundaries
+                        // This stops the "flip" when dragging past the edge
+                        let clamped_col = end_col;  // Already clamped by coordinate system
+
                         // Extend existing block selection
-                        block_sel.extend_to(end_line, end_col, visual_col);
+                        block_sel.extend_to(end_line, clamped_col, visual_col);
 
                         // Update helix selection to match block selection
                         *selection = block_sel.to_selection(rope);
