@@ -75,9 +75,11 @@ impl<'a> CoordinateSystem<'a> {
             }
         } else {
             let split = self.app.split_position.unwrap_or(self.term_width / 2);
-            // Use < for PDF pane, >= for extraction to avoid ambiguity
+            // Divider is at split, PDF is before, extraction is after
             if screen_x < split {
                 Some(Pane::Pdf)
+            } else if screen_x == split {
+                None // Click is on divider itself, not in a pane
             } else {
                 Some(Pane::Extraction)
             }
@@ -117,7 +119,9 @@ impl<'a> CoordinateSystem<'a> {
                 Some(4 + remaining / 2)
             }
             Pane::Extraction => {
-                Some(self.app.split_position.unwrap_or(self.term_width / 2))
+                // Extraction pane starts after the divider column in PDF mode
+                let split = self.app.split_position.unwrap_or(self.term_width / 2);
+                Some(split + 1)
             }
             Pane::Pdf => Some(0),
         }

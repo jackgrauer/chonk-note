@@ -409,8 +409,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             }
 
-            // Check if click is on the divider (within 2 columns of the split position)
-            if x >= current_split.saturating_sub(2) && x <= current_split + 2 {
+            // Check if click is exactly on the divider column (much more precise now)
+            if x == current_split {
                 app.is_dragging_divider = true;
                 app.needs_redraw = true;
                 return Ok(());

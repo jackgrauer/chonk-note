@@ -740,11 +740,17 @@ async fn run_app(app: &mut App) -> Result<()> {
                     render_text_pane(&mut *app, extraction_start_x, 0, actual_extraction_width, term_height)?;
                 }
             } else {
-                // In PDF mode, render PDF on left (no divider)
+                // In PDF mode, render PDF on left
                 render_pdf_pane(app, 0, 0, split_x, term_height)?;
 
-                // No divider - extraction text starts right after PDF
-                render_text_pane(&mut *app, split_x, 0, term_width - split_x, term_height)?;
+                // Render visible divider column
+                render_divider(split_x, term_height)?;
+
+                // Extraction text starts after divider
+                let extraction_start = split_x + 1;
+                if extraction_start < term_width {
+                    render_text_pane(&mut *app, extraction_start, 0, term_width - extraction_start, term_height)?;
+                }
             }
 
             // Restore cursor position
@@ -1049,5 +1055,24 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
     Ok(())
 }
 
+/// Render a visible divider column between panes
+fn render_divider(x: u16, height: u16) -> Result<()> {
+    // Draw a gray column with a resize handle in the middle
+    for row in 0..height {
+        print!("\x1b[{};{}H", row + 1, x + 1); // +1 because terminal rows are 1-based
+
+        if row == height / 2 {
+            // Resize handle in the middle - brighter
+            print!("\x1b[48;2;80;80;80m \x1b[0m");
+        } else if row >= height / 2 - 1 && row <= height / 2 + 1 {
+            // Area around handle - medium gray
+            print!("\x1b[48;2;60;60;60m \x1b[0m");
+        } else {
+            // Rest of divider - darker gray
+            print!("\x1b[48;2;40;40;40m \x1b[0m");
+        }
+    }
+    Ok(())
+}
 
 // Status bar function removed - disabled in main rendering loop
