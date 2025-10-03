@@ -1459,14 +1459,29 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
             // In Notes mode, work with the appropriate rope, selection, grid, and cursor based on active pane
             if app.app_mode == crate::AppMode::NotesEditor {
-                let (rope, selection, grid, cursor) = match app.active_pane {
+                let (rope, selection, grid, cursor, block_sel) = match app.active_pane {
                     crate::ActivePane::Left => {
-                        (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor)
+                        (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_block_selection)
                     }
                     crate::ActivePane::Right => {
-                        (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor)
+                        (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_block_selection)
                     }
                 };
+
+                // If there's a block selection, delete it first before inserting the character
+                if let Some(block_selection) = block_sel.take() {
+                    // Delete the block selection
+                    let sel = block_selection.to_selection(rope);
+                    let delete_transaction = Transaction::change_by_selection(rope, &sel, |range| {
+                        (range.from(), range.to(), None)
+                    });
+                    delete_transaction.apply(rope);
+
+                    // Collapse selection to a single point at the start of where the block was
+                    *selection = Selection::point(sel.primary().from());
+                    *cursor = GridCursor::from_char_offset(sel.primary().from(), grid);
+                    grid.rope = rope.clone();
+                }
 
                 // Check if cursor is in virtual space
                 if cursor.to_char_offset(grid).is_none() {
@@ -1529,6 +1544,22 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.needs_redraw = true;
             } else {
                 // PDF mode - also use grid cursor
+
+                // If there's a block selection, delete it first before inserting the character
+                if let Some(block_selection) = app.extraction_block_selection.take() {
+                    // Delete the block selection
+                    let sel = block_selection.to_selection(&app.extraction_rope);
+                    let delete_transaction = Transaction::change_by_selection(&app.extraction_rope, &sel, |range| {
+                        (range.from(), range.to(), None)
+                    });
+                    delete_transaction.apply(&mut app.extraction_rope);
+
+                    // Collapse selection to a single point at the start of where the block was
+                    app.extraction_selection = Selection::point(sel.primary().from());
+                    app.extraction_cursor = GridCursor::from_char_offset(sel.primary().from(), &app.extraction_grid);
+                    app.extraction_grid.rope = app.extraction_rope.clone();
+                }
+
                 // Check if cursor is in virtual space
                 if app.extraction_cursor.to_char_offset(&app.extraction_grid).is_none() {
                     // We're in virtual space - need to ensure the line exists and pad with spaces
