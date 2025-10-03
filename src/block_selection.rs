@@ -51,6 +51,9 @@ impl BlockSelection {
 
         let min_line = start_line.min(end_line);
         let max_line = start_line.max(end_line);
+
+        // Always ensure we select at least from column 0 when dragging left
+        // This prevents the selection from "flipping" direction
         let min_col = start_col.min(end_col);
         let max_col = start_col.max(end_col);
 

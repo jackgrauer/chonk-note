@@ -65,7 +65,8 @@ impl<'a> CoordinateSystem<'a> {
             let notes_editor_width = remaining / 2;
             let extraction_start = notes_list_width + notes_editor_width;
 
-            if screen_x <= notes_list_width {
+            // Explicit boundary handling to prevent edge cases
+            if screen_x < notes_list_width {
                 Some(Pane::NotesList)
             } else if screen_x < extraction_start {
                 Some(Pane::NotesEditor)
@@ -74,7 +75,8 @@ impl<'a> CoordinateSystem<'a> {
             }
         } else {
             let split = self.app.split_position.unwrap_or(self.term_width / 2);
-            if screen_x <= split {
+            // Use < for PDF pane, >= for extraction to avoid ambiguity
+            if screen_x < split {
                 Some(Pane::Pdf)
             } else {
                 Some(Pane::Extraction)
@@ -100,10 +102,10 @@ impl<'a> CoordinateSystem<'a> {
     /// Convert pane coordinates to document coordinates (accounting for viewport)
     pub fn pane_to_document(&self, pane_x: usize, pane_y: usize, pane: Pane) -> Option<(usize, usize)> {
         let (viewport_x, viewport_y) = self.get_viewport_offset(pane)?;
-        Some((
-            pane_x + viewport_x,
-            pane_y + viewport_y
-        ))
+        // Prevent any potential underflow - document coords should always be valid
+        let doc_x = pane_x.saturating_add(viewport_x);
+        let doc_y = pane_y.saturating_add(viewport_y);
+        Some((doc_x, doc_y))
     }
 
     fn get_pane_start_x(&self, pane: Pane) -> Option<u16> {
