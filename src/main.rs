@@ -710,6 +710,9 @@ async fn run_app(app: &mut App) -> Result<()> {
             KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
+            // BEGIN SYNCHRONIZED UPDATE - prevents flicker by batching all drawing
+            print!("\x1b[?2026h");
+
             // Clear the entire screen to prevent artifacts when resizing
             print!("\x1b[2J");
             stdout.flush()?;
@@ -759,13 +762,15 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Restore cursor position
             print!("\x1b[u");
+
+            // END SYNCHRONIZED UPDATE - now display everything at once
+            print!("\x1b[?2026l");
             stdout.flush()?;
 
 
             // Status bar disabled to prevent debug flood
             // render_status_bar(&mut stdout, app, term_width, term_height)?;
 
-            stdout.flush()?;
             app.needs_redraw = false;
         }
 
