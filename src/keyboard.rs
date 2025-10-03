@@ -1,6 +1,7 @@
 // MINIMAL KEYBOARD HANDLING
 use crate::{App, AppMode, ActivePane};
 use crate::grid_cursor::GridCursor;
+use crate::virtual_grid::VirtualGrid;
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::Write;
@@ -19,17 +20,27 @@ fn update_notes_with_content(app: &mut App, content: &str) {
     app.notes_cursor = crate::grid_cursor::GridCursor::new();
 }
 
-pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
-    // Try dual-pane handler first for Notes mode
-    if app.app_mode == crate::AppMode::NotesEditor {
-        // Check if dual-pane handler can handle this key
-        if let Ok(handled) = crate::dual_pane_keyboard::handle_dual_pane_input(app, &key) {
-            if handled {
-                return Ok(true);
+// Helper function to auto-save notes after edits
+fn auto_save_notes_if_needed(app: &mut App) -> Result<()> {
+    if app.app_mode != crate::AppMode::NotesEditor || app.active_pane != crate::ActivePane::Left {
+        return Ok(());
+    }
+
+    save_current_note_changes(app);
+
+    if let Some(ref notes_mode) = app.notes_mode {
+        if let Some(ref current_note) = notes_mode.current_note {
+            let content = app.notes_rope.to_string();
+            if let Some(ref notes_mode) = app.notes_mode {
+                let _ = notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
             }
         }
     }
 
+    Ok(())
+}
+
+pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     let rope = app.extraction_rope.slice(..);
 
     // Handle notes mode specific commands
@@ -1317,28 +1328,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
             // Get the selection to use (block or regular)
             let (transaction, clear_block) = if let Some(block_sel) = &app.extraction_block_selection {
-                // Block selection - replace with spaces to preserve layout
+                // Block selection - delete entire block
                 let selection = block_sel.to_selection(&app.extraction_rope);
-
-                // Replace each selected character with a space
                 let transaction = Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
-                    let start = range.from();
-                    let end = range.to();
-
-                    // Get the actual text being replaced
-                    let text = app.extraction_rope.slice(start..end);
-                    let mut replacement = String::new();
-
-                    // Replace each character with a space, preserving line breaks
-                    for ch in text.chars() {
-                        if ch == '\n' || ch == '\r' {
-                            replacement.push(ch);
-                        } else {
-                            replacement.push(' ');
-                        }
-                    }
-
-                    (start, end, Some(replacement.into()))
+                    (range.from(), range.to(), None)
                 });
                 (transaction, true)
             } else if app.extraction_selection.primary().len() > 0 {
@@ -1376,6 +1369,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Commit to history for undo/redo
                 app.extraction_history.commit_revision(&transaction, &state);
             }
+
+            auto_save_notes_if_needed(app)?;
         }
 
         (KeyCode::Enter, _) => {
@@ -1420,6 +1415,45 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Commit to history for undo/redo
                 app.extraction_history.commit_revision(&transaction, &state);
             }
+
+            auto_save_notes_if_needed(app)?;
+        }
+
+        // Tab key - insert 5 spaces
+        (KeyCode::Tab, _mods) => {
+            if app.app_mode == crate::AppMode::NotesEditor {
+                let (rope, selection, grid, cursor) = match app.active_pane {
+                    crate::ActivePane::Left => {
+                        (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor)
+                    }
+                    crate::ActivePane::Right => {
+                        (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor)
+                    }
+                };
+
+                // Insert 5 spaces
+                let transaction = Transaction::insert(rope, selection, "     ".into());
+                let success = transaction.apply(rope);
+
+                if success {
+                    *selection = selection.clone().map(transaction.changes());
+                    *cursor = GridCursor::from_char_offset(selection.primary().head, grid);
+                    *grid = VirtualGrid::new(rope.clone());
+                }
+            } else {
+                // PDF viewer mode - extraction pane only
+                let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, "     ".into());
+                let success = transaction.apply(&mut app.extraction_rope);
+
+                if success {
+                    app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+                    app.extraction_cursor = GridCursor::from_char_offset(app.extraction_selection.primary().head, &app.extraction_grid);
+                    app.extraction_grid = VirtualGrid::new(app.extraction_rope.clone());
+                }
+            }
+
+            auto_save_notes_if_needed(app)?;
+            app.needs_redraw = true;
         }
 
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {

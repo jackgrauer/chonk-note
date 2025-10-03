@@ -19,7 +19,7 @@ mod edit_renderer;
 mod kitty_file_picker;
 mod viuer_display;
 mod keyboard;
-mod dual_pane_keyboard;
+// mod dual_pane_keyboard; // Removed - consolidated into keyboard.rs
 mod kitty_native;
 mod mouse;
 mod block_selection;
@@ -399,7 +399,7 @@ impl App {
     }
 
     pub fn next_page(&mut self) {
-        if self.current_page < self.total_pages - 1 {
+        if self.total_pages > 0 && self.current_page < self.total_pages - 1 {
             let _ = viuer_display::clear_graphics();
             self.current_page += 1;
             // Clear extraction rope and reset

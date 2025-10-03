@@ -26,7 +26,13 @@ impl<'a> CoordinateSystem<'a> {
 
         // Get pane-relative coordinates
         let pane_start_x = self.get_pane_start_x(pane)?;
-        let pane_x = screen_x.saturating_sub(pane_start_x) as usize;
+
+        // Clamp to pane boundaries - don't allow negative or out-of-bounds
+        let pane_x = if screen_x >= pane_start_x {
+            (screen_x - pane_start_x) as usize
+        } else {
+            0 // Clamp to left edge of pane
+        };
         let pane_y = screen_y as usize; // Already 0-based from kitty
 
         // Get viewport offset for this pane
@@ -79,8 +85,14 @@ impl<'a> CoordinateSystem<'a> {
     /// Convert screen to pane-relative coordinates
     pub fn screen_to_pane(&self, x: u16, y: u16, pane: Pane) -> Option<(usize, usize)> {
         let pane_start_x = self.get_pane_start_x(pane)?;
+        // Clamp to pane boundaries
+        let pane_x = if x >= pane_start_x {
+            (x - pane_start_x) as usize
+        } else {
+            0
+        };
         Some((
-            x.saturating_sub(pane_start_x) as usize,
+            pane_x,
             y as usize  // y is already 0-based from kitty
         ))
     }

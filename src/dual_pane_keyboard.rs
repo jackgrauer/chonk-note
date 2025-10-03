@@ -245,6 +245,10 @@ pub fn handle_dual_pane_input(app: &mut App, key: &KeyEvent) -> Result<bool> {
             Ok(false) // Fall through to main handler
         }
 
+        // Tab and Delete should fall through to main handler for proper implementation
+        (KeyCode::Tab, _) => Ok(false),
+        (KeyCode::Delete, _) => Ok(false),
+
         // Let other keys fall through
         _ => Ok(false),
     }
