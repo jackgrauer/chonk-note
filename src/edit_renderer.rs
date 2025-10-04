@@ -200,10 +200,10 @@ impl EditPanelRenderer {
 
         for y in start_row..render_height {
             let buffer_y = (self.scroll_y + y - start_row) as usize;
-            
-            // Move cursor to start of line
-            // ANSI: Move cursor to position
-            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+
+            // Move cursor to start of line and clear it
+            // ANSI: Move cursor to position, then clear to end of line
+            print!("\x1b[{};{}H\x1b[K", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -247,8 +247,8 @@ impl EditPanelRenderer {
         
         for y in 0..self.viewport_height {
             let buffer_y = (self.scroll_y + y) as usize;
-            // ANSI: Move cursor to position
-            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+            // ANSI: Move cursor to position and clear line
+            print!("\x1b[{};{}H\x1b[K", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -374,8 +374,8 @@ impl EditPanelRenderer {
         for y in 0..render_height {
             let buffer_y = (self.scroll_y + y) as usize;
 
-            // Move cursor to start of line
-            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+            // Move cursor to start of line and clear it
+            print!("\x1b[{};{}H\x1b[K", start_y + y + 1, start_x + 1);  // 1-based coordinates
 
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];
@@ -496,10 +496,10 @@ impl EditPanelRenderer {
         
         for y in 0..render_height {
             let buffer_y = (self.scroll_y + y) as usize;
-            
-            // Move cursor to start of line
-            // ANSI: Move cursor to position
-            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+
+            // Move cursor to start of line and clear it
+            // ANSI: Move cursor to position and clear to end of line
+            print!("\x1b[{};{}H\x1b[K", start_y + y + 1, start_x + 1);  // 1-based coordinates
             
             if buffer_y < self.buffer.len() {
                 let row = &self.buffer[buffer_y];

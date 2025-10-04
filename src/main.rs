@@ -111,6 +111,7 @@ pub struct App {
     pub exit_requested: bool,
     pub needs_redraw: bool,
     pub open_file_picker: bool,
+    pub mode_just_changed: bool,  // Track when we switch between PDF and Notes mode
 
 
     // Viewport tracking for flicker prevention
@@ -173,6 +174,7 @@ impl App {
             exit_requested: false,
             needs_redraw: true,
             open_file_picker: false,
+            mode_just_changed: false,
 
 
             // Viewport tracking
@@ -261,6 +263,7 @@ impl App {
             exit_requested: false,
             needs_redraw: true,
             open_file_picker: false,
+            mode_just_changed: false,
 
             // Viewport tracking
             last_viewport_scroll: (0, 0),
@@ -449,6 +452,10 @@ impl App {
                 }
                 self.app_mode = AppMode::NotesEditor;
 
+                // Force a screen clear on next redraw since we're changing layouts
+                self.mode_just_changed = true;
+                self.needs_redraw = true;
+
                 // Load notes list for sidebar
                 if let Some(ref mut notes_mode) = self.notes_mode {
                     // Get all notes from database
@@ -518,6 +525,7 @@ impl App {
                 self.status_message = "PDF Mode - Ctrl+J/K: Pages | Ctrl+T: Extraction | Ctrl+E: Notes".to_string();
 
                 // Extraction text is already in extraction_rope
+                self.mode_just_changed = true;
                 self.needs_redraw = true;
             }
         }
@@ -713,9 +721,12 @@ async fn run_app(app: &mut App) -> Result<()> {
             // BEGIN SYNCHRONIZED UPDATE - prevents flicker by batching all drawing
             print!("\x1b[?2026h");
 
-            // Clear the entire screen to prevent artifacts when resizing
-            print!("\x1b[2J");
-            stdout.flush()?;
+            // Clear screen ONLY when switching between modes (PDF ↔ Notes)
+            // This prevents artifacts from the old layout remaining visible
+            if app.mode_just_changed {
+                print!("\x1b[2J");
+                app.mode_just_changed = false;
+            }
 
             // Save cursor position
             print!("\x1b[s");
@@ -1016,6 +1027,11 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Result<()> {
     // No borders for minimal design - just a subtle divider line is drawn separately
 
+    // Clear all lines in the notes list area first
+    for row in 0..height {
+        print!("\x1b[{};{}H\x1b[K", y + row + 1, x + 1);
+    }
+
     // Show notes as simple numbers
     if app.notes_list.is_empty() {
         // Show + for new note
@@ -1044,7 +1060,7 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
             // Add indicator: > for selected
             let indicator = if is_selected { "> " } else { "  " };
 
-            // Clear the line and draw the indicator and note number
+            // Draw the indicator and note number
             print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
                 y + display_pos as u16 + 1, x,
                 bg_color, text_color, indicator, note_num);
@@ -1068,7 +1084,7 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
 fn render_divider(x: u16, height: u16) -> Result<()> {
     // Draw a gray column with a resize handle in the middle
     for row in 0..height {
-        print!("\x1b[{};{}H", row + 1, x + 1); // +1 because terminal rows are 1-based
+        print!("\x1b[{};{}H\x1b[K", row + 1, x + 1); // +1 because terminal rows are 1-based, clear line
 
         if row == height / 2 {
             // Resize handle in the middle - brighter
