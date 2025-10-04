@@ -133,6 +133,9 @@ pub struct App {
 
     // Store block cut data for paste
     pub block_clipboard: Option<Vec<String>>,  // Stores cut block data
+
+    // Text wrapping toggle
+    pub wrap_text: bool,  // Whether to wrap text to viewport width
 }
 
 impl App {
@@ -206,6 +209,9 @@ impl App {
 
             // Block clipboard
             block_clipboard: None,
+
+            // Text wrapping
+            wrap_text: false,
         })
     }
 
@@ -290,6 +296,9 @@ impl App {
 
             // Block clipboard
             block_clipboard: None,
+
+            // Text wrapping
+            wrap_text: false,
         })
     }
 
@@ -381,7 +390,7 @@ impl App {
 
         // Update renderer from rope and reset viewport to top-left
         if let Some(renderer) = &mut self.edit_display {
-            renderer.update_from_rope(&self.extraction_rope);
+            renderer.update_from_rope_with_wrap(&self.extraction_rope, self.wrap_text);
             // Reset viewport to show top-left of extracted text
             renderer.scroll_x = 0;
             renderer.scroll_y = 0;
@@ -389,7 +398,7 @@ impl App {
             renderer.viewport_y = 0;
         } else {
             let mut renderer = EditPanelRenderer::new(text_width, text_height);
-            renderer.update_from_rope(&self.extraction_rope);
+            renderer.update_from_rope_with_wrap(&self.extraction_rope, self.wrap_text);
             self.edit_display = Some(renderer);
         }
 
@@ -572,7 +581,7 @@ impl App {
                 self.extraction_selection = Selection::point(0);  // Reset cursor to top-left
                 // Update renderer from rope and reset viewport
                 if let Some(renderer) = &mut self.edit_display {
-                    renderer.update_from_rope(&self.extraction_rope);
+                    renderer.update_from_rope_with_wrap(&self.extraction_rope, self.wrap_text);
                     // Reset viewport to show top-left of extracted text
                     renderer.scroll_x = 0;
                     renderer.scroll_y = 0;
@@ -886,12 +895,12 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     // Create notes renderer if needed
     if app.notes_display.is_none() {
         let mut renderer = EditPanelRenderer::new(width, height);
-        renderer.update_from_rope(&app.notes_rope);
+        renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
         app.notes_display = Some(renderer);
     }
 
     if let Some(renderer) = &mut app.notes_display {
-        renderer.update_from_rope(&app.notes_rope);
+        renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
 
         // Only show cursor if this pane is active
         let show_cursor = app.active_pane == ActivePane::Left;
@@ -926,12 +935,17 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
                 // Only show selection highlighting if it's not collapsed to a point
                 if range.from() != range.to() {
                     let start_line = app.notes_rope.char_to_line(range.from());
-                    let end_line = app.notes_rope.char_to_line(range.to());
+                    let end_line = app.notes_rope.char_to_line(range.to().saturating_sub(1).max(0));
                     let start_line_char = app.notes_rope.line_to_char(start_line);
                     let end_line_char = app.notes_rope.line_to_char(end_line);
+
+                    // Safety: ensure we don't underflow
+                    let start_col = range.from().saturating_sub(start_line_char);
+                    let end_col = range.to().saturating_sub(end_line_char);
+
                     (
-                        Some((range.from() - start_line_char, start_line)),
-                        Some((range.to() - end_line_char, end_line))
+                        Some((start_col, start_line)),
+                        Some((end_col, end_line))
                     )
                 } else {
                     (None, None)
@@ -958,7 +972,7 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
     // No borders - use full space
     // Render extraction text content (always shows extraction)
     if let Some(renderer) = &mut app.edit_display {
-        renderer.update_from_rope(&app.extraction_rope);
+        renderer.update_from_rope_with_wrap(&app.extraction_rope, app.wrap_text);
 
         // Only show cursor if this pane is active
         let show_cursor = app.active_pane == ActivePane::Right;
@@ -994,12 +1008,17 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
                 // Only show selection highlighting if it's not collapsed to a point
                 if range.from() != range.to() {
                     let start_line = app.extraction_rope.char_to_line(range.from());
-                    let end_line = app.extraction_rope.char_to_line(range.to());
+                    let end_line = app.extraction_rope.char_to_line(range.to().saturating_sub(1).max(0));
                     let start_line_char = app.extraction_rope.line_to_char(start_line);
                     let end_line_char = app.extraction_rope.line_to_char(end_line);
+
+                    // Safety: ensure we don't underflow
+                    let start_col = range.from().saturating_sub(start_line_char);
+                    let end_col = range.to().saturating_sub(end_line_char);
+
                     (
-                        Some((range.from() - start_line_char, start_line)),
-                        Some((range.to() - end_line_char, end_line))
+                        Some((start_col, start_line)),
+                        Some((end_col, end_line))
                     )
                 } else {
                     (None, None)

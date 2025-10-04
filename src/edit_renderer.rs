@@ -34,19 +34,36 @@ impl EditPanelRenderer {
 
     // HELIX-CORE INTEGRATION! Convert Rope to display format
     pub fn update_from_rope(&mut self, rope: &Rope) {
+        self.update_from_rope_with_wrap(rope, false);
+    }
+
+    // HELIX-CORE INTEGRATION with wrapping support
+    pub fn update_from_rope_with_wrap(&mut self, rope: &Rope, wrap: bool) {
         self.buffer.clear();
 
         // Convert Rope back to rendering format
         for line in rope.lines() {
-            let mut row: Vec<char> = line.chars()
+            let chars: Vec<char> = line.chars()
                 .filter(|&ch| ch != '\n' && ch != '\r')
                 .collect();
 
-            // Pad to width if needed
-            while row.len() < self.viewport_width as usize {
-                row.push(' ');
+            if wrap && chars.len() > self.viewport_width as usize {
+                // Wrap long lines to viewport width
+                for chunk in chars.chunks(self.viewport_width as usize) {
+                    let mut row = chunk.to_vec();
+                    while row.len() < self.viewport_width as usize {
+                        row.push(' ');
+                    }
+                    self.buffer.push(row);
+                }
+            } else {
+                let mut row = chars;
+                // Pad to width if needed
+                while row.len() < self.viewport_width as usize {
+                    row.push(' ');
+                }
+                self.buffer.push(row);
             }
-            self.buffer.push(row);
         }
     }
     
