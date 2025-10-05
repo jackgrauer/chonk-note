@@ -1102,7 +1102,7 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
             };
 
             if app.sidebar_expanded {
-                // Show full title (truncated to fit width), or buffer if editing this note
+                // Show number and title (truncated to fit width), or buffer if editing this note
                 let title = if app.editing_title && is_selected {
                     format!("{}|", app.title_buffer)
                 } else if note.title.is_empty() {
@@ -1110,17 +1110,19 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
                 } else {
                     note.title.clone()
                 };
-                let max_title_len = (width as usize).saturating_sub(4);
+                // Reserve space for "N. " prefix (number, dot, space)
+                let num_prefix = format!("{}. ", note_idx + 1);
+                let max_title_len = (width as usize).saturating_sub(num_prefix.len());
                 let display_title: String = if title.len() > max_title_len {
                     format!("{}…", &title[..max_title_len.saturating_sub(1)])
                 } else {
                     title
                 };
 
-                // Make title bold for emphasis
-                print!("\x1b[{};{}H{}\x1b[1m{} {}\x1b[0m",
+                // Make title bold for emphasis with number prefix
+                print!("\x1b[{};{}H{}\x1b[1m{}{}{}\x1b[0m",
                     y + display_pos as u16 + 1, x + 1,
-                    bg_color, text_color, display_title);
+                    bg_color, text_color, num_prefix, display_title);
             } else {
                 // Show note number (1-indexed for user friendliness)
                 let note_num = note_idx + 1;
