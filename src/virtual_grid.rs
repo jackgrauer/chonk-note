@@ -77,21 +77,17 @@ impl VirtualGrid {
         let line_start = self.rope.line_to_char(line_num);
         let char_pos = line_start + col;
 
-        // Replace the character at this position
+        // Use Helix transaction to replace without shifting text
         if char_pos < self.rope.len_chars() {
-            // Remove the existing character at this position
-            let next_pos = char_pos + 1;
-            self.rope.remove(char_pos..next_pos.min(self.rope.len_chars()));
-            self.rope.insert(char_pos, &ch.to_string());
-        } else if char_pos == self.rope.len_chars() {
-            // We're at the exact end of the rope, just append
-            self.rope.insert(char_pos, &ch.to_string());
+            // Create a transaction that replaces the character at this position
+            let next_char_pos = self.rope.next_grapheme_boundary(char_pos);
+            let transaction = helix_core::Transaction::change(
+                &self.rope,
+                std::iter::once((char_pos, next_char_pos, Some(ch.to_string().into())))
+            );
+            transaction.apply(&mut self.rope);
         } else {
-            // char_pos is beyond rope length - this shouldn't happen after ensure_line_length
-            // but handle it gracefully by padding to the position
-            let padding_needed = char_pos - self.rope.len_chars();
-            let padding = " ".repeat(padding_needed);
-            self.rope.insert(self.rope.len_chars(), &padding);
+            // We're at or beyond the end, just append
             self.rope.insert(self.rope.len_chars(), &ch.to_string());
         }
     }
