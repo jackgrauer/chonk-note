@@ -439,30 +439,63 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::SUPER) => {
             // Get text from clipboard
             if let Ok(text) = paste_from_clipboard() {
-                // Save state before paste for history
-                let old_rope = app.extraction_rope.clone();
-                let old_selection = app.extraction_selection.clone();
-
                 // Convert text to block data (split by lines)
                 let block_data: Vec<String> = text.lines().map(|s| s.to_string()).collect();
 
-                // Paste at cursor position using grid
-                let (row, col) = (app.extraction_cursor.row, app.extraction_cursor.col);
-                app.extraction_grid.paste_block(row, col, &block_data);
+                // In Notes mode, work with the appropriate grid, cursor, rope and history
+                if app.app_mode == crate::AppMode::NotesEditor {
+                    let (grid, cursor, rope, history, selection) = match app.active_pane {
+                        crate::ActivePane::Left => {
+                            (&mut app.notes_grid, &app.notes_cursor, &mut app.notes_rope,
+                             &mut app.notes_history, &mut app.notes_selection)
+                        }
+                        crate::ActivePane::Right => {
+                            (&mut app.extraction_grid, &app.extraction_cursor, &mut app.extraction_rope,
+                             &mut app.extraction_history, &mut app.extraction_selection)
+                        }
+                    };
 
-                // Update rope from grid
-                app.extraction_rope = app.extraction_grid.rope.clone();
+                    // Save state before paste for history
+                    let old_rope = rope.clone();
+                    let old_selection = selection.clone();
 
-                // Create transaction for history
-                let transaction = Transaction::change(
-                    &old_rope,
-                    std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
-                );
-                let state = State {
-                    doc: old_rope,
-                    selection: old_selection,
-                };
-                app.extraction_history.commit_revision(&transaction, &state);
+                    // Paste using grid at cursor position
+                    grid.paste_block(cursor.row, cursor.col, &block_data);
+
+                    // Update rope from grid
+                    *rope = grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &old_rope,
+                        std::iter::once((0, old_rope.len_chars(), Some(rope.to_string().into())))
+                    );
+                    let state = State {
+                        doc: old_rope,
+                        selection: old_selection,
+                    };
+                    history.commit_revision(&transaction, &state);
+
+                } else {
+                    // PDF mode - save state before paste for history
+                    let old_rope = app.extraction_rope.clone();
+                    let old_selection = app.extraction_selection.clone();
+
+                    // Paste to extraction grid
+                    app.extraction_grid.paste_block(app.extraction_cursor.row, app.extraction_cursor.col, &block_data);
+                    app.extraction_rope = app.extraction_grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &old_rope,
+                        std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
+                    );
+                    let state = State {
+                        doc: old_rope,
+                        selection: old_selection,
+                    };
+                    app.extraction_history.commit_revision(&transaction, &state);
+                }
 
                 app.status_message = format!("Pasted {} lines", block_data.len());
                 app.needs_redraw = true;
