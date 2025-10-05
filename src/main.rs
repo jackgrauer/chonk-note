@@ -742,30 +742,16 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
-                // In notes mode, show three panes: notes list | notes editor | divider | extraction text
+                // In notes mode, show two panes: notes list | notes editor (no extraction pane)
                 let notes_list_width = 4;
                 let remaining_width = term_width.saturating_sub(notes_list_width);
-
-                // Use split_position for notes mode too
-                let notes_editor_width = app.split_position.unwrap_or(remaining_width / 2);
 
                 // Render notes list sidebar on far left
                 render_notes_list(&app, 0, 0, notes_list_width, term_height)?;
 
-                // Render notes editor
+                // Render notes editor - use all remaining width
                 let notes_start_x = notes_list_width;
-                render_notes_pane(&mut *app, notes_start_x, 0, notes_editor_width, term_height)?;
-
-                // Render divider between notes editor and extraction pane
-                let divider_x = notes_start_x + notes_editor_width;
-                render_divider(divider_x, term_height)?;
-
-                // Render extraction pane after divider
-                let extraction_start_x = divider_x + 1;
-                if extraction_start_x < term_width {
-                    let actual_extraction_width = term_width.saturating_sub(extraction_start_x);
-                    render_text_pane(&mut *app, extraction_start_x, 0, actual_extraction_width, term_height)?;
-                }
+                render_notes_pane(&mut *app, notes_start_x, 0, remaining_width, term_height)?;
             } else {
                 // In PDF mode, render PDF on left
                 render_pdf_pane(app, 0, 0, split_x, term_height)?;
@@ -900,6 +886,8 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     }
 
     if let Some(renderer) = &mut app.notes_display {
+        // Always resize to current width/height in case it changed
+        renderer.resize(width, height);
         renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
 
         // Only show cursor if this pane is active
@@ -1043,18 +1031,18 @@ fn render_text_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> R
 }
 
 /// Render the minimal notes list sidebar (just numbers)
-fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Result<()> {
+fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
     // No borders for minimal design - just a subtle divider line is drawn separately
 
-    // Clear all lines in the notes list area first
+    // Clear all lines in the notes list area first with bright blue background
     for row in 0..height {
-        print!("\x1b[{};{}H\x1b[K", y + row + 1, x + 1);
+        print!("\x1b[{};{}H\x1b[48;2;30;60;100m{}\x1b[0m", y + row + 1, x + 1, " ".repeat(width as usize));
     }
 
     // Show notes as simple numbers
     if app.notes_list.is_empty() {
         // Show + for new note
-        print!("\x1b[{};{}H\x1b[38;2;100;100;100m +\x1b[0m", y + 2, x + 1);
+        print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;200;200;200m +\x1b[0m", y + 2, x + 1);
     } else {
         // Display notes as numbers with scrolling support
         let visible_count = (height - 2) as usize;
@@ -1070,7 +1058,7 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
             let (bg_color, text_color) = if is_selected {
                 ("\x1b[48;2;255;193;7m", "\x1b[38;2;0;0;0m")  // Material amber with black text
             } else {
-                ("", "\x1b[38;2;189;189;189m")  // Material grey
+                ("\x1b[48;2;30;60;100m", "\x1b[38;2;220;220;220m")  // Bright blue background with light grey text
             };
 
             // Show note number (1-indexed for user friendliness)
@@ -1088,11 +1076,11 @@ fn render_notes_list(app: &App, x: u16, y: u16, _width: u16, height: u16) -> Res
         // Show scroll indicators if needed
         if start_index > 0 {
             // Show up arrow at top (Material green)
-            print!("\x1b[{};{}H\x1b[38;2;76;175;80m↑\x1b[0m", y, x + 2);
+            print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;76;175;80m↑\x1b[0m", y, x + 2);
         }
         if end_index < app.notes_list.len() {
             // Show down arrow at bottom (Material green)
-            print!("\x1b[{};{}H\x1b[38;2;76;175;80m↓\x1b[0m", y + height - 1, x + 2);
+            print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;76;175;80m↓\x1b[0m", y + height - 1, x + 2);
         }
     }
 
