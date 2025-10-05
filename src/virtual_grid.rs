@@ -70,6 +70,7 @@ impl VirtualGrid {
     }
 
     /// Set character at grid position, padding with spaces as needed
+    /// IMPORTANT: This replaces in-place without shifting surrounding text
     pub fn set_char_at(&mut self, col: usize, line_num: usize, ch: char) {
         // First ensure the line exists and is long enough
         self.ensure_line_length(line_num, col + 1);
@@ -77,18 +78,18 @@ impl VirtualGrid {
         let line_start = self.rope.line_to_char(line_num);
         let char_pos = line_start + col;
 
-        // Use Helix transaction to replace without shifting text
-        if char_pos < self.rope.len_chars() {
-            // Create a transaction that replaces the character at this position
-            let next_char_pos = self.rope.next_grapheme_boundary(char_pos);
-            let transaction = helix_core::Transaction::change(
-                &self.rope,
-                std::iter::once((char_pos, next_char_pos, Some(ch.to_string().into())))
-            );
-            transaction.apply(&mut self.rope);
-        } else {
-            // We're at or beyond the end, just append
-            self.rope.insert(self.rope.len_chars(), &ch.to_string());
+        if char_pos >= self.rope.len_chars() {
+            return; // Position is beyond rope
+        }
+
+        // Convert to string, modify, convert back
+        // This is safe because we're only replacing single characters
+        let mut text = self.rope.to_string();
+        let mut chars: Vec<char> = text.chars().collect();
+
+        if char_pos < chars.len() {
+            chars[char_pos] = ch;
+            self.rope = Rope::from(chars.into_iter().collect::<String>());
         }
     }
 
