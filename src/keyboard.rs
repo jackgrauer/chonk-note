@@ -1440,33 +1440,23 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     // Clear block selection after delete
                     app.notes_block_selection = None;
                 } else if app.notes_selection.primary().len() > 0 {
-                    // Delete regular selection
-                    let state = State {
-                        doc: app.notes_rope.clone(),
-                        selection: app.notes_selection.clone(),
-                    };
-
-                    let transaction = Transaction::change_by_selection(&app.notes_rope, &app.notes_selection, |range| {
-                        (range.from(), range.to(), None)
-                    });
-
-                    if transaction.apply(&mut app.notes_rope) {
-                        app.notes_history.commit_revision(&transaction, &state);
-                        sync_notes_state(app);
+                    // Replace regular selection with spaces instead of deleting
+                    let cursor = &app.notes_cursor;
+                    if cursor.col > 0 {
+                        app.notes_grid.set_char_at(cursor.col - 1, cursor.row, ' ');
+                        app.notes_rope = app.notes_grid.rope.clone();
+                        app.notes_cursor.col = cursor.col - 1;
+                        if let Some(char_pos) = app.notes_cursor.to_char_offset(&app.notes_grid) {
+                            app.notes_selection = helix_core::Selection::point(char_pos);
+                        }
                     }
-                } else if app.notes_selection.primary().head > 0 {
-                    // Delete char before cursor
-                    let head = app.notes_selection.primary().head;
-                    let state = State {
-                        doc: app.notes_rope.clone(),
-                        selection: app.notes_selection.clone(),
-                    };
-
-                    let transaction = Transaction::change(&app.notes_rope, std::iter::once((head - 1, head, None)));
-
-                    if transaction.apply(&mut app.notes_rope) {
-                        app.notes_history.commit_revision(&transaction, &state);
-                        sync_notes_state(app);
+                } else if app.notes_cursor.col > 0 {
+                    // Replace char before cursor with space
+                    app.notes_grid.set_char_at(app.notes_cursor.col - 1, app.notes_cursor.row, ' ');
+                    app.notes_rope = app.notes_grid.rope.clone();
+                    app.notes_cursor.col -= 1;
+                    if let Some(char_pos) = app.notes_cursor.to_char_offset(&app.notes_grid) {
+                        app.notes_selection = helix_core::Selection::point(char_pos);
                     }
                 }
             } else {
@@ -1495,33 +1485,23 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     // Clear block selection after delete
                     app.extraction_block_selection = None;
                 } else if app.extraction_selection.primary().len() > 0 {
-                    // Delete regular selection
-                    let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
-                    };
-
-                    let transaction = Transaction::change_by_selection(&app.extraction_rope, &app.extraction_selection, |range| {
-                        (range.from(), range.to(), None)
-                    });
-
-                    if transaction.apply(&mut app.extraction_rope) {
-                        app.extraction_history.commit_revision(&transaction, &state);
-                        sync_extraction_state(app);
+                    // Replace regular selection with spaces instead of deleting
+                    let cursor = &app.extraction_cursor;
+                    if cursor.col > 0 {
+                        app.extraction_grid.set_char_at(cursor.col - 1, cursor.row, ' ');
+                        app.extraction_rope = app.extraction_grid.rope.clone();
+                        app.extraction_cursor.col = cursor.col - 1;
+                        if let Some(char_pos) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
+                            app.extraction_selection = helix_core::Selection::point(char_pos);
+                        }
                     }
-                } else if app.extraction_selection.primary().head > 0 {
-                    // Delete char before cursor
-                    let head = app.extraction_selection.primary().head;
-                    let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
-                    };
-
-                    let transaction = Transaction::change(&app.extraction_rope, std::iter::once((head - 1, head, None)));
-
-                    if transaction.apply(&mut app.extraction_rope) {
-                        app.extraction_history.commit_revision(&transaction, &state);
-                        sync_extraction_state(app);
+                } else if app.extraction_cursor.col > 0 {
+                    // Replace char before cursor with space
+                    app.extraction_grid.set_char_at(app.extraction_cursor.col - 1, app.extraction_cursor.row, ' ');
+                    app.extraction_rope = app.extraction_grid.rope.clone();
+                    app.extraction_cursor.col -= 1;
+                    if let Some(char_pos) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
+                        app.extraction_selection = helix_core::Selection::point(char_pos);
                     }
                 }
             }
