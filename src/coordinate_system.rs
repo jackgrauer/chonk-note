@@ -26,6 +26,7 @@ impl<'a> CoordinateSystem<'a> {
 
         // Get pane-relative coordinates
         let pane_start_x = self.get_pane_start_x(pane)?;
+        let pane_start_y = self.get_pane_start_y(pane);
 
         // Clamp to pane boundaries - don't allow negative or out-of-bounds
         let pane_x = if screen_x >= pane_start_x {
@@ -33,7 +34,11 @@ impl<'a> CoordinateSystem<'a> {
         } else {
             0 // Clamp to left edge of pane
         };
-        let pane_y = screen_y as usize; // Already 0-based from kitty
+        let pane_y = if screen_y >= pane_start_y {
+            (screen_y - pane_start_y) as usize
+        } else {
+            0
+        };
 
         // Get viewport offset for this pane
         let (viewport_x, viewport_y) = self.get_viewport_offset(pane)?;
@@ -84,16 +89,19 @@ impl<'a> CoordinateSystem<'a> {
     /// Convert screen to pane-relative coordinates
     pub fn screen_to_pane(&self, x: u16, y: u16, pane: Pane) -> Option<(usize, usize)> {
         let pane_start_x = self.get_pane_start_x(pane)?;
+        let pane_start_y = self.get_pane_start_y(pane);
         // Clamp to pane boundaries
         let pane_x = if x >= pane_start_x {
             (x - pane_start_x) as usize
         } else {
             0
         };
-        Some((
-            pane_x,
-            y as usize  // y is already 0-based from kitty
-        ))
+        let pane_y = if y >= pane_start_y {
+            (y - pane_start_y) as usize
+        } else {
+            0
+        };
+        Some((pane_x, pane_y))
     }
 
     /// Convert pane coordinates to document coordinates (accounting for viewport)
@@ -122,6 +130,15 @@ impl<'a> CoordinateSystem<'a> {
                 Some(split + 1)
             }
             Pane::Pdf => Some(0),
+        }
+    }
+
+    fn get_pane_start_y(&self, pane: Pane) -> u16 {
+        match pane {
+            // In notes mode, everything starts at row 1 (below top bar)
+            Pane::NotesList | Pane::NotesEditor if self.app.app_mode == AppMode::NotesEditor => 1,
+            // In PDF mode, everything starts at row 0
+            _ => 0,
         }
     }
 

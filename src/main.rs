@@ -751,17 +751,27 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
+                // Render top bar with note name (yellow background)
+                let note_name = if !app.notes_list.is_empty() && app.selected_note_index < app.notes_list.len() {
+                    &app.notes_list[app.selected_note_index].title
+                } else {
+                    "Untitled"
+                };
+                print!("\x1b[1;1H\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m {}{}\x1b[0m",
+                    note_name,
+                    " ".repeat((term_width as usize).saturating_sub(note_name.len() + 1)));
+
                 // In notes mode, show two panes: notes list | notes editor (no extraction pane)
                 // Sidebar width depends on whether it's expanded
                 let notes_list_width = if app.sidebar_expanded { 30 } else { 4 };
                 let remaining_width = term_width.saturating_sub(notes_list_width);
 
-                // Render notes list sidebar on far left
-                render_notes_list(&app, 0, 0, notes_list_width, term_height)?;
+                // Render notes list sidebar on far left (start at row 2, below top bar)
+                render_notes_list(&app, 0, 1, notes_list_width, term_height.saturating_sub(1))?;
 
-                // Render notes editor - use all remaining width
+                // Render notes editor - use all remaining width (start at row 2, below top bar)
                 let notes_start_x = notes_list_width;
-                render_notes_pane(&mut *app, notes_start_x, 0, remaining_width, term_height)?;
+                render_notes_pane(&mut *app, notes_start_x, 1, remaining_width, term_height.saturating_sub(1))?;
             } else {
                 // In PDF mode, render PDF on left
                 render_pdf_pane(app, 0, 0, split_x, term_height)?;

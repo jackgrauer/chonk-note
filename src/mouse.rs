@@ -363,8 +363,19 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             if app.app_mode == crate::AppMode::NotesEditor {
                 let sidebar_width = if app.sidebar_expanded { 30 } else { 4 };
 
-                // Check for click on title bar (top row of notes pane)
-                if y == 0 && x >= sidebar_width {
+                // Check for click on top yellow bar
+                if y == 0 {
+                    // Clicked on top bar - enable editing
+                    if !app.notes_list.is_empty() {
+                        app.editing_title = true;
+                        app.title_buffer = app.notes_list[app.selected_note_index].title.clone();
+                        app.needs_redraw = true;
+                    }
+                    return Ok(());
+                }
+
+                // Check for click on title bar within notes pane (second row of notes pane)
+                if y == 1 && x >= sidebar_width {
                     // Clicked on title bar - enable editing
                     if !app.notes_list.is_empty() {
                         app.editing_title = true;
@@ -374,10 +385,10 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     return Ok(());
                 }
 
-                if x < sidebar_width {
-                    // Check if clicking on a title in expanded sidebar
+                if x < sidebar_width && y > 0 {
+                    // Check if clicking on a title in expanded sidebar (account for top bar offset)
                     if app.sidebar_expanded {
-                        let clicked_row = y as usize;
+                        let clicked_row = (y - 1) as usize; // Subtract 1 for top bar
                         if clicked_row < app.notes_list.len() {
                             // Clicked on a title in sidebar - enable editing
                             app.editing_title = true;
@@ -392,9 +403,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.sidebar_expanded = !app.sidebar_expanded;
                     app.needs_redraw = true;
 
-                    // Also select the clicked note
-                    // y is already 0-based from kitty_native
-                    let clicked_row = y as usize;
+                    // Also select the clicked note (account for top bar offset)
+                    let clicked_row = (y.saturating_sub(1)) as usize;
                 if clicked_row < app.notes_list.len() {
                     // First, save the current note's changes back to the list
                     if let Some(ref mut notes_mode) = app.notes_mode {
