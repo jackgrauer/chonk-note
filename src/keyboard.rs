@@ -72,6 +72,46 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
     // Handle notes mode specific commands
     if app.app_mode == crate::AppMode::NotesEditor {
+        // Handle title editing mode
+        if app.editing_title {
+            match key.code {
+                KeyCode::Char(c) => {
+                    app.title_buffer.push(c);
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+                KeyCode::Backspace => {
+                    app.title_buffer.pop();
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+                KeyCode::Enter => {
+                    // Save the title
+                    if !app.notes_list.is_empty() {
+                        app.notes_list[app.selected_note_index].title = app.title_buffer.clone();
+
+                        // Update in database
+                        if let Some(ref mut notes) = app.notes_mode {
+                            let note_id = app.notes_list[app.selected_note_index].id;
+                            let _ = notes.db.update_note_title(note_id, &app.title_buffer);
+                        }
+                    }
+                    app.editing_title = false;
+                    app.title_buffer.clear();
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+                KeyCode::Escape => {
+                    // Cancel editing
+                    app.editing_title = false;
+                    app.title_buffer.clear();
+                    app.needs_redraw = true;
+                    return Ok(true);
+                }
+                _ => return Ok(true),
+            }
+        }
+
         if let Some(ref mut notes) = app.notes_mode {
             match (key.code, key.modifiers) {
                 // Ctrl+N - Create new note (in notes mode)
@@ -1377,21 +1417,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if app.app_mode == crate::AppMode::NotesEditor && app.active_pane == crate::ActivePane::Left {
                 // Notes pane
                 if let Some(block_sel) = &app.notes_block_selection {
-                    // Delete block selection
+                    // Delete block selection - use grid method to preserve structure
                     let state = State {
                         doc: app.notes_rope.clone(),
                         selection: app.notes_selection.clone(),
                     };
 
-                    let selection = block_sel.to_selection(&app.notes_rope);
-                    let transaction = Transaction::change_by_selection(&app.notes_rope, &selection, |range| {
-                        (range.from(), range.to(), None)
-                    });
+                    let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
+                    app.notes_grid.delete_block(start_col, start_line, end_col, end_line);
 
-                    if transaction.apply(&mut app.notes_rope) {
-                        app.notes_history.commit_revision(&transaction, &state);
-                        sync_notes_state(app);
-                    }
+                    // Update rope from grid
+                    app.notes_rope = app.notes_grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &state.doc,
+                        std::iter::once((0, state.doc.len_chars(), Some(app.notes_rope.to_string().into())))
+                    );
+                    app.notes_history.commit_revision(&transaction, &state);
+                    sync_notes_state(app);
+
+                    // Clear block selection after delete
+                    app.notes_block_selection = None;
                 } else if app.notes_selection.primary().len() > 0 {
                     // Delete regular selection
                     let state = State {
@@ -1425,21 +1472,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             } else {
                 // Extraction pane
                 if let Some(block_sel) = &app.extraction_block_selection {
-                    // Delete block selection
+                    // Delete block selection - use grid method to preserve structure
                     let state = State {
                         doc: app.extraction_rope.clone(),
                         selection: app.extraction_selection.clone(),
                     };
 
-                    let selection = block_sel.to_selection(&app.extraction_rope);
-                    let transaction = Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
-                        (range.from(), range.to(), None)
-                    });
+                    let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
+                    app.extraction_grid.delete_block(start_col, start_line, end_col, end_line);
 
-                    if transaction.apply(&mut app.extraction_rope) {
-                        app.extraction_history.commit_revision(&transaction, &state);
-                        sync_extraction_state(app);
-                    }
+                    // Update rope from grid
+                    app.extraction_rope = app.extraction_grid.rope.clone();
+
+                    // Create transaction for history
+                    let transaction = Transaction::change(
+                        &state.doc,
+                        std::iter::once((0, state.doc.len_chars(), Some(app.extraction_rope.to_string().into())))
+                    );
+                    app.extraction_history.commit_revision(&transaction, &state);
+                    sync_extraction_state(app);
+
+                    // Clear block selection after delete
+                    app.extraction_block_selection = None;
                 } else if app.extraction_selection.primary().len() > 0 {
                     // Delete regular selection
                     let state = State {

@@ -100,6 +100,9 @@ pub struct App {
     pub selected_note_index: usize,    // Currently selected note in the list
     pub notes_list_scroll: usize,      // Scroll offset for notes list
     pub unsaved_changes: bool,          // Track if current note has unsaved changes
+    pub sidebar_expanded: bool,        // Whether sidebar is showing full titles
+    pub editing_title: bool,           // Whether user is editing the title
+    pub title_buffer: String,          // Buffer for editing title
 
     // Rendering
     pub edit_display: Option<EditPanelRenderer>,
@@ -206,6 +209,9 @@ impl App {
             selected_note_index: 0,
             notes_list_scroll: 0,
             unsaved_changes: false,
+            sidebar_expanded: false,
+            editing_title: false,
+            title_buffer: String::new(),
 
             // Block clipboard
             block_clipboard: None,
@@ -293,6 +299,9 @@ impl App {
             selected_note_index: 0,
             notes_list_scroll: 0,
             unsaved_changes: false,
+            sidebar_expanded: false,
+            editing_title: false,
+            title_buffer: String::new(),
 
             // Block clipboard
             block_clipboard: None,
@@ -743,7 +752,8 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Render based on mode with notes list sidebar in Notes mode
             if app.app_mode == AppMode::NotesEditor {
                 // In notes mode, show two panes: notes list | notes editor (no extraction pane)
-                let notes_list_width = 4;
+                // Sidebar width depends on whether it's expanded
+                let notes_list_width = if app.sidebar_expanded { 30 } else { 4 };
                 let remaining_width = term_width.saturating_sub(notes_list_width);
 
                 // Render notes list sidebar on far left
@@ -877,17 +887,37 @@ fn render_pdf_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Re
 
 /// Render the notes pane (no borders)
 fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
-    // No borders - use full space
+    // Render title bar at the top
+    let title_height = 1;
+    let title = if app.editing_title {
+        // Show the buffer being edited with a cursor
+        format!("{}|", app.title_buffer)
+    } else if !app.notes_list.is_empty() && app.selected_note_index < app.notes_list.len() {
+        app.notes_list[app.selected_note_index].title.clone()
+    } else {
+        "Untitled".to_string()
+    };
+
+    // Draw title bar with bold text and amber background
+    print!("\x1b[{};{}H\x1b[48;2;255;193;7m\x1b[38;2;0;0;0m\x1b[1m{}{}\x1b[0m",
+        y + 1, x + 1,
+        title,
+        " ".repeat((width as usize).saturating_sub(title.len())));
+
+    // Adjust content area to account for title bar
+    let content_y = y + title_height;
+    let content_height = height.saturating_sub(title_height);
+
     // Create notes renderer if needed
     if app.notes_display.is_none() {
-        let mut renderer = EditPanelRenderer::new(width, height);
+        let mut renderer = EditPanelRenderer::new(width, content_height);
         renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
         app.notes_display = Some(renderer);
     }
 
     if let Some(renderer) = &mut app.notes_display {
         // Always resize to current width/height in case it changed
-        renderer.resize(width, height);
+        renderer.resize(width, content_height);
         renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
 
         // Only show cursor if this pane is active
@@ -905,9 +935,8 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
 
         // Use full space - no padding
         let content_x = x;
-        let content_y = y;
         let display_width = width;
-        let display_height = height;
+        let display_height = content_height;
 
         // Render notes with block selection support
         if app.notes_block_selection.is_some() {
@@ -1053,6 +1082,7 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
 
         for (display_pos, note_idx) in (start_index..end_index).enumerate() {
             let is_selected = note_idx == app.selected_note_index;
+            let note = &app.notes_list[note_idx];
 
             // Highlight selected note with Material Design colors
             let (bg_color, text_color) = if is_selected {
@@ -1061,16 +1091,38 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
                 ("\x1b[48;2;30;60;100m", "\x1b[38;2;220;220;220m")  // Bright blue background with light grey text
             };
 
-            // Show note number (1-indexed for user friendliness)
-            let note_num = note_idx + 1;
+            if app.sidebar_expanded {
+                // Show full title (truncated to fit width), or buffer if editing this note
+                let title = if app.editing_title && is_selected {
+                    format!("{}|", app.title_buffer)
+                } else if note.title.is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    note.title.clone()
+                };
+                let max_title_len = (width as usize).saturating_sub(4);
+                let display_title: String = if title.len() > max_title_len {
+                    format!("{}…", &title[..max_title_len.saturating_sub(1)])
+                } else {
+                    title
+                };
 
-            // Add indicator: > for selected
-            let indicator = if is_selected { "> " } else { "  " };
+                // Make title bold for emphasis
+                print!("\x1b[{};{}H{}\x1b[1m{} {}\x1b[0m",
+                    y + display_pos as u16 + 1, x + 1,
+                    bg_color, text_color, display_title);
+            } else {
+                // Show note number (1-indexed for user friendliness)
+                let note_num = note_idx + 1;
 
-            // Draw the indicator and note number
-            print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
-                y + display_pos as u16 + 1, x,
-                bg_color, text_color, indicator, note_num);
+                // Add indicator: > for selected
+                let indicator = if is_selected { "> " } else { "  " };
+
+                // Draw the indicator and note number
+                print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
+                    y + display_pos as u16 + 1, x,
+                    bg_color, text_color, indicator, note_num);
+            }
         }
 
         // Show scroll indicators if needed

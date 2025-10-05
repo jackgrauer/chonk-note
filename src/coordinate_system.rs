@@ -60,7 +60,7 @@ impl<'a> CoordinateSystem<'a> {
     /// Determine which pane a screen coordinate is in
     pub fn which_pane(&self, screen_x: u16) -> Option<Pane> {
         if self.app.app_mode == AppMode::NotesEditor {
-            let notes_list_width = 4;
+            let notes_list_width = if self.app.sidebar_expanded { 30 } else { 4 };
 
             // In notes mode: just notes list + notes editor (no extraction pane or divider)
             if screen_x < notes_list_width {
@@ -108,7 +108,10 @@ impl<'a> CoordinateSystem<'a> {
     fn get_pane_start_x(&self, pane: Pane) -> Option<u16> {
         match pane {
             Pane::NotesList => Some(0),
-            Pane::NotesEditor => Some(4),
+            Pane::NotesEditor => {
+                let notes_list_width = if self.app.sidebar_expanded { 30 } else { 4 };
+                Some(notes_list_width)
+            },
             Pane::Extraction if self.app.app_mode == AppMode::NotesEditor => {
                 // No extraction pane in Notes mode
                 None

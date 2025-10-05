@@ -359,11 +359,42 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, modifiers, .. } => {
             // Debug log click position
 
-            // In Notes mode, check for clicks on notes list (far left, 4 chars wide)
-            if app.app_mode == crate::AppMode::NotesEditor && x <= 4 {
-                // Calculate which note was clicked based on display position
-                // y is already 0-based from kitty_native
-                let clicked_row = y as usize;
+            // In Notes mode, check for clicks on notes list (far left)
+            if app.app_mode == crate::AppMode::NotesEditor {
+                let sidebar_width = if app.sidebar_expanded { 30 } else { 4 };
+
+                // Check for click on title bar (top row of notes pane)
+                if y == 0 && x >= sidebar_width {
+                    // Clicked on title bar - enable editing
+                    if !app.notes_list.is_empty() {
+                        app.editing_title = true;
+                        app.title_buffer = app.notes_list[app.selected_note_index].title.clone();
+                        app.needs_redraw = true;
+                    }
+                    return Ok(());
+                }
+
+                if x < sidebar_width {
+                    // Check if clicking on a title in expanded sidebar
+                    if app.sidebar_expanded {
+                        let clicked_row = y as usize;
+                        if clicked_row < app.notes_list.len() {
+                            // Clicked on a title in sidebar - enable editing
+                            app.editing_title = true;
+                            app.selected_note_index = clicked_row;
+                            app.title_buffer = app.notes_list[clicked_row].title.clone();
+                            app.needs_redraw = true;
+                            return Ok(());
+                        }
+                    }
+
+                    // Toggle sidebar expansion when clicking in sidebar
+                    app.sidebar_expanded = !app.sidebar_expanded;
+                    app.needs_redraw = true;
+
+                    // Also select the clicked note
+                    // y is already 0-based from kitty_native
+                    let clicked_row = y as usize;
                 if clicked_row < app.notes_list.len() {
                     // First, save the current note's changes back to the list
                     if let Some(ref mut notes_mode) = app.notes_mode {
@@ -407,6 +438,7 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                     app.needs_redraw = true;
                     return Ok(());
+                }
                 }
             }
 

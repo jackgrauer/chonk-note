@@ -86,6 +86,18 @@ impl NotesDatabase {
         Ok(())
     }
 
+    pub fn update_note_title(&self, id: &str, title: &str) -> Result<()> {
+        let now = Utc::now();
+
+        self.conn.execute(
+            "UPDATE notes SET title = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![title, now.to_rfc3339(), id],
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_note(&self, id: &str) -> Result<Option<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, content, tags, created_at, updated_at
