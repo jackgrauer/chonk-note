@@ -388,56 +388,56 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 if x < sidebar_width && y > 0 {
                     let clicked_row = (y.saturating_sub(1)) as usize; // Account for top bar offset
 
-                    // Check if clicking on a note in expanded sidebar
-                    if app.sidebar_expanded && clicked_row < app.notes_list.len() {
-                        // First, save the current note's changes back to the list
-                        if let Some(ref mut notes_mode) = app.notes_mode {
-                            if let Some(ref current_note) = notes_mode.current_note {
-                                // Find the current note in the list and update it
-                                for note in app.notes_list.iter_mut() {
-                                    if note.id == current_note.id {
-                                        // Update the note's content with the current editor content
-                                        note.content = app.notes_rope.to_string();
-                                        break;
+                    // If sidebar is expanded, clicking anywhere on it should select a note if valid
+                    if app.sidebar_expanded {
+                        if clicked_row < app.notes_list.len() {
+                            // First, save the current note's changes back to the list
+                            if let Some(ref mut notes_mode) = app.notes_mode {
+                                if let Some(ref current_note) = notes_mode.current_note {
+                                    // Find the current note in the list and update it
+                                    for note in app.notes_list.iter_mut() {
+                                        if note.id == current_note.id {
+                                            // Update the note's content with the current editor content
+                                            note.content = app.notes_rope.to_string();
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // Now select and load the clicked note
-                        app.selected_note_index = clicked_row;
+                            // Now select and load the clicked note
+                            app.selected_note_index = clicked_row;
 
-                        if let Some(ref mut notes_mode) = app.notes_mode {
-                            let selected_note = app.notes_list[clicked_row].clone();
+                            if let Some(ref mut notes_mode) = app.notes_mode {
+                                let selected_note = app.notes_list[clicked_row].clone();
 
-                            // Load the note content
-                            app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                            app.notes_selection = helix_core::Selection::point(0);
+                                // Load the note content
+                                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                                app.notes_selection = helix_core::Selection::point(0);
 
-                            // Update the grid with the new rope!
-                            app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
-                            app.notes_cursor = crate::grid_cursor::GridCursor::new();
+                                // Update the grid with the new rope!
+                                app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                                app.notes_cursor = crate::grid_cursor::GridCursor::new();
 
-                            notes_mode.current_note = Some(selected_note.clone());
+                                notes_mode.current_note = Some(selected_note.clone());
 
-                            // Update the display
-                            if let Some(renderer) = &mut app.notes_display {
-                                renderer.update_from_rope(&app.notes_rope);
+                                // Update the display
+                                if let Some(renderer) = &mut app.notes_display {
+                                    renderer.update_from_rope(&app.notes_rope);
+                                }
+
+                                // Switch focus to notes editor
+                                app.switch_active_pane(crate::ActivePane::Left);
+                                app.status_message = format!("Opened: {}", selected_note.title);
                             }
-
-                            // Switch focus to notes editor
-                            app.switch_active_pane(crate::ActivePane::Left);
-                            app.status_message = format!("Opened: {}", selected_note.title);
                         }
 
-                        // Collapse sidebar back to thin mode after selecting note
+                        // Always collapse sidebar after any click when expanded
                         app.sidebar_expanded = false;
                         app.needs_redraw = true;
                         return Ok(());
-                    }
-
-                    // If collapsed sidebar, toggle expansion when clicking in sidebar
-                    if !app.sidebar_expanded {
+                    } else {
+                        // If collapsed sidebar, expand when clicking in sidebar
                         app.sidebar_expanded = true;
                         app.needs_redraw = true;
                         return Ok(());
