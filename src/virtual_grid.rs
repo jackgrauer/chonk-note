@@ -82,6 +82,9 @@ impl VirtualGrid {
             return; // Position is beyond rope
         }
 
+        // Get the length before modification
+        let before_len = self.rope.len_chars();
+
         // Convert to string, modify, convert back
         // This is safe because we're only replacing single characters
         let mut text = self.rope.to_string();
@@ -90,6 +93,12 @@ impl VirtualGrid {
         if char_pos < chars.len() {
             chars[char_pos] = ch;
             self.rope = Rope::from(chars.into_iter().collect::<String>());
+        }
+
+        // Verify length didn't change
+        let after_len = self.rope.len_chars();
+        if before_len != after_len {
+            eprintln!("WARNING: set_char_at changed rope length from {} to {}!", before_len, after_len);
         }
     }
 
