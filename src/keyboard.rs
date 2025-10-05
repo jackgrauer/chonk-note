@@ -1642,28 +1642,19 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         *selection = Selection::point(char_pos);
                     }
                 } else {
-                    // Normal character insertion - use existing Helix transaction
-                    // Save state before transaction for history
-                    let _state = State {
-                        doc: rope.clone(),
-                        selection: selection.clone(),
-                    };
+                    // Character replacement mode - overwrite instead of insert
+                    // Use grid to replace character at current position
+                    grid.set_char_at(cursor.col, cursor.row, c);
 
-                    // CORRECT HELIX: The real Ferrari engine!
-                    let transaction = Transaction::insert(rope, selection, c.to_string().into());
+                    // Update the rope from the grid
+                    *rope = grid.rope.clone();
 
-                    // Apply transaction (modifies rope in-place)
-                    let success = transaction.apply(rope);
+                    // Move cursor right
+                    cursor.col += 1;
 
-                    if success {
-                        // Map selection through changes (CRITICAL!)
-                        *selection = selection.clone().map(transaction.changes());
-
-                        // Update grid cursor to match new selection position
-                        *cursor = GridCursor::from_char_offset(selection.primary().head, grid);
-
-                        // Update the grid with the new rope
-                        grid.rope = rope.clone();
+                    // Update selection to match cursor
+                    if let Some(char_pos) = cursor.to_char_offset(grid) {
+                        *selection = Selection::point(char_pos);
                     }
                 }
 
