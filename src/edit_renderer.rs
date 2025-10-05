@@ -279,8 +279,8 @@ impl EditPanelRenderer {
                     });
                     
                     if is_highlighted {
-                        // ANSI: Selection highlighting (Material indigo background, bright text)
-                        print!("\x1b[48;2;63;81;181m\x1b[38;2;255;255;255m{}\x1b[m", row[x]);
+                        // Selection highlighting disabled - just show normal character
+                        write!(stdout, "{}", row[x])?;
                     } else {
                         write!(stdout, "{}", row[x])?;
                     }
@@ -417,8 +417,8 @@ impl EditPanelRenderer {
                         // ANSI: Material teal cursor for better visibility
                         print!("\x1b[48;2;0;188;212m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_in_block {
-                        // ANSI: Block selection highlighting (Material purple)
-                        print!("\x1b[48;2;156;39;176m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // Block selection highlighting disabled - just show normal character
+                        write!(stdout, "{}", ch)?;
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
@@ -540,8 +540,8 @@ impl EditPanelRenderer {
                         // ANSI: Material teal cursor for better visibility
                         print!("\x1b[48;2;0;188;212m\x1b[38;2;0;0;0m{}\x1b[m", ch);
                     } else if is_selected {
-                        // ANSI: Selection highlighting (Material indigo background)
-                        print!("\x1b[48;2;63;81;181m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                        // Selection highlighting disabled - just show normal character
+                        write!(stdout, "{}", ch)?;
                     } else {
                         // Normal character
                         write!(stdout, "{}", ch)?;
