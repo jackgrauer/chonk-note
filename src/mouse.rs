@@ -361,8 +361,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             // In Notes mode, check for clicks on notes list (far left)
             if app.app_mode == crate::AppMode::NotesEditor {
-                let sidebar_width = if app.sidebar_expanded { 30 } else { 4 };
-
                 // Check for click on top yellow bar
                 if y == 0 {
                     // Clicked on top bar - enable editing
@@ -374,18 +372,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     return Ok(());
                 }
 
-                // Check for click on title bar within notes pane (second row of notes pane)
-                if y == 1 && x >= sidebar_width {
-                    // Clicked on title bar - enable editing
-                    if !app.notes_list.is_empty() {
-                        app.editing_title = true;
-                        app.title_buffer = app.notes_list[app.selected_note_index].title.clone();
-                        app.needs_redraw = true;
-                    }
-                    return Ok(());
-                }
+                // Use coordinate system to determine which pane was clicked
+                let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
+                let clicked_pane = coord_sys.which_pane(x);
 
-                if x < sidebar_width && y > 0 {
+                // Check if clicked on notes list sidebar
+                if clicked_pane == Some(crate::coordinate_system::Pane::NotesList) && y > 0 {
                     let clicked_row = (y.saturating_sub(1)) as usize; // Account for top bar offset
 
                     // If sidebar is expanded, clicking anywhere on it should select a note if valid
