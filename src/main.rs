@@ -13,7 +13,6 @@ mod notes_mode;
 mod debug;
 mod virtual_grid;
 mod grid_cursor;
-mod text_filter;
 
 use edit_renderer::EditPanelRenderer;
 use kitty_native::KittyTerminal;
