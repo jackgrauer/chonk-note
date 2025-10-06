@@ -70,13 +70,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             app.sidebar_expanded = false;
             app.editing_title = false;
 
-            let editor_x = x.saturating_sub(notes_list_width) as usize;
-            let editor_y = y.saturating_sub(1) as usize;
+            // Calculate editor position accounting for viewport scroll
+            let screen_x = x.saturating_sub(notes_list_width) as usize;
+            let screen_y = y.saturating_sub(1) as usize;
 
-            // Move virtual cursor to click position
-            app.notes_cursor.move_to(editor_y, editor_x);
+            // Add viewport scroll to get actual buffer position
+            let viewport_y = app.notes_display.as_ref().map(|r| r.viewport_y).unwrap_or(0);
+            let viewport_x = app.notes_display.as_ref().map(|r| r.viewport_x).unwrap_or(0);
 
-            // Update selection if we have a valid text position
+            let buffer_y = screen_y + viewport_y;
+            let buffer_x = screen_x + viewport_x;
+
+            // Move virtual cursor to click position (in buffer coordinates)
+            app.notes_cursor.move_to(buffer_y, buffer_x);
+
+            // CRITICAL: Always update selection to match cursor position
             if let Some(char_pos) = app.notes_cursor.to_char_offset(&app.notes_grid) {
                 let now = Instant::now();
                 let is_double_click = if let (Some(last_time), Some((last_x, last_y))) =
@@ -114,13 +122,36 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.notes_selection = Selection::single(line_start + word_start, line_start + word_end);
                     mouse_state.last_click = None;
                 } else {
-                    // Single click: move cursor
+                    // Single click: move cursor and ALWAYS update selection
                     app.notes_selection = Selection::point(char_pos);
                     mouse_state.last_click = Some(now);
                     mouse_state.last_click_pos = Some((x, y));
                     mouse_state.is_dragging = true;
                     mouse_state.drag_start_pos = Some(char_pos);
                 }
+            } else {
+                // CRITICAL: Clicked in virtual space (beyond text)
+                // Position selection at end of clicked line or end of document
+                let line_count = app.notes_rope.len_lines();
+                let clicked_line = buffer_y.min(line_count.saturating_sub(1));
+
+                if clicked_line < line_count {
+                    // Line exists - position at end of line
+                    let line_start = app.notes_rope.line_to_char(clicked_line);
+                    let line = app.notes_rope.line(clicked_line);
+                    let line_end = line_start + line.len_chars().saturating_sub(1).max(0);
+                    app.notes_selection = Selection::point(line_end);
+                    mouse_state.drag_start_pos = Some(line_end);
+                } else {
+                    // Beyond all lines - position at end of document
+                    let doc_end = app.notes_rope.len_chars();
+                    app.notes_selection = Selection::point(doc_end);
+                    mouse_state.drag_start_pos = Some(doc_end);
+                }
+
+                mouse_state.is_dragging = true;
+                mouse_state.last_click = Some(Instant::now());
+                mouse_state.last_click_pos = Some((x, y));
             }
 
             app.needs_redraw = true;
@@ -129,10 +160,17 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         // Drag - extend selection
         MouseEvent { is_drag: true, x, y, .. } => {
             if mouse_state.is_dragging && x >= notes_list_width {
-                let editor_x = x.saturating_sub(notes_list_width) as usize;
-                let editor_y = y.saturating_sub(1) as usize;
+                // Calculate position accounting for viewport scroll
+                let screen_x = x.saturating_sub(notes_list_width) as usize;
+                let screen_y = y.saturating_sub(1) as usize;
 
-                app.notes_cursor.move_to(editor_y, editor_x);
+                let viewport_y = app.notes_display.as_ref().map(|r| r.viewport_y).unwrap_or(0);
+                let viewport_x = app.notes_display.as_ref().map(|r| r.viewport_x).unwrap_or(0);
+
+                let buffer_y = screen_y + viewport_y;
+                let buffer_x = screen_x + viewport_x;
+
+                app.notes_cursor.move_to(buffer_y, buffer_x);
 
                 if let (Some(start_pos), Some(end_pos)) = (mouse_state.drag_start_pos, app.notes_cursor.to_char_offset(&app.notes_grid)) {
                     app.notes_selection = Selection::single(start_pos, end_pos);
