@@ -42,6 +42,44 @@ impl Chunk {
     }
 }
 
+/// Block selection - rectangular region
+#[derive(Debug, Clone)]
+pub struct BlockSelection {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col: usize,
+}
+
+impl BlockSelection {
+    pub fn new(start_row: usize, start_col: usize) -> Self {
+        Self {
+            start_row,
+            start_col,
+            end_row: start_row,
+            end_col: start_col,
+        }
+    }
+
+    pub fn update(&mut self, row: usize, col: usize) {
+        self.end_row = row;
+        self.end_col = col;
+    }
+
+    pub fn bounds(&self) -> (usize, usize, usize, usize) {
+        let min_row = self.start_row.min(self.end_row);
+        let max_row = self.start_row.max(self.end_row);
+        let min_col = self.start_col.min(self.end_col);
+        let max_col = self.start_col.max(self.end_col);
+        (min_row, min_col, max_row, max_col)
+    }
+
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        let (min_row, min_col, max_row, max_col) = self.bounds();
+        row >= min_row && row <= max_row && col >= min_col && col <= max_col
+    }
+}
+
 /// Infinite canvas using chunked storage
 #[derive(Debug, Clone)]
 pub struct ChunkedGrid {
@@ -53,6 +91,9 @@ pub struct ChunkedGrid {
     // Track bounds for efficient operations
     min_chunk: (i32, i32),
     max_chunk: (i32, i32),
+
+    // Block selection (Excel-style rectangular selection)
+    pub selection: Option<BlockSelection>,
 }
 
 impl ChunkedGrid {
@@ -61,6 +102,7 @@ impl ChunkedGrid {
             chunks: BTreeMap::new(),
             min_chunk: (0, 0),
             max_chunk: (0, 0),
+            selection: None,
         }
     }
 
@@ -303,6 +345,68 @@ impl ChunkedGrid {
         }
 
         Ok(())
+    }
+
+    /// Start block selection at current position
+    pub fn start_selection(&mut self, row: usize, col: usize) {
+        self.selection = Some(BlockSelection::new(row, col));
+    }
+
+    /// Update selection to current position
+    pub fn update_selection(&mut self, row: usize, col: usize) {
+        if let Some(ref mut sel) = self.selection {
+            sel.update(row, col);
+        }
+    }
+
+    /// Clear selection
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Copy selected block to string (Excel-style: preserves rectangular shape)
+    pub fn copy_block(&self) -> Option<Vec<String>> {
+        let sel = self.selection.as_ref()?;
+        let (min_row, min_col, max_row, max_col) = sel.bounds();
+
+        let mut lines = Vec::new();
+        for row in min_row..=max_row {
+            let mut line = String::new();
+            for col in min_col..=max_col {
+                line.push(self.get(row, col));
+            }
+            lines.push(line);
+        }
+
+        Some(lines)
+    }
+
+    /// Cut selected block (copy and clear the region)
+    pub fn cut_block(&mut self) -> Option<Vec<String>> {
+        let copied = self.copy_block();
+
+        if let Some(ref sel) = self.selection {
+            let (min_row, min_col, max_row, max_col) = sel.bounds();
+
+            // Clear all cells in the rectangular region
+            for row in min_row..=max_row {
+                for col in min_col..=max_col {
+                    self.set(row, col, ' ');
+                }
+            }
+        }
+
+        self.selection = None;
+        copied
+    }
+
+    /// Paste block at position (Excel-style: rectangular paste without shifting)
+    pub fn paste_block(&mut self, lines: &[String], row: usize, col: usize) {
+        for (line_offset, line) in lines.iter().enumerate() {
+            for (col_offset, ch) in line.chars().enumerate() {
+                self.set(row + line_offset, col + col_offset, ch);
+            }
+        }
     }
 
     /// Load grid from .grid file

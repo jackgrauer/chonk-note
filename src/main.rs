@@ -36,6 +36,7 @@ pub struct App {
     pub exit_requested: bool,
     pub needs_redraw: bool,
     pub show_grid_lines: bool,
+    pub block_clipboard: Option<Vec<String>>,
 }
 
 impl App {
@@ -63,6 +64,7 @@ impl App {
             exit_requested: false,
             needs_redraw: true,
             show_grid_lines: false,
+            block_clipboard: None,
         })
     }
 }
@@ -195,13 +197,32 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     let viewport_start_row = 0; // TODO: Add scrolling later
     let viewport_start_col = 0;
 
-    // Render visible lines
+    // Render visible lines with selection highlighting
     for screen_row in 0..height {
         let grid_row = viewport_start_row + screen_row as usize;
-        let line = app.grid.get_line(grid_row, viewport_start_col, viewport_start_col + width as usize);
 
-        // Clear line and draw content
-        print!("\x1b[{};{}H\x1b[K{}", y + screen_row + 1, x + 1, line);
+        // Clear line
+        print!("\x1b[{};{}H\x1b[K", y + screen_row + 1, x + 1);
+
+        // Render each character with selection highlighting
+        for screen_col in 0..width as usize {
+            let grid_col = viewport_start_col + screen_col;
+            let ch = app.grid.get(grid_row, grid_col);
+
+            // Check if this position is in the selection
+            let in_selection = if let Some(ref sel) = app.grid.selection {
+                sel.contains(grid_row, grid_col)
+            } else {
+                false
+            };
+
+            // Render with appropriate color
+            if in_selection {
+                print!("\x1b[48;2;255;20;147m\x1b[38;2;255;255;255m{}\x1b[0m", ch); // Hot pink background, white text
+            } else {
+                print!("{}", ch);
+            }
+        }
     }
 
     // Render grid lines if enabled

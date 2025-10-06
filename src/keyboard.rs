@@ -64,6 +64,43 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(true);
     }
 
+    // Ctrl+C - Copy block
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(copied) = app.grid.copy_block() {
+            app.block_clipboard = Some(copied.clone());
+            app.status_message = format!("Copied {} rows", copied.len());
+            app.needs_redraw = true;
+        }
+        return Ok(true);
+    }
+
+    // Ctrl+X - Cut block
+    if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(cut) = app.grid.cut_block() {
+            app.block_clipboard = Some(cut.clone());
+            app.status_message = format!("Cut {} rows", cut.len());
+            app.needs_redraw = true;
+        }
+        return Ok(true);
+    }
+
+    // Ctrl+V - Paste block
+    if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(ref clipboard) = app.block_clipboard {
+            app.grid.paste_block(clipboard, app.cursor_row, app.cursor_col);
+            app.status_message = format!("Pasted {} rows", clipboard.len());
+            app.needs_redraw = true;
+        }
+        return Ok(true);
+    }
+
+    // Escape - Clear selection
+    if key.code == KeyCode::Esc {
+        app.grid.clear_selection();
+        app.needs_redraw = true;
+        return Ok(true);
+    }
+
     // Ctrl+N - New note
     if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
         // Save current note

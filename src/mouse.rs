@@ -5,23 +5,25 @@ use anyhow::Result;
 
 pub struct MouseState {
     pub last_click_pos: Option<(u16, u16)>,
+    pub is_dragging: bool,
 }
 
 impl Default for MouseState {
     fn default() -> Self {
         Self {
             last_click_pos: None,
+            is_dragging: false,
         }
     }
 }
 
-pub async fn handle_mouse(app: &mut App, event: MouseEvent, _mouse_state: &mut MouseState) -> Result<()> {
+pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
     let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
     let notes_list_width = if app.sidebar_expanded { 30 } else { 4 };
 
     match event {
         // Left click - position cursor or select note
-        MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, x, y, .. } => {
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, .. } => {
             // Click in notes list sidebar
             if x < notes_list_width {
                 if !app.notes_list.is_empty() {
@@ -72,7 +74,68 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, _mouse_state: &mut M
             app.cursor_row = screen_y;
             app.cursor_col = screen_x;
 
+            // Clear any existing selection on new click
+            app.grid.clear_selection();
+
+            // Mark position for potential drag
+            mouse_state.last_click_pos = Some((x, y));
+            mouse_state.is_dragging = false; // Will become true on drag
+
             app.needs_redraw = true;
+        }
+
+        // Mouse drag - update selection
+        MouseEvent { is_drag: true, x, y, .. } => {
+            let _ = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log")?;
+                writeln!(f, "DRAG EVENT: x={} y={} is_dragging={}", x, y, mouse_state.is_dragging)?;
+                f.flush()
+            })();
+
+            if x >= notes_list_width {
+                let screen_x = x.saturating_sub(notes_list_width) as usize;
+                let screen_y = y.saturating_sub(1) as usize;
+
+                // Start selection if this is first drag event
+                if !mouse_state.is_dragging {
+                    if let Some((start_x, start_y)) = mouse_state.last_click_pos {
+                        let start_screen_x = start_x.saturating_sub(notes_list_width) as usize;
+                        let start_screen_y = start_y.saturating_sub(1) as usize;
+                        app.grid.start_selection(start_screen_y, start_screen_x);
+                        mouse_state.is_dragging = true;
+
+                        let _ = (|| -> std::io::Result<()> {
+                            use std::io::Write;
+                            let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log")?;
+                            writeln!(f, "  -> Started selection at ({}, {})", start_screen_y, start_screen_x)?;
+                            f.flush()
+                        })();
+                    }
+                }
+
+                // Update cursor position
+                app.cursor_row = screen_y;
+                app.cursor_col = screen_x;
+
+                // Update block selection
+                app.grid.update_selection(screen_y, screen_x);
+
+                let _ = (|| -> std::io::Result<()> {
+                    use std::io::Write;
+                    let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log")?;
+                    writeln!(f, "  -> Updated selection to ({}, {})", screen_y, screen_x)?;
+                    f.flush()
+                })();
+
+                app.needs_redraw = true;
+            }
+        }
+
+        // Mouse release - keep selection but stop dragging
+        MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: false, .. } => {
+            mouse_state.is_dragging = false;
+            mouse_state.last_click_pos = None;
         }
 
         // Scroll up

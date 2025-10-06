@@ -532,6 +532,15 @@ impl KittyTerminal {
             button_code & 3  // Extract button from normal code
         };
 
+        // Debug logging
+        let _ = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log")?;
+            writeln!(f, "MOUSE PARSE: button_code={} is_drag={} button_num={} is_press={} x={} y={}",
+                     button_code, is_drag, button_num, is_press, x, y)?;
+            f.flush()
+        })();
+
 
         let button = if is_drag {
             // During drag, button number tells us which button is held
