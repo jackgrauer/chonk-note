@@ -159,6 +159,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.notes_selection = app.notes_selection.clone().map(transaction.changes());
                 app.notes_history.commit_revision(&transaction, &state);
                 app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                // CRITICAL: Sync cursor with selection after every text change
+                app.notes_cursor = crate::grid_cursor::GridCursor::from_char_offset(app.notes_selection.primary().head, &app.notes_grid);
                 app.status_message = format!("Cut {} chars", text.len());
             }
         }
@@ -179,6 +181,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.notes_selection = app.notes_selection.clone().map(transaction.changes());
                 app.notes_history.commit_revision(&transaction, &state);
                 app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                // CRITICAL: Sync cursor with selection after every text change
+                app.notes_cursor = crate::grid_cursor::GridCursor::from_char_offset(app.notes_selection.primary().head, &app.notes_grid);
                 app.status_message = format!("Pasted {} chars", text.len());
             }
         }
@@ -244,6 +248,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.notes_selection = app.notes_selection.clone().map(transaction.changes());
                 app.notes_history.commit_revision(&transaction, &state);
                 app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                // CRITICAL: Sync cursor with selection after every text change
+                app.notes_cursor = crate::grid_cursor::GridCursor::from_char_offset(app.notes_selection.primary().head, &app.notes_grid);
             }
             app.needs_redraw = true;
         }
@@ -258,6 +264,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.notes_selection = app.notes_selection.clone().map(transaction.changes());
                 app.notes_history.commit_revision(&transaction, &state);
                 app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                // CRITICAL: Sync cursor with selection after every text change
+                app.notes_cursor = crate::grid_cursor::GridCursor::from_char_offset(app.notes_selection.primary().head, &app.notes_grid);
             }
             app.needs_redraw = true;
         }

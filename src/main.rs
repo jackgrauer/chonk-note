@@ -160,10 +160,14 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Render notes list sidebar
             render_notes_list(&app, 0, 1, notes_list_width, term_height.saturating_sub(1))?;
 
-            // Render notes editor
-            render_notes_pane(&mut *app, notes_list_width, 1, remaining_width, term_height.saturating_sub(1))?;
+            // Render notes editor and get cursor position
+            let cursor_screen_pos = render_notes_pane(&mut *app, notes_list_width, 1, remaining_width, term_height.saturating_sub(1))?;
 
-            print!("\x1b[u");
+            // Position terminal cursor at the actual cursor location
+            if let Some((screen_x, screen_y)) = cursor_screen_pos {
+                print!("\x1b[{};{}H", screen_y + 1, screen_x + 1); // Move to cursor position (1-based)
+            }
+
             print!("\x1b[?2026l");
             stdout.flush()?;
 
@@ -193,13 +197,15 @@ async fn run_app(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
     // Create renderer if needed
     if app.notes_display.is_none() {
         let mut renderer = EditPanelRenderer::new(width, height);
         renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
         app.notes_display = Some(renderer);
     }
+
+    let mut cursor_screen_pos = None;
 
     if let Some(renderer) = &mut app.notes_display {
         renderer.resize(width, height);
@@ -209,6 +215,16 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         let cursor_col = app.notes_cursor.col;
 
         renderer.follow_cursor(cursor_col, cursor_line, 3);
+
+        // Calculate screen position of cursor
+        // cursor is in buffer coordinates, need to convert to screen coordinates
+        let screen_y = cursor_line.saturating_sub(renderer.viewport_y as usize);
+        let screen_x = cursor_col.saturating_sub(renderer.viewport_x as usize);
+
+        // Only set cursor position if it's visible in viewport
+        if screen_y < height as usize && screen_x < width as usize {
+            cursor_screen_pos = Some((x + screen_x as u16, y + screen_y as u16));
+        }
 
         // Render with block selection if active
         if app.notes_block_selection.is_some() {
@@ -247,7 +263,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
         }
     }
 
-    Ok(())
+    Ok(cursor_screen_pos)
 }
 
 fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
