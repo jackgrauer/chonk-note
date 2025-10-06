@@ -1,7 +1,6 @@
 // MINIMAL KEYBOARD HANDLING
 use crate::{App, AppMode, ActivePane};
 use crate::grid_cursor::GridCursor;
-use crate::virtual_grid::VirtualGrid;
 use anyhow::Result;
 use crate::kitty_native::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::Write;
@@ -12,106 +11,29 @@ use helix_core::{Transaction, Selection, history::State, movement};
 // Helper function to update notes rope and sync the grid
 fn update_notes_with_content(app: &mut App, content: &str) {
     app.notes_rope = helix_core::Rope::from(content);
-    sync_notes_state(app);
-}
-
-// Helper to ensure notes grid/cursor/selection are in sync with rope
-fn sync_notes_state(app: &mut App) {
-    let rope_len = app.notes_rope.len_chars();
-
-    // Clamp selection to rope bounds
-    let sel_pos = app.notes_selection.primary().from().min(rope_len);
-    app.notes_selection = helix_core::Selection::point(sel_pos);
-
-    // Clear block selection to prevent stale references
+    app.notes_selection = helix_core::Selection::point(0);
     app.notes_block_selection = None;
 
-    // Sync grid and cursor
+    // CRITICAL: Update the grid with the new rope so cursor can move freely!
     app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
     app.notes_cursor = crate::grid_cursor::GridCursor::new();
 }
 
-// Helper to ensure extraction grid/cursor/selection are in sync with rope
-fn sync_extraction_state(app: &mut App) {
-    let rope_len = app.extraction_rope.len_chars();
-
-    // Clamp selection to rope bounds
-    let sel_pos = app.extraction_selection.primary().from().min(rope_len);
-    app.extraction_selection = helix_core::Selection::point(sel_pos);
-
-    // Clear block selection to prevent stale references
-    app.extraction_block_selection = None;
-
-    // Sync grid and cursor
-    app.extraction_grid = crate::virtual_grid::VirtualGrid::new(app.extraction_rope.clone());
-    app.extraction_cursor = crate::grid_cursor::GridCursor::new();
-}
-
-// Helper function to auto-save notes after edits
-fn auto_save_notes_if_needed(app: &mut App) -> Result<()> {
-    if app.app_mode != crate::AppMode::NotesEditor || app.active_pane != crate::ActivePane::Left {
-        return Ok(());
-    }
-
-    save_current_note_changes(app);
-
-    if let Some(ref notes_mode) = app.notes_mode {
-        if let Some(ref current_note) = notes_mode.current_note {
-            let content = app.notes_rope.to_string();
-            if let Some(ref notes_mode) = app.notes_mode {
-                let _ = notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
+pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+    // Try dual-pane handler first for Notes mode
+    if app.app_mode == crate::AppMode::NotesEditor {
+        // Check if dual-pane handler can handle this key
+        if let Ok(handled) = crate::dual_pane_keyboard::handle_dual_pane_input(app, &key) {
+            if handled {
+                return Ok(true);
             }
         }
     }
 
-    Ok(())
-}
-
-pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     let rope = app.extraction_rope.slice(..);
 
     // Handle notes mode specific commands
     if app.app_mode == crate::AppMode::NotesEditor {
-        // Handle title editing mode
-        if app.editing_title {
-            match key.code {
-                KeyCode::Char(c) => {
-                    app.title_buffer.push(c);
-                    app.needs_redraw = true;
-                    return Ok(true);
-                }
-                KeyCode::Backspace => {
-                    app.title_buffer.pop();
-                    app.needs_redraw = true;
-                    return Ok(true);
-                }
-                KeyCode::Enter => {
-                    // Save the title
-                    if !app.notes_list.is_empty() {
-                        app.notes_list[app.selected_note_index].title = app.title_buffer.clone();
-
-                        // Update in database
-                        if let Some(ref mut notes) = app.notes_mode {
-                            let note_id = app.notes_list[app.selected_note_index].id;
-                            let _ = notes.db.update_note_title(note_id, &app.title_buffer);
-                        }
-                    }
-                    app.editing_title = false;
-                    app.title_buffer.clear();
-                    app.needs_redraw = true;
-                    return Ok(true);
-                }
-                KeyCode::Esc => {
-                    // Cancel editing
-                    app.editing_title = false;
-                    app.title_buffer.clear();
-                    app.needs_redraw = true;
-                    return Ok(true);
-                }
-                _ => return Ok(true),
-            }
-        }
-
         if let Some(ref mut notes) = app.notes_mode {
             match (key.code, key.modifiers) {
                 // Ctrl+N - Create new note (in notes mode)
@@ -302,10 +224,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let transaction = Transaction::delete(&app.extraction_rope, std::iter::once((start, end)));
 
                 // Apply transaction
-                if transaction.apply(&mut app.extraction_rope) {
+                let success = transaction.apply(&mut app.extraction_rope);
+
+                if success {
+                    app.extraction_selection = Selection::point(start);
+
                     // Commit to history for undo/redo
                     app.extraction_history.commit_revision(&transaction, &state);
-                    sync_extraction_state(app);
                 }
             }
         }
@@ -325,10 +250,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let transaction = Transaction::delete(&app.extraction_rope, std::iter::once((line_start, pos)));
 
                 // Apply transaction
-                if transaction.apply(&mut app.extraction_rope) {
+                let success = transaction.apply(&mut app.extraction_rope);
+
+                if success {
+                    app.extraction_selection = Selection::point(line_start);
+
                     // Commit to history for undo/redo
                     app.extraction_history.commit_revision(&transaction, &state);
-                    sync_extraction_state(app);
                 }
             }
         }
@@ -479,63 +407,30 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::SUPER) => {
             // Get text from clipboard
             if let Ok(text) = paste_from_clipboard() {
+                // Save state before paste for history
+                let old_rope = app.extraction_rope.clone();
+                let old_selection = app.extraction_selection.clone();
+
                 // Convert text to block data (split by lines)
                 let block_data: Vec<String> = text.lines().map(|s| s.to_string()).collect();
 
-                // In Notes mode, work with the appropriate grid, cursor, rope and history
-                if app.app_mode == crate::AppMode::NotesEditor {
-                    let (grid, cursor, rope, history, selection) = match app.active_pane {
-                        crate::ActivePane::Left => {
-                            (&mut app.notes_grid, &app.notes_cursor, &mut app.notes_rope,
-                             &mut app.notes_history, &mut app.notes_selection)
-                        }
-                        crate::ActivePane::Right => {
-                            (&mut app.extraction_grid, &app.extraction_cursor, &mut app.extraction_rope,
-                             &mut app.extraction_history, &mut app.extraction_selection)
-                        }
-                    };
+                // Paste at cursor position using grid
+                let (row, col) = (app.extraction_cursor.row, app.extraction_cursor.col);
+                app.extraction_grid.paste_block(row, col, &block_data);
 
-                    // Save state before paste for history
-                    let old_rope = rope.clone();
-                    let old_selection = selection.clone();
+                // Update rope from grid
+                app.extraction_rope = app.extraction_grid.rope.clone();
 
-                    // Paste using grid at cursor position
-                    grid.paste_block(cursor.row, cursor.col, &block_data);
-
-                    // Update rope from grid
-                    *rope = grid.rope.clone();
-
-                    // Create transaction for history
-                    let transaction = Transaction::change(
-                        &old_rope,
-                        std::iter::once((0, old_rope.len_chars(), Some(rope.to_string().into())))
-                    );
-                    let state = State {
-                        doc: old_rope,
-                        selection: old_selection,
-                    };
-                    history.commit_revision(&transaction, &state);
-
-                } else {
-                    // PDF mode - save state before paste for history
-                    let old_rope = app.extraction_rope.clone();
-                    let old_selection = app.extraction_selection.clone();
-
-                    // Paste to extraction grid
-                    app.extraction_grid.paste_block(app.extraction_cursor.row, app.extraction_cursor.col, &block_data);
-                    app.extraction_rope = app.extraction_grid.rope.clone();
-
-                    // Create transaction for history
-                    let transaction = Transaction::change(
-                        &old_rope,
-                        std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
-                    );
-                    let state = State {
-                        doc: old_rope,
-                        selection: old_selection,
-                    };
-                    app.extraction_history.commit_revision(&transaction, &state);
-                }
+                // Create transaction for history
+                let transaction = Transaction::change(
+                    &old_rope,
+                    std::iter::once((0, old_rope.len_chars(), Some(app.extraction_rope.to_string().into())))
+                );
+                let state = State {
+                    doc: old_rope,
+                    selection: old_selection,
+                };
+                app.extraction_history.commit_revision(&transaction, &state);
 
                 app.status_message = format!("Pasted {} lines", block_data.len());
                 app.needs_redraw = true;
@@ -544,52 +439,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // Select All - Ctrl+A
         (KeyCode::Char('a'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-            // Create pink block selection covering entire document
-            if app.app_mode == crate::AppMode::NotesEditor {
+            // Debug to file
+
+            // Select entire document
+            let doc_len = app.extraction_rope.len_chars();
+            if doc_len > 0 {
+                // Create a selection from start to end of document
+                app.extraction_selection = Selection::single(0, doc_len);
+
+                // Clear block selection since we're doing regular selection
+                if app.app_mode == crate::AppMode::NotesEditor {
                 match app.active_pane {
-                    crate::ActivePane::Left => {
-                        let num_lines = app.notes_rope.len_lines();
-                        if num_lines > 0 {
-                            let last_line_len = app.notes_rope.line(num_lines - 1).len_chars();
-                            let mut block_sel = crate::block_selection::BlockSelection::new(0, 0);
-                            block_sel.extend_to(num_lines - 1, last_line_len, last_line_len);
-                            app.notes_block_selection = Some(block_sel);
-                        }
-                    }
-                    crate::ActivePane::Right => {
-                        let num_lines = app.extraction_rope.len_lines();
-                        if num_lines > 0 {
-                            let last_line_len = app.extraction_rope.line(num_lines - 1).len_chars();
-                            let mut block_sel = crate::block_selection::BlockSelection::new(0, 0);
-                            block_sel.extend_to(num_lines - 1, last_line_len, last_line_len);
-                            app.extraction_block_selection = Some(block_sel);
-                        }
-                    }
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
                 }
             } else {
-                // PDF mode - always extraction pane
-                let num_lines = app.extraction_rope.len_lines();
-                if num_lines > 0 {
-                    let last_line_len = app.extraction_rope.line(num_lines - 1).len_chars();
-                    let mut block_sel = crate::block_selection::BlockSelection::new(0, 0);
-                    block_sel.extend_to(num_lines - 1, last_line_len, last_line_len);
-                    app.extraction_block_selection = Some(block_sel);
-                }
+                app.extraction_block_selection = None;
             }
 
-            app.needs_redraw = true;
-            app.status_message = "Selected all".to_string();
-        }
+                app.needs_redraw = true;
+                app.status_message = "Selected all".to_string();
 
-        // Wrap text - Ctrl+W
-        (KeyCode::Char('w'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-            app.wrap_text = !app.wrap_text;
-            app.needs_redraw = true;
-            app.status_message = if app.wrap_text {
-                "Text wrapping enabled".to_string()
-            } else {
-                "Text wrapping disabled".to_string()
-            };
+            }
         }
 
         // Cut - Ctrl+X (in addition to Cmd+X)
@@ -1413,101 +1284,98 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // TEXT OPERATIONS
         (KeyCode::Backspace, mods) if !mods.contains(KeyModifiers::ALT) && !mods.contains(KeyModifiers::SUPER) => {
-            // Determine which rope/selection to use
-            if app.app_mode == crate::AppMode::NotesEditor && app.active_pane == crate::ActivePane::Left {
-                // Notes pane
-                if let Some(block_sel) = &app.notes_block_selection {
-                    // Delete block selection - use grid method to preserve structure
-                    let state = State {
-                        doc: app.notes_rope.clone(),
-                        selection: app.notes_selection.clone(),
-                    };
-
-                    let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
-                    app.notes_grid.delete_block(start_col, start_line, end_col, end_line);
-
-                    // Update rope from grid
-                    app.notes_rope = app.notes_grid.rope.clone();
-
-                    // Create transaction for history
-                    let transaction = Transaction::change(
-                        &state.doc,
-                        std::iter::once((0, state.doc.len_chars(), Some(app.notes_rope.to_string().into())))
-                    );
-                    app.notes_history.commit_revision(&transaction, &state);
-                    sync_notes_state(app);
-
-                    // Clear block selection after delete
-                    app.notes_block_selection = None;
-                } else if app.notes_selection.primary().len() > 0 {
-                    // Replace regular selection with spaces instead of deleting
-                    let cursor = &app.notes_cursor;
-                    if cursor.col > 0 {
-                        app.notes_grid.set_char_at(cursor.col - 1, cursor.row, ' ');
-                        app.notes_rope = app.notes_grid.rope.clone();
-                        app.notes_cursor.col = cursor.col - 1;
-                        if let Some(char_pos) = app.notes_cursor.to_char_offset(&app.notes_grid) {
-                            app.notes_selection = helix_core::Selection::point(char_pos);
-                        }
-                    }
-                } else if app.notes_cursor.col > 0 {
-                    // Replace char before cursor with space
-                    app.notes_grid.set_char_at(app.notes_cursor.col - 1, app.notes_cursor.row, ' ');
-                    app.notes_rope = app.notes_grid.rope.clone();
-                    app.notes_cursor.col -= 1;
-                    if let Some(char_pos) = app.notes_cursor.to_char_offset(&app.notes_grid) {
-                        app.notes_selection = helix_core::Selection::point(char_pos);
-                    }
-                }
+            // Special handling: if cursor is on a space/empty and no selection, just move left
+            let pos = app.extraction_selection.primary().head;
+            let is_on_space = if pos < app.extraction_rope.len_chars() {
+                let ch = app.extraction_rope.char(pos);
+                ch == ' ' || ch == '\t'
             } else {
-                // Extraction pane
-                if let Some(block_sel) = &app.extraction_block_selection {
-                    // Delete block selection - use grid method to preserve structure
-                    let state = State {
-                        doc: app.extraction_rope.clone(),
-                        selection: app.extraction_selection.clone(),
-                    };
+                true  // End of document counts as empty
+            };
 
-                    let ((start_line, start_col), (end_line, end_col)) = block_sel.normalized();
-                    app.extraction_grid.delete_block(start_col, start_line, end_col, end_line);
+            // If on empty space with no selection, just move left instead of deleting
+            if is_on_space && app.extraction_selection.primary().len() == 0 && app.extraction_block_selection.is_none() {
+                // Just move cursor left like pressing left arrow
+                if pos > 0 {
+                    let new_pos = pos - 1;
+                    app.extraction_selection = Selection::point(new_pos);
 
-                    // Update rope from grid
-                    app.extraction_rope = app.extraction_grid.rope.clone();
-
-                    // Create transaction for history
-                    let transaction = Transaction::change(
-                        &state.doc,
-                        std::iter::once((0, state.doc.len_chars(), Some(app.extraction_rope.to_string().into())))
-                    );
-                    app.extraction_history.commit_revision(&transaction, &state);
-                    sync_extraction_state(app);
-
-                    // Clear block selection after delete
-                    app.extraction_block_selection = None;
-                } else if app.extraction_selection.primary().len() > 0 {
-                    // Replace regular selection with spaces instead of deleting
-                    let cursor = &app.extraction_cursor;
-                    if cursor.col > 0 {
-                        app.extraction_grid.set_char_at(cursor.col - 1, cursor.row, ' ');
-                        app.extraction_rope = app.extraction_grid.rope.clone();
-                        app.extraction_cursor.col = cursor.col - 1;
-                        if let Some(char_pos) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
-                            app.extraction_selection = helix_core::Selection::point(char_pos);
-                        }
-                    }
-                } else if app.extraction_cursor.col > 0 {
-                    // Replace char before cursor with space
-                    app.extraction_grid.set_char_at(app.extraction_cursor.col - 1, app.extraction_cursor.row, ' ');
-                    app.extraction_rope = app.extraction_grid.rope.clone();
-                    app.extraction_cursor.col -= 1;
-                    if let Some(char_pos) = app.extraction_cursor.to_char_offset(&app.extraction_grid) {
-                        app.extraction_selection = helix_core::Selection::point(char_pos);
-                    }
+                    // Update virtual cursor column
+                    let line = app.extraction_rope.char_to_line(new_pos);
+                    let _line_start = app.extraction_rope.line_to_char(line);
                 }
+                // No deletion happens - just cursor movement
+                app.needs_redraw = true;
+                return Ok(true);  // Continue running
             }
 
-            auto_save_notes_if_needed(app)?;
-            app.needs_redraw = true;
+            // Save state before transaction for history
+            let state = State {
+                doc: app.extraction_rope.clone(),
+                selection: app.extraction_selection.clone(),
+            };
+
+            // Get the selection to use (block or regular)
+            let (transaction, clear_block) = if let Some(block_sel) = &app.extraction_block_selection {
+                // Block selection - replace with spaces to preserve layout
+                let selection = block_sel.to_selection(&app.extraction_rope);
+
+                // Replace each selected character with a space
+                let transaction = Transaction::change_by_selection(&app.extraction_rope, &selection, |range| {
+                    let start = range.from();
+                    let end = range.to();
+
+                    // Get the actual text being replaced
+                    let text = app.extraction_rope.slice(start..end);
+                    let mut replacement = String::new();
+
+                    // Replace each character with a space, preserving line breaks
+                    for ch in text.chars() {
+                        if ch == '\n' || ch == '\r' {
+                            replacement.push(ch);
+                        } else {
+                            replacement.push(' ');
+                        }
+                    }
+
+                    (start, end, Some(replacement.into()))
+                });
+                (transaction, true)
+            } else if app.extraction_selection.primary().len() > 0 {
+                // Regular selection - delete normally
+                let transaction = Transaction::delete(&app.extraction_rope, app.extraction_selection.ranges().into_iter().map(|r| (r.from(), r.to())));
+                (transaction, false)
+            } else {
+                // Delete character before cursor (delete_backward)
+                let transaction = Transaction::delete(&app.extraction_rope, std::iter::once((
+                    app.extraction_selection.primary().head.saturating_sub(1),
+                    app.extraction_selection.primary().head
+                )));
+                (transaction, false)
+            };
+
+            // Apply transaction (modifies rope in-place)
+            let success = transaction.apply(&mut app.extraction_rope);
+
+            if success {
+                // Map selection through changes
+                app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+
+                // Clear block selection if we just deleted it
+                if clear_block {
+                    if app.app_mode == crate::AppMode::NotesEditor {
+                match app.active_pane {
+                    crate::ActivePane::Left => app.notes_block_selection = None,
+                    crate::ActivePane::Right => app.extraction_block_selection = None,
+                }
+            } else {
+                app.extraction_block_selection = None;
+            }
+                }
+
+                // Commit to history for undo/redo
+                app.extraction_history.commit_revision(&transaction, &state);
+            }
         }
 
         (KeyCode::Enter, _) => {
@@ -1534,17 +1402,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, new_line_content.into());
 
             // Apply transaction (modifies rope in-place)
-            if transaction.apply(&mut app.extraction_rope) {
+            let success = transaction.apply(&mut app.extraction_rope);
+
+            if success {
+                // Map selection through changes
+                app.extraction_selection = app.extraction_selection.clone().map(transaction.changes());
+
+                // After Enter, we're at the END of the spaces on the new line
+                // We need to explicitly set the virtual column to be at that position
+                let new_pos = app.extraction_selection.primary().head;
+                let new_line = app.extraction_rope.char_to_line(new_pos);
+                let new_line_start = app.extraction_rope.line_to_char(new_line);
+                let _new_col = new_pos - new_line_start;
+
+                // Set virtual column to where we actually are (at the end of spaces)
+
                 // Commit to history for undo/redo
                 app.extraction_history.commit_revision(&transaction, &state);
-                sync_extraction_state(app);
             }
-
-            auto_save_notes_if_needed(app)?;
         }
 
-        // Tab key - insert 5 spaces
-        (KeyCode::Tab, _mods) => {
+        (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
+            // In Notes mode, work with the appropriate rope, selection, grid, and cursor based on active pane
             if app.app_mode == crate::AppMode::NotesEditor {
                 let (rope, selection, grid, cursor) = match app.active_pane {
                     crate::ActivePane::Left => {
@@ -1554,50 +1433,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor)
                     }
                 };
-
-                // Insert 5 spaces
-                let transaction = Transaction::insert(rope, selection, "     ".into());
-                let success = transaction.apply(rope);
-
-                if success {
-                    *selection = selection.clone().map(transaction.changes());
-                    *cursor = GridCursor::from_char_offset(selection.primary().head, grid);
-                    *grid = VirtualGrid::new(rope.clone());
-                }
-            } else {
-                // PDF viewer mode - extraction pane only
-                let transaction = Transaction::insert(&app.extraction_rope, &app.extraction_selection, "     ".into());
-                let success = transaction.apply(&mut app.extraction_rope);
-
-                if success {
-                    sync_extraction_state(app);
-                }
-            }
-
-            auto_save_notes_if_needed(app)?;
-            app.needs_redraw = true;
-        }
-
-        (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
-            // In Notes mode, always use notes pane (no extraction pane exists)
-            if app.app_mode == crate::AppMode::NotesEditor {
-                let (rope, selection, grid, cursor, block_sel) =
-                    (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_block_selection);
-
-                // If there's a block selection, delete it first before inserting the character
-                if let Some(block_selection) = block_sel.take() {
-                    // Delete the block selection
-                    let sel = block_selection.to_selection(rope);
-                    let delete_transaction = Transaction::change_by_selection(rope, &sel, |range| {
-                        (range.from(), range.to(), None)
-                    });
-                    delete_transaction.apply(rope);
-
-                    // Collapse selection to a single point at the start of where the block was
-                    *selection = Selection::point(sel.primary().from());
-                    *cursor = GridCursor::from_char_offset(sel.primary().from(), grid);
-                    grid.rope = rope.clone();
-                }
 
                 // Check if cursor is in virtual space
                 if cursor.to_char_offset(grid).is_none() {
@@ -1616,19 +1451,28 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                         *selection = Selection::point(char_pos);
                     }
                 } else {
-                    // Character replacement mode - overwrite instead of insert
-                    // Use grid to replace character at current position
-                    grid.set_char_at(cursor.col, cursor.row, c);
+                    // Normal character insertion - use existing Helix transaction
+                    // Save state before transaction for history
+                    let _state = State {
+                        doc: rope.clone(),
+                        selection: selection.clone(),
+                    };
 
-                    // Update the rope from the grid
-                    *rope = grid.rope.clone();
+                    // CORRECT HELIX: The real Ferrari engine!
+                    let transaction = Transaction::insert(rope, selection, c.to_string().into());
 
-                    // Move cursor right
-                    cursor.col += 1;
+                    // Apply transaction (modifies rope in-place)
+                    let success = transaction.apply(rope);
 
-                    // Update selection to match cursor
-                    if let Some(char_pos) = cursor.to_char_offset(grid) {
-                        *selection = Selection::point(char_pos);
+                    if success {
+                        // Map selection through changes (CRITICAL!)
+                        *selection = selection.clone().map(transaction.changes());
+
+                        // Update grid cursor to match new selection position
+                        *cursor = GridCursor::from_char_offset(selection.primary().head, grid);
+
+                        // Update the grid with the new rope
+                        grid.rope = rope.clone();
                     }
                 }
 
@@ -1651,22 +1495,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.needs_redraw = true;
             } else {
                 // PDF mode - also use grid cursor
-
-                // If there's a block selection, delete it first before inserting the character
-                if let Some(block_selection) = app.extraction_block_selection.take() {
-                    // Delete the block selection
-                    let sel = block_selection.to_selection(&app.extraction_rope);
-                    let delete_transaction = Transaction::change_by_selection(&app.extraction_rope, &sel, |range| {
-                        (range.from(), range.to(), None)
-                    });
-                    delete_transaction.apply(&mut app.extraction_rope);
-
-                    // Collapse selection to a single point at the start of where the block was
-                    app.extraction_selection = Selection::point(sel.primary().from());
-                    app.extraction_cursor = GridCursor::from_char_offset(sel.primary().from(), &app.extraction_grid);
-                    app.extraction_grid.rope = app.extraction_rope.clone();
-                }
-
                 // Check if cursor is in virtual space
                 if app.extraction_cursor.to_char_offset(&app.extraction_grid).is_none() {
                     // We're in virtual space - need to ensure the line exists and pad with spaces

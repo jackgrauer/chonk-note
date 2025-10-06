@@ -50,19 +50,13 @@ impl EditPanelRenderer {
             if wrap && chars.len() > self.viewport_width as usize {
                 // Wrap long lines to viewport width
                 for chunk in chars.chunks(self.viewport_width as usize) {
-                    let mut row = chunk.to_vec();
-                    while row.len() < self.viewport_width as usize {
-                        row.push(' ');
-                    }
+                    let row = chunk.to_vec();
                     self.buffer.push(row);
                 }
             } else {
-                let mut row = chars;
-                // Pad to width if needed
-                while row.len() < self.viewport_width as usize {
-                    row.push(' ');
-                }
-                self.buffer.push(row);
+                // Don't pad or truncate - keep the full line content
+                // This allows horizontal scrolling and cursor positions beyond viewport
+                self.buffer.push(chars);
             }
         }
     }
@@ -93,17 +87,15 @@ impl EditPanelRenderer {
     }
 
     pub fn scroll_right(&mut self, cols: u16) {
-        let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
-        let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
-        self.scroll_x = (self.scroll_x + cols).min(max_scroll);
+        // No max limit - allow scrolling into virtual space
+        // The renderer will handle displaying spaces for virtual columns
+        self.scroll_x = self.scroll_x.saturating_add(cols);
         self.viewport_x = self.scroll_x as usize;
     }
 
     pub fn scroll_to_x(&mut self, x: u16) {
-        // Enforce boundaries when setting scroll position directly
-        let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
-        let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
-        self.scroll_x = x.min(max_scroll);
+        // No max limit - allow scrolling to any position
+        self.scroll_x = x;
         self.viewport_x = self.scroll_x as usize;
     }
 
@@ -119,6 +111,14 @@ impl EditPanelRenderer {
     pub fn follow_cursor(&mut self, cursor_x: usize, cursor_y: usize, padding: u16) {
         let cursor_x = cursor_x as u16;
         let cursor_y = cursor_y as u16;
+
+        use std::io::Write;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/chonk-debug.log")
+            .and_then(|mut f| writeln!(f, "follow_cursor: cursor=({}, {}), viewport_width={}, scroll_x={}",
+                                       cursor_x, cursor_y, self.viewport_width, self.scroll_x));
 
         // HARD BOUNDARIES: Never allow negative scroll positions
         const MIN_SCROLL: u16 = 0;
@@ -147,11 +147,9 @@ impl EditPanelRenderer {
         }
         // If cursor is right of viewport (including padding), scroll right to show it
         else if cursor_x >= self.scroll_x + self.viewport_width.saturating_sub(padding) {
-            // Calculate minimum scroll needed to show cursor with padding
-            let min_scroll = cursor_x.saturating_sub(self.viewport_width.saturating_sub(padding + 1));
-            let max_width = self.buffer.get(0).map(|r| r.len()).unwrap_or(0);
-            let max_scroll = max_width.saturating_sub(self.viewport_width as usize) as u16;
-            self.scroll_x = min_scroll.min(max_scroll);
+            // Calculate scroll needed to show cursor with padding
+            // No max_scroll limit - cursor can be in virtual space beyond any content
+            self.scroll_x = cursor_x.saturating_sub(self.viewport_width.saturating_sub(padding + 1));
         }
 
         // FINAL SAFETY CHECK: Ensure viewport boundaries are valid

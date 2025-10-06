@@ -125,17 +125,24 @@ impl App {
 
         // Determine which pane we're in and get the appropriate rope and renderer
         let (rope, renderer, pane_start_x) = if self.app_mode == crate::AppMode::NotesEditor {
-            // In Notes mode, we only have:
+            // In Notes mode, we have three sections:
             // 1. Notes list (0-4)
-            // 2. Notes editor (everything else)
+            // 2. Notes editor (4 to half of remaining)
+            // 3. Extraction text (half to end)
             let notes_list_width = 4;
+            let remaining_width = term_width.saturating_sub(notes_list_width);
+            let notes_editor_width = remaining_width / 2;
+            let extraction_start_x = notes_list_width + notes_editor_width;
 
-            if x < notes_list_width {
+            if x <= notes_list_width {
                 // Click is in notes list, not in a text pane
                 return None;
-            } else {
-                // Click is in notes editor
+            } else if x < extraction_start_x {
+                // Click is in notes editor (left text pane)
                 (&self.notes_rope, &self.notes_display, notes_list_width)
+            } else {
+                // Click is in extraction text (right pane)
+                (&self.extraction_rope, &self.edit_display, extraction_start_x)
             }
         } else {
             // In PDF mode, we have two panes split down the middle
@@ -255,20 +262,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Check if we're dragging the divider
             if app.is_dragging_divider {
                 // Update split position based on mouse X, with constraints
-                if app.app_mode == crate::AppMode::NotesEditor {
-                    // In Notes mode, split is relative to notes list width
-                    let notes_list_width = 4;
-                    let remaining_width = term_width.saturating_sub(notes_list_width);
-                    let min_split = remaining_width / 4;  // Minimum 25% for notes editor
-                    let max_split = remaining_width * 3 / 4;  // Maximum 75% for notes editor
-                    let relative_x = x.saturating_sub(notes_list_width);
-                    app.split_position = Some(relative_x.max(min_split).min(max_split));
-                } else {
-                    // PDF mode - split is absolute
-                    let min_split = term_width / 4;  // Minimum 25% for each pane
-                    let max_split = term_width * 3 / 4;  // Maximum 75% for each pane
-                    app.split_position = Some(x.max(min_split).min(max_split));
-                }
+                let min_split = term_width / 4;  // Minimum 25% for each pane
+                let max_split = term_width * 3 / 4;  // Maximum 75% for each pane
+                app.split_position = Some(x.max(min_split).min(max_split));
                 app.needs_redraw = true;
                 return Ok(());
             }
@@ -279,20 +275,6 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 Some(c) => c,
                 None => return Ok(()), // Drag outside valid area
             };
-
-            // Check if we've dragged into a different pane - if so, ignore this drag event
-            // This prevents selection from "flipping" when dragging past pane edge
-            let current_pane_matches = if app.app_mode == crate::AppMode::NotesEditor {
-                // In notes mode, only NotesEditor pane exists (ignore NotesList)
-                coords.pane == crate::coordinate_system::Pane::NotesEditor
-            } else {
-                coords.pane == crate::coordinate_system::Pane::Extraction
-            };
-
-            // If drag moved into different pane or divider, ignore it
-            if !current_pane_matches {
-                return Ok(());
-            }
 
             let end_line = coords.grid.1;
             let end_col = coords.grid.0;
@@ -325,12 +307,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     };
 
                     if let Some(block_sel) = block_selection {
-                        // Prevent selection from extending past pane boundaries
-                        // This stops the "flip" when dragging past the edge
-                        let clamped_col = end_col;  // Already clamped by coordinate system
-
                         // Extend existing block selection
-                        block_sel.extend_to(end_line, clamped_col, visual_col);
+                        block_sel.extend_to(end_line, end_col, visual_col);
 
                         // Update helix selection to match block selection
                         *selection = block_sel.to_selection(rope);
@@ -357,81 +335,54 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, modifiers, .. } => {
             // Debug log click position
 
-            // In Notes mode, check for clicks on notes list (far left)
-            if app.app_mode == crate::AppMode::NotesEditor {
-                // Check for click on top yellow bar
-                if y == 0 {
-                    // Clicked on top bar - enable editing
-                    if !app.notes_list.is_empty() {
-                        app.editing_title = true;
-                        app.title_buffer = app.notes_list[app.selected_note_index].title.clone();
-                        app.needs_redraw = true;
-                    }
-                    return Ok(());
-                }
-
-                // Use coordinate system to determine which pane was clicked
-                let coord_sys = crate::coordinate_system::CoordinateSystem::new(app, term_width, term_height);
-                let clicked_pane = coord_sys.which_pane(x);
-
-                // Check if clicked on notes list sidebar
-                if clicked_pane == Some(crate::coordinate_system::Pane::NotesList) && y > 0 {
-                    let clicked_row = (y.saturating_sub(1)) as usize; // Account for top bar offset
-
-                    // If sidebar is expanded, clicking anywhere on it should select a note if valid
-                    if app.sidebar_expanded {
-                        if clicked_row < app.notes_list.len() {
-                            // First, save the current note's changes back to the list
-                            if let Some(ref mut notes_mode) = app.notes_mode {
-                                if let Some(ref current_note) = notes_mode.current_note {
-                                    // Find the current note in the list and update it
-                                    for note in app.notes_list.iter_mut() {
-                                        if note.id == current_note.id {
-                                            // Update the note's content with the current editor content
-                                            note.content = app.notes_rope.to_string();
-                                            break;
-                                        }
-                                    }
+            // In Notes mode, check for clicks on notes list (far left, 4 chars wide)
+            if app.app_mode == crate::AppMode::NotesEditor && x <= 4 {
+                // Calculate which note was clicked based on display position
+                // y is already 0-based from kitty_native
+                let clicked_row = y as usize;
+                if clicked_row < app.notes_list.len() {
+                    // First, save the current note's changes back to the list
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        if let Some(ref current_note) = notes_mode.current_note {
+                            // Find the current note in the list and update it
+                            for note in app.notes_list.iter_mut() {
+                                if note.id == current_note.id {
+                                    // Update the note's content with the current editor content
+                                    note.content = app.notes_rope.to_string();
+                                    break;
                                 }
-                            }
-
-                            // Now select and load the clicked note
-                            app.selected_note_index = clicked_row;
-
-                            if let Some(ref mut notes_mode) = app.notes_mode {
-                                let selected_note = app.notes_list[clicked_row].clone();
-
-                                // Load the note content
-                                app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
-                                app.notes_selection = helix_core::Selection::point(0);
-
-                                // Update the grid with the new rope!
-                                app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
-                                app.notes_cursor = crate::grid_cursor::GridCursor::new();
-
-                                notes_mode.current_note = Some(selected_note.clone());
-
-                                // Update the display
-                                if let Some(renderer) = &mut app.notes_display {
-                                    renderer.update_from_rope(&app.notes_rope);
-                                }
-
-                                // Switch focus to notes editor
-                                app.switch_active_pane(crate::ActivePane::Left);
-                                app.status_message = format!("Opened: {}", selected_note.title);
                             }
                         }
-
-                        // Always collapse sidebar after any click when expanded
-                        app.sidebar_expanded = false;
-                        app.needs_redraw = true;
-                        return Ok(());
-                    } else {
-                        // If collapsed sidebar, expand when clicking in sidebar
-                        app.sidebar_expanded = true;
-                        app.needs_redraw = true;
-                        return Ok(());
                     }
+
+                    // Now select and load the clicked note
+                    app.selected_note_index = clicked_row;
+
+                    if let Some(ref mut notes_mode) = app.notes_mode {
+                        let selected_note = app.notes_list[clicked_row].clone();
+
+                        // Load the note content
+                        app.notes_rope = helix_core::Rope::from(selected_note.content.as_str());
+                        app.notes_selection = helix_core::Selection::point(0);
+
+                        // Update the grid with the new rope!
+                        app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
+                        app.notes_cursor = crate::grid_cursor::GridCursor::new();
+
+                        notes_mode.current_note = Some(selected_note.clone());
+
+                        // Update the display
+                        if let Some(renderer) = &mut app.notes_display {
+                            renderer.update_from_rope(&app.notes_rope);
+                        }
+
+                        // Switch focus to notes editor
+                        app.switch_active_pane(crate::ActivePane::Left);
+                        app.status_message = format!("Opened: {}", selected_note.title);
+                    }
+
+                    app.needs_redraw = true;
+                    return Ok(());
                 }
             }
 
@@ -458,17 +409,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             }
 
-            // Check if click is exactly on the divider column (much more precise now)
-            let divider_x = if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, divider is at notes_list + notes_editor_width
-                let notes_list_width = 4;
-                notes_list_width + current_split
-            } else {
-                // In PDF mode, divider is at current_split
-                current_split
-            };
-
-            if x == divider_x {
+            // Check if click is on the divider (within 2 columns of the split position)
+            if x >= current_split.saturating_sub(2) && x <= current_split + 2 {
                 app.is_dragging_divider = true;
                 app.needs_redraw = true;
                 return Ok(());
@@ -476,16 +418,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
             // Determine which pane was clicked and switch to it
             if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, we only have:
+                // In Notes mode, we have three sections:
                 // 1. Notes list (0-4)
-                // 2. Notes editor (everything else)
+                // 2. Notes editor (4 to half of remaining)
+                // 3. Extraction text (half to end)
                 let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
-                if x >= notes_list_width {
+                if x > notes_list_width && x < extraction_start_x {
                     // Clicked in notes editor
                     app.switch_active_pane(crate::ActivePane::Left);
+                } else if x >= extraction_start_x {
+                    // Clicked in extraction text
+                    app.switch_active_pane(crate::ActivePane::Right);
                 }
-                // If x < notes_list_width, we already handled it above
+                // If x <= notes_list_width, we already handled it above
             } else {
                 // In PDF mode, use simple split
                 if x < current_split {
@@ -538,8 +487,10 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                 // Determine which rope, selection, and block selection to use based on pane
                 let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
-                    // In notes mode, always use notes (no extraction pane exists)
-                    (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection)
+                    match app.active_pane {
+                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
+                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
+                    }
                 } else {
                     // In PDF mode, always use extraction rope
                     (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
@@ -666,8 +617,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollUp), x, modifiers, .. } => {
             if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, only have notes list and notes editor
+                // In Notes mode, determine which pane to scroll
                 let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
                 if x <= notes_list_width {
                     // Scrolling in notes list - scroll the list
@@ -675,9 +629,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         app.notes_list_scroll = app.notes_list_scroll.saturating_sub(1);
                         app.needs_redraw = true;
                     }
-                } else {
+                } else if x < extraction_start_x {
                     // Scrolling in notes editor pane
                     if let Some(renderer) = &mut app.notes_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_left(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_up(3);
+                        }
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane
+                    if let Some(renderer) = &mut app.edit_display {
                         if modifiers.shift {
                             // Horizontal scroll with Shift+Scroll
                             renderer.scroll_left(5);
@@ -718,8 +684,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollDown), x, modifiers, .. } => {
             if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, only have notes list and notes editor
+                // In Notes mode, determine which pane to scroll
                 let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
                 if x <= notes_list_width {
                     // Scrolling in notes list - scroll the list
@@ -729,9 +698,21 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         app.notes_list_scroll += 1;
                         app.needs_redraw = true;
                     }
-                } else {
+                } else if x < extraction_start_x {
                     // Scrolling in notes editor pane
                     if let Some(renderer) = &mut app.notes_display {
+                        if modifiers.shift {
+                            // Horizontal scroll with Shift+Scroll
+                            renderer.scroll_right(5);
+                        } else {
+                            // Vertical scroll
+                            renderer.scroll_down(3);
+                        }
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane
+                    if let Some(renderer) = &mut app.edit_display {
                         if modifiers.shift {
                             // Horizontal scroll with Shift+Scroll
                             renderer.scroll_right(5);
@@ -779,14 +760,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
         // Horizontal swipe gestures
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollLeft), x, .. } => {
             if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, only have notes list and notes editor
+                // In Notes mode, determine which pane to scroll
                 let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
                 if x <= notes_list_width {
                     // Notes list doesn't need horizontal scrolling
-                } else {
+                } else if x < extraction_start_x {
                     // Scrolling in notes editor pane - scroll left
                     if let Some(renderer) = &mut app.notes_display {
+                        renderer.scroll_left(5);
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane - scroll left
+                    if let Some(renderer) = &mut app.edit_display {
                         renderer.scroll_left(5);
                         app.needs_redraw = true;
                     }
@@ -809,14 +799,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
         MouseEvent { button: Some(crate::kitty_native::MouseButton::ScrollRight), x, .. } => {
             if app.app_mode == crate::AppMode::NotesEditor {
-                // In Notes mode, only have notes list and notes editor
+                // In Notes mode, determine which pane to scroll
                 let notes_list_width = 4;
+                let remaining_width = term_width.saturating_sub(notes_list_width);
+                let notes_editor_width = remaining_width / 2;
+                let extraction_start_x = notes_list_width + notes_editor_width;
 
                 if x <= notes_list_width {
                     // Notes list doesn't need horizontal scrolling
-                } else {
+                } else if x < extraction_start_x {
                     // Scrolling in notes editor pane - scroll right
                     if let Some(renderer) = &mut app.notes_display {
+                        renderer.scroll_right(5);
+                        app.needs_redraw = true;
+                    }
+                } else {
+                    // Scrolling in extraction text pane - scroll right
+                    if let Some(renderer) = &mut app.edit_display {
                         renderer.scroll_right(5);
                         app.needs_redraw = true;
                     }
