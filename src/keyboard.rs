@@ -64,28 +64,58 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(true);
     }
 
-    // Ctrl+C - Copy block
+    // Ctrl+C - Copy block to system clipboard
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         if let Some(copied) = app.grid.copy_block() {
             app.block_clipboard = Some(copied.clone());
-            app.status_message = format!("Copied {} rows", copied.len());
+
+            // Also copy to system clipboard
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let text = copied.join("\n");
+                let _ = clipboard.set_text(text);
+                app.status_message = format!("Copied {} rows to system clipboard", copied.len());
+            } else {
+                app.status_message = format!("Copied {} rows", copied.len());
+            }
+
             app.needs_redraw = true;
         }
         return Ok(true);
     }
 
-    // Ctrl+X - Cut block
+    // Ctrl+X - Cut block to system clipboard
     if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
         if let Some(cut) = app.grid.cut_block() {
             app.block_clipboard = Some(cut.clone());
-            app.status_message = format!("Cut {} rows", cut.len());
+
+            // Also copy to system clipboard
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let text = cut.join("\n");
+                let _ = clipboard.set_text(text);
+                app.status_message = format!("Cut {} rows to system clipboard", cut.len());
+            } else {
+                app.status_message = format!("Cut {} rows", cut.len());
+            }
+
             app.needs_redraw = true;
         }
         return Ok(true);
     }
 
-    // Ctrl+V - Paste block
+    // Ctrl+V - Paste from system clipboard
     if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Try system clipboard first
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+                app.grid.paste_block(&lines, app.cursor_row, app.cursor_col);
+                app.status_message = format!("Pasted {} rows from system clipboard", lines.len());
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+        }
+
+        // Fall back to internal block clipboard
         if let Some(ref clipboard) = app.block_clipboard {
             app.grid.paste_block(clipboard, app.cursor_row, app.cursor_col);
             app.status_message = format!("Pasted {} rows", clipboard.len());
