@@ -101,7 +101,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.needs_redraw = true;
                     return Ok(true);
                 }
-                KeyCode::Escape => {
+                KeyCode::Esc => {
                     // Cancel editing
                     app.editing_title = false;
                     app.title_buffer.clear();
@@ -1579,16 +1579,10 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER) => {
-            // In Notes mode, work with the appropriate rope, selection, grid, and cursor based on active pane
+            // In Notes mode, always use notes pane (no extraction pane exists)
             if app.app_mode == crate::AppMode::NotesEditor {
-                let (rope, selection, grid, cursor, block_sel) = match app.active_pane {
-                    crate::ActivePane::Left => {
-                        (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_block_selection)
-                    }
-                    crate::ActivePane::Right => {
-                        (&mut app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_grid, &mut app.extraction_cursor, &mut app.extraction_block_selection)
-                    }
-                };
+                let (rope, selection, grid, cursor, block_sel) =
+                    (&mut app.notes_rope, &mut app.notes_selection, &mut app.notes_grid, &mut app.notes_cursor, &mut app.notes_block_selection);
 
                 // If there's a block selection, delete it first before inserting the character
                 if let Some(block_selection) = block_sel.take() {
