@@ -316,26 +316,9 @@ async fn run_app(app: &mut App) -> Result<()> {
 
 /// Render the notes pane (no borders)
 fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
-    // Render title bar at the top
-    let title_height = 1;
-    let title = if app.editing_title {
-        // Show the buffer being edited with a cursor
-        format!("{}|", app.title_buffer)
-    } else if !app.notes_list.is_empty() && app.selected_note_index < app.notes_list.len() {
-        app.notes_list[app.selected_note_index].title.clone()
-    } else {
-        "Untitled".to_string()
-    };
-
-    // Draw title bar with bold text and amber background
-    print!("\x1b[{};{}H\x1b[48;2;255;193;7m\x1b[38;2;0;0;0m\x1b[1m{}{}\x1b[0m",
-        y + 1, x + 1,
-        title,
-        " ".repeat((width as usize).saturating_sub(title.len())));
-
-    // Adjust content area to account for title bar
-    let content_y = y + title_height;
-    let content_height = height.saturating_sub(title_height);
+    // No separate title bar here - it's rendered in run_app()
+    let content_y = y;
+    let content_height = height;
 
     // Create notes renderer if needed
     if app.notes_display.is_none() {
