@@ -21,7 +21,7 @@ mod virtual_grid;
 mod grid_cursor;
 mod coordinate_system;
 mod text_filter;
-mod dual_pane_keyboard;  // Stub for notes-only
+mod notes_keyboard;  // Notes-specific keyboard handling
 // PDF-only modules removed
 // mod content_extractor;
 // mod viuer_display;

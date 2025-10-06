@@ -20,10 +20,10 @@ fn update_notes_with_content(app: &mut App, content: &str) {
 }
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
-    // Try dual-pane handler first for Notes mode
+    // Try notes-specific handler first for Notes mode
     if app.app_mode == crate::AppMode::NotesEditor {
-        // Check if dual-pane handler can handle this key
-        if let Ok(handled) = crate::dual_pane_keyboard::handle_dual_pane_input(app, &key) {
+        // Check if notes handler can handle this key
+        if let Ok(handled) = crate::notes_keyboard::handle_notes_input(app, &key) {
             if handled {
                 return Ok(true);
             }
