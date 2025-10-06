@@ -283,10 +283,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Check if we've dragged into a different pane - if so, ignore this drag event
             // This prevents selection from "flipping" when dragging past pane edge
             let current_pane_matches = if app.app_mode == crate::AppMode::NotesEditor {
-                match app.active_pane {
-                    crate::ActivePane::Left => coords.pane == crate::coordinate_system::Pane::NotesEditor,
-                    crate::ActivePane::Right => coords.pane == crate::coordinate_system::Pane::Extraction,
-                }
+                // In notes mode, only NotesEditor pane exists (ignore NotesList)
+                coords.pane == crate::coordinate_system::Pane::NotesEditor
             } else {
                 coords.pane == crate::coordinate_system::Pane::Extraction
             };
@@ -540,10 +538,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                 // Determine which rope, selection, and block selection to use based on pane
                 let (rope, selection, block_selection) = if app.app_mode == crate::AppMode::NotesEditor {
-                    match app.active_pane {
-                        crate::ActivePane::Left => (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection),
-                        crate::ActivePane::Right => (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection),
-                    }
+                    // In notes mode, always use notes (no extraction pane exists)
+                    (&app.notes_rope, &mut app.notes_selection, &mut app.notes_block_selection)
                 } else {
                     // In PDF mode, always use extraction rope
                     (&app.extraction_rope, &mut app.extraction_selection, &mut app.extraction_block_selection)
