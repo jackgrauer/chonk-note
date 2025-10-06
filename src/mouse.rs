@@ -54,13 +54,22 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         app.notes_mode.current_note = Some(note.clone());
                         app.notes_grid = crate::virtual_grid::VirtualGrid::new(app.notes_rope.clone());
                         app.notes_cursor = crate::grid_cursor::GridCursor::new();
+
+                        // Expand sidebar and enter title editing mode
+                        app.sidebar_expanded = true;
+                        app.editing_title = true;
+                        app.title_buffer = note.title.clone();
+
                         app.needs_redraw = true;
                     }
                 }
                 return Ok(());
             }
 
-            // Click in editor area - position cursor
+            // Click in editor area - collapse sidebar and position cursor
+            app.sidebar_expanded = false;
+            app.editing_title = false;
+
             let editor_x = x.saturating_sub(notes_list_width) as usize;
             let editor_y = y.saturating_sub(1) as usize;
 

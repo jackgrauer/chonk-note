@@ -274,22 +274,30 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
             };
 
             if app.sidebar_expanded {
-                let title = if note.title.is_empty() {
-                    "Untitled".to_string()
-                } else {
-                    note.title.clone()
-                };
                 let num_prefix = format!("{}. ", note_idx + 1);
-                let max_title_len = (width as usize).saturating_sub(num_prefix.len());
-                let display_title: String = if title.len() > max_title_len {
-                    format!("{}…", &title[..max_title_len.saturating_sub(1)])
+
+                // If this is the selected note and we're editing the title, show the buffer with cursor
+                let display_title = if is_selected && app.editing_title {
+                    format!("{}_", &app.title_buffer) // Show cursor with underscore
                 } else {
+                    let title = if note.title.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        note.title.clone()
+                    };
                     title
+                };
+
+                let max_title_len = (width as usize).saturating_sub(num_prefix.len());
+                let truncated_title: String = if display_title.len() > max_title_len {
+                    format!("{}…", &display_title[..max_title_len.saturating_sub(1)])
+                } else {
+                    display_title
                 };
 
                 print!("\x1b[{};{}H{}\x1b[1m{}{}{}\x1b[0m",
                     y + display_pos as u16 + 1, x + 1,
-                    bg_color, text_color, num_prefix, display_title);
+                    bg_color, text_color, num_prefix, truncated_title);
             } else {
                 let note_num = note_idx + 1;
                 let indicator = if is_selected { "> " } else { "  " };

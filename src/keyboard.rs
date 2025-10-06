@@ -5,6 +5,47 @@ use anyhow::Result;
 use helix_core::{Transaction, Selection, history::State};
 
 pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
+    // If editing title, handle title editing keys
+    if app.editing_title {
+        match key.code {
+            KeyCode::Enter => {
+                // Save title and exit editing mode
+                if let Some(ref mut current_note) = app.notes_mode.current_note {
+                    current_note.title = app.title_buffer.clone();
+                    let content = app.notes_rope.to_string();
+                    let _ = app.notes_mode.db.update_note(&current_note.id, app.title_buffer.clone(), content, current_note.tags.clone());
+
+                    // Update the note in the list
+                    if app.selected_note_index < app.notes_list.len() {
+                        app.notes_list[app.selected_note_index].title = app.title_buffer.clone();
+                    }
+                }
+                app.editing_title = false;
+                app.sidebar_expanded = false;
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+            KeyCode::Esc => {
+                // Cancel editing
+                app.editing_title = false;
+                app.sidebar_expanded = false;
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+            KeyCode::Backspace => {
+                app.title_buffer.pop();
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::SUPER) => {
+                app.title_buffer.push(c);
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+            _ => return Ok(true),
+        }
+    }
+
     // Ctrl+Q - Quit
     if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.exit_requested = true;
