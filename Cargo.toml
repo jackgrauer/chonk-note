@@ -15,14 +15,8 @@ tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "fs", "time
 # Terminal UI
 crossterm = "0.28"
 
-# Text editing - HELIX-CORE INTEGRATION!
-tempfile = "3.22"
-helix-core = { git = "https://github.com/helix-editor/helix", rev = "dbb472d4" }
-helix-view = { git = "https://github.com/helix-editor/helix", rev = "dbb472d4" }
-
 # Basic utilities
 lazy_static = "1.4"
-unicode-width = "0.1"  # Needed for block selection visual columns
 libc = "0.2"
 
 # Notes mode

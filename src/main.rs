@@ -1,37 +1,26 @@
-// CHONK-NOTE - Lightweight notes editor
+// CHONK-NOTE - Lightweight notes editor with chunked grid
 use anyhow::Result;
-use helix_core::{Rope, Selection, history::History};
 use std::io::{self, Write};
 
-mod edit_renderer;
 mod keyboard;
 mod kitty_native;
 mod mouse;
-mod block_selection;
 mod notes_database;
 mod notes_mode;
-mod debug;
-mod virtual_grid;
-mod grid_cursor;
+mod chunked_grid;
 
-use edit_renderer::EditPanelRenderer;
 use kitty_native::KittyTerminal;
 use mouse::MouseState;
-use block_selection::BlockSelection;
+use chunked_grid::ChunkedGrid;
 
 pub struct App {
     // Notes database
     pub notes_mode: notes_mode::NotesMode,
 
-    // Current note editing
-    pub notes_rope: Rope,
-    pub notes_selection: Selection,
-    pub notes_history: History,
-    pub notes_block_selection: Option<BlockSelection>,
-
-    // Virtual grid for cursor beyond text
-    pub notes_grid: virtual_grid::VirtualGrid,
-    pub notes_cursor: grid_cursor::GridCursor,
+    // Chunked grid - the ONLY data structure
+    pub grid: ChunkedGrid,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
 
     // Notes list sidebar
     pub notes_list: Vec<notes_database::Note>,
@@ -41,20 +30,17 @@ pub struct App {
     pub editing_title: bool,
     pub title_buffer: String,
 
-    // Rendering
-    pub notes_display: Option<EditPanelRenderer>,
 
     // App state
     pub status_message: String,
     pub exit_requested: bool,
     pub needs_redraw: bool,
-    pub block_clipboard: Option<Vec<String>>,
-    pub wrap_text: bool,
+    pub show_grid_lines: bool,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
-        let mut notes_mode = notes_mode::NotesMode::new()?;
+        let notes_mode = notes_mode::NotesMode::new()?;
         let mut notes_list = Vec::new();
 
         // Load existing notes
@@ -62,31 +48,21 @@ impl App {
             notes_list = notes;
         }
 
-        // Start with an empty note
-        let mut notes_rope = Rope::from("");
-        let mut notes_selection = Selection::point(0);
-        notes_mode.handle_command(&mut notes_rope, &mut notes_selection, "new")?;
-
         Ok(Self {
             notes_mode,
-            notes_rope: notes_rope.clone(),
-            notes_selection,
-            notes_history: History::default(),
-            notes_block_selection: None,
-            notes_grid: virtual_grid::VirtualGrid::new(notes_rope),
-            notes_cursor: grid_cursor::GridCursor::new(),
+            grid: ChunkedGrid::new(),
+            cursor_row: 0,
+            cursor_col: 0,
             notes_list,
             selected_note_index: 0,
             notes_list_scroll: 0,
             sidebar_expanded: false,
             editing_title: false,
             title_buffer: String::new(),
-            notes_display: None,
-            status_message: "Ctrl+N: New | Ctrl+Up/Down: Navigate | Ctrl+Q: Quit".to_string(),
+            status_message: "Click anywhere and type! Ctrl+N: New | Ctrl+Q: Quit | Ctrl+G: Grid Lines".to_string(),
             exit_requested: false,
             needs_redraw: true,
-            block_clipboard: None,
-            wrap_text: false,
+            show_grid_lines: false,
         })
     }
 }
@@ -107,10 +83,22 @@ async fn main() -> Result<()> {
 fn setup_terminal() -> Result<()> {
     KittyTerminal::enable_raw_mode().map_err(|e| anyhow::anyhow!("Terminal setup failed: {}", e))?;
     KittyTerminal::enter_fullscreen().map_err(|e| anyhow::anyhow!("Fullscreen failed: {}", e))?;
+
+    // Show and configure cursor
+    print!("\x1b[?25h");  // Show cursor
+    print!("\x1b[1 q");   // Blinking block
+    print!("\x1b[?12h");  // Enable blinking
+    std::io::Write::flush(&mut std::io::stdout())?;
+
     Ok(())
 }
 
 fn restore_terminal() -> Result<()> {
+    // Reset cursor to default
+    print!("\x1b[0 q");  // Default cursor
+    print!("\x1b[?12l"); // Disable blinking
+    std::io::Write::flush(&mut std::io::stdout())?;
+
     KittyTerminal::exit_fullscreen().map_err(|e| anyhow::anyhow!("Exit fullscreen failed: {}", e))?;
     KittyTerminal::disable_raw_mode().map_err(|e| anyhow::anyhow!("Disable raw mode failed: {}", e))?;
     Ok(())
@@ -168,6 +156,8 @@ async fn run_app(app: &mut App) -> Result<()> {
                 print!("\x1b[{};{}H", screen_y + 1, screen_x + 1); // Move to cursor position (1-based)
             }
 
+            // Make sure cursor is visible
+            print!("\x1b[?25h");  // Show cursor
             print!("\x1b[?2026l");
             stdout.flush()?;
 
@@ -198,70 +188,64 @@ async fn run_app(app: &mut App) -> Result<()> {
 }
 
 fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
-    // Create renderer if needed
-    if app.notes_display.is_none() {
-        let mut renderer = EditPanelRenderer::new(width, height);
-        renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
-        app.notes_display = Some(renderer);
+    // Simple direct rendering from chunked grid
+    // No need for complex renderer - just draw what's visible
+
+    // Determine viewport (what rows/cols are visible)
+    let viewport_start_row = 0; // TODO: Add scrolling later
+    let viewport_start_col = 0;
+
+    // Render visible lines
+    for screen_row in 0..height {
+        let grid_row = viewport_start_row + screen_row as usize;
+        let line = app.grid.get_line(grid_row, viewport_start_col, viewport_start_col + width as usize);
+
+        // Clear line and draw content
+        print!("\x1b[{};{}H\x1b[K{}", y + screen_row + 1, x + 1, line);
     }
 
-    let mut cursor_screen_pos = None;
+    // Render grid lines if enabled
+    if app.show_grid_lines {
+        // Vertical lines every 8 characters
+        for col in (8..width).step_by(8) {
+            for row in 0..height {
+                let grid_row = viewport_start_row + row as usize;
+                let grid_col = viewport_start_col + col as usize;
+                let ch = app.grid.get(grid_row, grid_col);
 
-    if let Some(renderer) = &mut app.notes_display {
-        renderer.resize(width, height);
-        renderer.update_from_rope_with_wrap(&app.notes_rope, app.wrap_text);
-
-        let cursor_line = app.notes_cursor.row;
-        let cursor_col = app.notes_cursor.col;
-
-        renderer.follow_cursor(cursor_col, cursor_line, 3);
-
-        // Calculate screen position of cursor
-        // cursor is in buffer coordinates, need to convert to screen coordinates
-        let screen_y = cursor_line.saturating_sub(renderer.viewport_y as usize);
-        let screen_x = cursor_col.saturating_sub(renderer.viewport_x as usize);
-
-        // Only set cursor position if it's visible in viewport
-        if screen_y < height as usize && screen_x < width as usize {
-            cursor_screen_pos = Some((x + screen_x as u16, y + screen_y as u16));
-        }
-
-        // Render with block selection if active
-        if app.notes_block_selection.is_some() {
-            renderer.render_with_block_selection(
-                x, y, width, height,
-                (cursor_col, cursor_line),
-                app.notes_block_selection.as_ref(),
-                true
-            )?;
-        } else {
-            // Render with normal selection
-            let (sel_start, sel_end) = {
-                let range = app.notes_selection.primary();
-                if range.from() != range.to() {
-                    let start_line = app.notes_rope.char_to_line(range.from());
-                    let end_line = app.notes_rope.char_to_line(range.to().saturating_sub(1).max(0));
-                    let start_line_char = app.notes_rope.line_to_char(start_line);
-                    let end_line_char = app.notes_rope.line_to_char(end_line);
-
-                    let start_col = range.from().saturating_sub(start_line_char);
-                    let end_col = range.to().saturating_sub(end_line_char);
-
-                    (Some((start_col, start_line)), Some((end_col, end_line)))
-                } else {
-                    (None, None)
+                // Only draw grid line if cell is empty
+                if ch == ' ' {
+                    print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m",
+                           y + row + 1, x + col + 1);
                 }
-            };
+            }
+        }
 
-            renderer.render_with_cursor_and_selection(
-                x, y, width, height,
-                (cursor_col, cursor_line),
-                sel_start,
-                sel_end,
-                true
-            )?;
+        // Horizontal lines every 4 rows
+        for row in (4..height).step_by(4) {
+            for col in 0..width {
+                let grid_row = viewport_start_row + row as usize;
+                let grid_col = viewport_start_col + col as usize;
+                let ch = app.grid.get(grid_row, grid_col);
+
+                // Only draw grid line if cell is empty
+                if ch == ' ' {
+                    print!("\x1b[{};{}H\x1b[38;2;60;60;60m─\x1b[0m",
+                           y + row + 1, x + col + 1);
+                }
+            }
         }
     }
+
+    // Calculate cursor screen position
+    let cursor_screen_row = app.cursor_row.saturating_sub(viewport_start_row);
+    let cursor_screen_col = app.cursor_col.saturating_sub(viewport_start_col);
+
+    let cursor_screen_pos = if cursor_screen_row < height as usize && cursor_screen_col < width as usize {
+        Some((x + cursor_screen_col as u16, y + cursor_screen_row as u16))
+    } else {
+        None
+    };
 
     Ok(cursor_screen_pos)
 }
