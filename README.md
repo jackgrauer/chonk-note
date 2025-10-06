@@ -1,122 +1,187 @@
-# Chonker7
+# chonk-note
 
-⚠️ **IMPORTANT ARCHITECTURAL NOTE**: Despite the presence of a `/ferrules` directory, Chonker7 does **NOT** use Ferrules for PDF processing. It uses **pure PDFium** directly via `pdfium-render` crate for all text extraction. The Ferrules directory is dormant/reference code only.
+A lightweight, terminal-based notes editor built with Rust, featuring Helix editor's text manipulation core and a spatial grid-based editing system.
 
-A terminal PDF viewer that combines **fancy-cat** inspired terminal display with **direct PDFium** text extraction into a spatial text matrix.
+## 🎯 Current State
+
+chonk-note is a functional terminal notes application that provides a distraction-free writing environment with persistent storage. It's designed for developers who live in the terminal and want a fast, keyboard-driven notes system without leaving their workflow.
+
+**Historical Note**: This project evolved from Chonker7 (a PDF viewer). The `/lib/libpdfium.dylib.old` and some references to PDF functionality are remnants from that previous incarnation. The current focus is entirely on note-taking.
 
 ## ✨ Features
 
-- 📄 **Direct PDFium Text Extraction** - Pure PDFium without ML overhead (NOT Ferrules)
-- 📊 **Text Matrix Display** - Preserves spatial layout of extracted text
-- 🖼️ **Split View** - Side-by-side PDF image and EDIT panel
-- ⚡ **Fast Navigation** - Quick page switching with keyboard shortcuts
-- 🔄 **Multiple Display Modes** - PDF+EDIT, PDF+MARKDOWN, or OPTIONS
-- 🚀 **Global Command** - Run from anywhere with `chonker7`
+### Core Functionality
 
-## Concept
+- 📝 **SQLite-backed storage** - All notes are persisted in a local database
+- 🎯 **Helix-powered editing** - Uses Helix editor's core for robust text manipulation
+- 📋 **Block selection** - Vim-style visual block mode for column editing
+- 🖱️ **Mouse support** - Click to position cursor, select text
+- 📑 **Sidebar navigation** - Collapsible notes list with keyboard navigation
+- ⚡ **Fast & lightweight** - Instant startup, minimal dependencies
 
-Chonker7 bridges the gap between visual PDF display and text extraction by:
-1. Using fancy-cat's approach for PDF image display in terminal
-2. **Using direct PDFium bindings** for lightweight text extraction (no Ferrules/ML)
-3. Presenting extracted text in a preserved spatial matrix layout
+### Editing Features
 
-## Architecture
+- **Virtual grid cursor** - Move cursor beyond text boundaries (useful for ASCII art/tables)
+- **Smart text wrapping** - Toggle between wrapped and unwrapped display
+- **Block clipboard** - Copy/paste rectangular text selections
+- **Undo/redo history** - Full edit history per note
+- **Title editing** - Inline title editing for better organization
 
-```
-┌─────────────────────────────────────┐
-│          Chonker7 CLI               │
-├─────────────────────────────────────┤
-│                                     │
-│  ┌─────────────┐  ┌──────────────┐ │
-│  │   PDF View  │  │   EDIT Panel │ │
-│  │  (Image)    │  │  (Gridlike)  │ │
-│  └─────────────┘  └──────────────┘ │
-│                                     │
-│  ┌─────────────────────────────────┐│
-│  │       Terminal Display          ││
-│  │    (Kitty Image Protocol)       ││
-│  └─────────────────────────────────┘│
-└─────────────────────────────────────┘
-```
+### UI/UX
 
-## 📦 Installation
+- **Flicker-free rendering** - Synchronized terminal updates at 20 FPS
+- **Responsive layout** - Adapts to terminal resizing
+- **Status messages** - Contextual hints and feedback
+- **Color-coded interface** - Visual hierarchy with syntax highlighting
+
+## 🚀 Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/chonker7.git
-cd chonker7
+git clone https://github.com/jackgrauer/chonk-note.git
+cd chonk-note
 
-# Install as global command
-./install.sh
+# Build and install (requires Rust toolchain)
+cargo build --release
+
+# Optional: Copy to system path
+sudo cp target/release/chonk-note /usr/local/bin/
+
+# Or run directly
+./target/release/chonk-note
 ```
 
-## 🚀 Usage
+## 📋 Requirements
 
-```bash
-# Open with file dialog (macOS native)
-chonker7
-
-# Open specific PDF
-chonker7 document.pdf
-
-# Start at specific page
-chonker7 document.pdf -p 5
-
-# OPTIONS mode
-chonker7 document.pdf -m options
-
-# MARKDOWN view  
-chonker7 document.pdf -m markdown
-
-# EDIT view (default)
-chonker7 document.pdf -m edit
-```
+- Rust 1.70+
+- A terminal emulator with:
+  - 256 color support
+  - UTF-8 encoding
+  - Mouse support (optional but recommended)
+- Kitty terminal recommended for best experience
 
 ## ⌨️ Keyboard Shortcuts
 
+### Navigation
+
 | Key | Action |
 |-----|--------|
-| `Ctrl+O` | Open new PDF (file dialog) |
-| `Ctrl+N` / `→` | Next page |
-| `Ctrl+P` / `←` | Previous page |
-| `Tab` | Toggle display mode (PDF+EDIT → PDF+MARKDOWN → OPTIONS) |
-| `Ctrl+D` | Toggle dark/light mode |
-| `Ctrl+E` | Re-extract current page |
-| `Ctrl+Q` | Quit |
+| `Ctrl+N` | Create new note |
+| `Ctrl+↑/↓` | Navigate between notes |
+| Arrow keys | Move cursor |
 
-## 🎯 Why Chonker7?
+### Editing
 
-- **Simplicity**: Pure PDFium implementation without ML complexity
-- **Lightweight**: No ONNX runtime, no model loading, instant startup
-- **Terminal-First**: Designed for terminal workflows
-- **Spatial Preservation**: Text matrix maintains document layout
-- **Fast**: No ML inference overhead = instant page navigation
+| Key | Action |
+|-----|--------|
+| `Cmd+C` | Copy selection |
+| `Cmd+X` | Cut selection |
+| `Cmd+V` | Paste |
+| `Cmd+A` | Select all |
+| `Backspace` | Delete character |
+| `Enter` | New line |
 
-## 📋 PDFium vs Ferrules Decision
+### Application
 
-| Aspect | Chonker7 (PDFium) | Ferrules |
-|--------|-------------------|----------|
-| PDF Library | Direct PDFium bindings | PDFium + ML wrapper |
-| ML/Layout Detection | None | LayoutLM v3, YOLO |
-| Dependencies | Minimal | Heavy (ort, candle) |
-| Startup Time | Instant | Model loading delay |
-| Memory Usage | ~50MB | ~500MB+ |
-| Text Accuracy | Basic | Advanced with entity recognition |
-| Table Detection | None | ML-powered |
+| Key | Action |
+|-----|--------|
+| `Ctrl+Q` | Quit application |
+| `Esc` | Cancel current operation |
 
-**Why PDFium only?** Chonker7 prioritizes speed and simplicity for terminal editing over advanced document understanding.
+## 🗂️ Project Structure
 
-## 🛠️ Technical Details
+```
+chonk-note/
+├── src/
+│   ├── main.rs                 # Application entry point
+│   ├── edit_renderer.rs        # Terminal rendering engine
+│   ├── keyboard.rs             # Keyboard input handling
+│   ├── mouse.rs                # Mouse event processing
+│   ├── block_selection.rs      # Visual block mode
+│   ├── notes_database.rs       # SQLite persistence layer
+│   ├── notes_mode.rs           # Notes management logic
+│   ├── virtual_grid.rs         # Spatial text grid
+│   ├── grid_cursor.rs          # Cursor positioning system
+│   ├── kitty_native.rs         # Terminal abstraction
+│   └── debug.rs                # Debug logging utilities
+└── Cargo.toml                   # Dependencies and build config
+```
+
+## 🔧 Technical Details
+
+### Core Technologies
 
 - **Language**: Rust
-- **PDF Extraction**: Pure PDFium via `pdfium-render` v0.8 (NOT Ferrules)
-  - Ships with `libpdfium.dylib` in `/lib/` directory
-  - No ML/AI models, no ONNX runtime dependencies
-  - Direct character-to-grid spatial mapping
-- **Terminal UI**: Crossterm only (no Ratatui to avoid tearing)
-- **Image Display**: Viuer for fallback display
-- **Text Layout**: Custom 200×100 character grid preserving spatial relationships
+- **Text Engine**: Helix-core (rope data structure for efficient text manipulation)
+- **Database**: SQLite with rusqlite bindings
+- **Terminal UI**: Custom ANSI escape sequence renderer
+- **Async Runtime**: Tokio for non-blocking I/O
 
-## 📝 License
+### Design Decisions
 
-MIT
+- **No TUI framework**: Direct terminal control for better performance
+- **Rope-based editing**: Efficient for large texts and complex operations
+- **Virtual grid system**: Allows cursor positioning beyond text boundaries
+- **20 FPS cap**: Balances responsiveness with CPU usage
+- **Synchronized updates**: Prevents screen tearing and flicker
+
+## 📁 Data Storage
+
+Notes are stored in a SQLite database at:
+
+- **macOS**: `~/Library/Application Support/chonk-note/notes.db`
+- **Linux**: `~/.local/share/chonk-note/notes.db`
+- **Windows**: `%APPDATA%\chonk-note\notes.db`
+
+Each note contains:
+- Unique SHA-256 ID
+- Title (editable)
+- Content (UTF-8 text)
+- Creation timestamp
+- Last modified timestamp
+
+## 🚧 Current Limitations & Future Work
+
+### Known Limitations
+
+- No search functionality across notes yet
+- No export options (Markdown, plain text)
+- No tags or categories system
+- Single database only (no sync/multiple profiles)
+- Limited to terminal environments
+
+### Potential Enhancements
+
+- [ ] Full-text search with ripgrep integration
+- [ ] Note templates
+- [ ] Markdown preview mode
+- [ ] Export to various formats
+- [ ] Tag system with filtering
+- [ ] Vim keybinding mode
+- [ ] Encrypted notes option
+- [ ] Multiple database support
+- [ ] Config file for customization
+
+## 🐛 Debugging
+
+Debug logs are written to `/tmp/chonk-debug.log` during runtime. Enable verbose logging by setting:
+
+```bash
+export CHONK_DEBUG=1
+```
+
+## 📊 Statistics
+
+- **Total lines of code**: ~2,800
+- **Core files**: 11
+- **Dependencies**: Minimal (helix-core, rusqlite, tokio)
+- **Build time**: <5 seconds
+- **Binary size**: ~2MB (optimized release)
+
+## 📜 License
+
+MIT License - see LICENSE file for details
+
+## 🤝 Contributing
+
+This is a personal project, but suggestions and bug reports are welcome via GitHub issues.
