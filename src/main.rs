@@ -13,6 +13,14 @@ use kitty_native::KittyTerminal;
 use mouse::MouseState;
 use chunked_grid::ChunkedGrid;
 
+// UI Constants
+const SIDEBAR_WIDTH_EXPANDED: u16 = 30;
+const SIDEBAR_WIDTH_COLLAPSED: u16 = 4;
+const GRID_VERTICAL_SPACING: usize = 8;
+const GRID_HORIZONTAL_SPACING: usize = 4;
+const VISIBLE_NOTE_COUNT_APPROX: usize = 30;
+const FRAME_TIME_MS: u128 = 50; // 20 FPS
+
 pub struct App {
     // Notes database
     pub notes_mode: notes_mode::NotesMode,
@@ -22,6 +30,10 @@ pub struct App {
     pub cursor_row: usize,
     pub cursor_col: usize,
 
+    // Viewport scrolling
+    pub viewport_row: usize,
+    pub viewport_col: usize,
+
     // Notes list sidebar
     pub notes_list: Vec<notes_database::Note>,
     pub selected_note_index: usize,
@@ -30,13 +42,16 @@ pub struct App {
     pub editing_title: bool,
     pub title_buffer: String,
 
-
     // App state
     pub status_message: String,
     pub exit_requested: bool,
     pub needs_redraw: bool,
     pub show_grid_lines: bool,
     pub block_clipboard: Option<Vec<String>>,
+
+    // Auto-save debouncing
+    pub dirty: bool,
+    pub last_save_time: std::time::Instant,
 }
 
 impl App {
@@ -54,6 +69,8 @@ impl App {
             grid: ChunkedGrid::new(),
             cursor_row: 0,
             cursor_col: 0,
+            viewport_row: 0,
+            viewport_col: 0,
             notes_list,
             selected_note_index: 0,
             notes_list_scroll: 0,
@@ -65,7 +82,70 @@ impl App {
             needs_redraw: true,
             show_grid_lines: false,
             block_clipboard: None,
+            dirty: false,
+            last_save_time: std::time::Instant::now(),
         })
+    }
+
+    /// Update viewport to keep cursor visible
+    pub fn update_viewport(&mut self, viewport_width: u16, viewport_height: u16) {
+        // Keep cursor in center third of screen when possible
+        let margin_rows = (viewport_height / 3) as usize;
+        let margin_cols = (viewport_width / 3) as usize;
+
+        // Scroll down if cursor is too far down
+        if self.cursor_row >= self.viewport_row + viewport_height as usize - margin_rows {
+            self.viewport_row = self.cursor_row.saturating_sub(viewport_height as usize - margin_rows - 1);
+        }
+
+        // Scroll up if cursor is too far up
+        if self.cursor_row < self.viewport_row + margin_rows {
+            self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
+        }
+
+        // Scroll right if cursor is too far right
+        if self.cursor_col >= self.viewport_col + viewport_width as usize - margin_cols {
+            self.viewport_col = self.cursor_col.saturating_sub(viewport_width as usize - margin_cols - 1);
+        }
+
+        // Scroll left if cursor is too far left
+        if self.cursor_col < self.viewport_col + margin_cols {
+            self.viewport_col = self.cursor_col.saturating_sub(margin_cols);
+        }
+    }
+
+    /// Save current note if dirty and enough time has passed
+    pub fn auto_save(&mut self) -> Result<()> {
+        const SAVE_INTERVAL_MS: u128 = 2000; // 2 seconds
+
+        if !self.dirty {
+            return Ok(());
+        }
+
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_save_time).as_millis() < SAVE_INTERVAL_MS {
+            return Ok(());
+        }
+
+        self.save_current_note()?;
+        Ok(())
+    }
+
+    /// Force save current note immediately
+    pub fn save_current_note(&mut self) -> Result<()> {
+        if let Some(ref current_note) = self.notes_mode.current_note {
+            let lines = self.grid.to_lines();
+            let content = lines.join("\n");
+            self.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone())?;
+            self.dirty = false;
+            self.last_save_time = std::time::Instant::now();
+        }
+        Ok(())
+    }
+
+    /// Mark note as dirty (needs saving)
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 }
 
@@ -115,6 +195,11 @@ async fn run_app(app: &mut App) -> Result<()> {
     loop {
         let (term_width, term_height) = KittyTerminal::size()?;
 
+        // Auto-save debounced
+        if let Err(e) = app.auto_save() {
+            let _ = std::fs::write("/tmp/chonk-debug.log", format!("Auto-save error: {}\n", e));
+        }
+
         // Check if terminal was resized
         if (term_width, term_height) != last_term_size {
             app.needs_redraw = true;
@@ -125,7 +210,7 @@ async fn run_app(app: &mut App) -> Result<()> {
         let now = std::time::Instant::now();
         let frame_time = now.duration_since(last_render_time);
 
-        if app.needs_redraw && frame_time.as_millis() >= 50 {
+        if app.needs_redraw && frame_time.as_millis() >= FRAME_TIME_MS {
             KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
@@ -144,11 +229,14 @@ async fn run_app(app: &mut App) -> Result<()> {
                 " ".repeat((term_width as usize).saturating_sub(note_name.len() + 1)));
 
             // Sidebar width
-            let notes_list_width = if app.sidebar_expanded { 30 } else { 4 };
+            let notes_list_width = if app.sidebar_expanded { SIDEBAR_WIDTH_EXPANDED } else { SIDEBAR_WIDTH_COLLAPSED };
             let remaining_width = term_width.saturating_sub(notes_list_width);
 
             // Render notes list sidebar
             render_notes_list(&app, 0, 1, notes_list_width, term_height.saturating_sub(1))?;
+
+            // Update viewport to keep cursor visible
+            app.update_viewport(remaining_width, term_height.saturating_sub(1));
 
             // Render notes editor and get cursor position
             let cursor_screen_pos = render_notes_pane(&mut *app, notes_list_width, 1, remaining_width, term_height.saturating_sub(1))?;
@@ -186,6 +274,8 @@ async fn run_app(app: &mut App) -> Result<()> {
         }
     }
 
+    // Final save on exit
+    app.save_current_note()?;
     Ok(())
 }
 
@@ -194,8 +284,8 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     // No need for complex renderer - just draw what's visible
 
     // Determine viewport (what rows/cols are visible)
-    let viewport_start_row = 0; // TODO: Add scrolling later
-    let viewport_start_col = 0;
+    let viewport_start_row = app.viewport_row;
+    let viewport_start_col = app.viewport_col;
 
     // Render visible lines with selection highlighting
     for screen_row in 0..height {
@@ -228,7 +318,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
     // Render grid lines if enabled
     if app.show_grid_lines {
         // Vertical lines every 8 characters
-        for col in (8..width).step_by(8) {
+        for col in (GRID_VERTICAL_SPACING..width as usize).step_by(GRID_VERTICAL_SPACING) {
             for row in 0..height {
                 let grid_row = viewport_start_row + row as usize;
                 let grid_col = viewport_start_col + col as usize;
@@ -237,13 +327,13 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
                 // Only draw grid line if cell is empty
                 if ch == ' ' {
                     print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m",
-                           y + row + 1, x + col + 1);
+                           y + row as u16 + 1, x + col as u16 + 1);
                 }
             }
         }
 
         // Horizontal lines every 4 rows
-        for row in (4..height).step_by(4) {
+        for row in (GRID_HORIZONTAL_SPACING..height as usize).step_by(GRID_HORIZONTAL_SPACING) {
             for col in 0..width {
                 let grid_row = viewport_start_row + row as usize;
                 let grid_col = viewport_start_col + col as usize;
@@ -252,7 +342,7 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
                 // Only draw grid line if cell is empty
                 if ch == ' ' {
                     print!("\x1b[{};{}H\x1b[38;2;60;60;60m─\x1b[0m",
-                           y + row + 1, x + col + 1);
+                           y + row as u16 + 1, x + col + 1);
                 }
             }
         }
@@ -295,8 +385,6 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
             };
 
             if app.sidebar_expanded {
-                let num_prefix = format!("{}. ", note_idx + 1);
-
                 // If this is the selected note and we're editing the title, show the buffer with cursor
                 let display_title = if is_selected && app.editing_title {
                     format!("{}_", &app.title_buffer) // Show cursor with underscore
@@ -309,7 +397,8 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
                     title
                 };
 
-                let max_title_len = (width as usize).saturating_sub(num_prefix.len());
+                let prefix = if is_selected { "▸ " } else { "  " };
+                let max_title_len = (width as usize).saturating_sub(prefix.len());
                 let truncated_title: String = if display_title.len() > max_title_len {
                     format!("{}…", &display_title[..max_title_len.saturating_sub(1)])
                 } else {
@@ -318,13 +407,12 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
 
                 print!("\x1b[{};{}H{}\x1b[1m{}{}{}\x1b[0m",
                     y + display_pos as u16 + 1, x + 1,
-                    bg_color, text_color, num_prefix, truncated_title);
+                    bg_color, text_color, prefix, truncated_title);
             } else {
-                let note_num = note_idx + 1;
-                let indicator = if is_selected { "> " } else { "  " };
-                print!("\x1b[{};{}H{}{}{}{}\x1b[0m",
-                    y + display_pos as u16 + 1, x,
-                    bg_color, text_color, indicator, note_num);
+                let indicator = if is_selected { "▸" } else { " " };
+                print!("\x1b[{};{}H{}{}{}\x1b[0m",
+                    y + display_pos as u16 + 1, x + 1,
+                    bg_color, text_color, indicator);
             }
         }
 

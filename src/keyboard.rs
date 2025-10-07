@@ -11,9 +11,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // Save title and exit editing mode
                 if let Some(ref mut current_note) = app.notes_mode.current_note {
                     current_note.title = app.title_buffer.clone();
-                    let lines = app.grid.to_lines();
-                    let content = lines.join("\n");
-                    let _ = app.notes_mode.db.update_note(&current_note.id, app.title_buffer.clone(), content, current_note.tags.clone());
+                    app.save_current_note()?;
 
                     // Update the note in the list
                     if app.selected_note_index < app.notes_list.len() {
@@ -72,10 +70,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Also copy to system clipboard
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let text = copied.join("\n");
-                let _ = clipboard.set_text(text);
-                app.status_message = format!("Copied {} rows to system clipboard", copied.len());
+                if let Err(e) = clipboard.set_text(text) {
+                    app.status_message = format!("Copied {} rows (clipboard error: {})", copied.len(), e);
+                } else {
+                    app.status_message = format!("Copied {} rows to system clipboard", copied.len());
+                }
             } else {
-                app.status_message = format!("Copied {} rows", copied.len());
+                app.status_message = format!("Copied {} rows (clipboard unavailable)", copied.len());
             }
 
             app.needs_redraw = true;
@@ -91,10 +92,13 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             // Also copy to system clipboard
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let text = cut.join("\n");
-                let _ = clipboard.set_text(text);
-                app.status_message = format!("Cut {} rows to system clipboard", cut.len());
+                if let Err(e) = clipboard.set_text(text) {
+                    app.status_message = format!("Cut {} rows (clipboard error: {})", cut.len(), e);
+                } else {
+                    app.status_message = format!("Cut {} rows to system clipboard", cut.len());
+                }
             } else {
-                app.status_message = format!("Cut {} rows", cut.len());
+                app.status_message = format!("Cut {} rows (clipboard unavailable)", cut.len());
             }
 
             app.needs_redraw = true;
@@ -134,11 +138,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     // Ctrl+N - New note
     if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
         // Save current note
-        if let Some(ref current_note) = app.notes_mode.current_note {
-            let lines = app.grid.to_lines();
-            let content = lines.join("\n");
-            let _ = app.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
-        }
+        app.save_current_note()?;
 
         // Create new note
         let new_note = app.notes_mode.db.create_note("Untitled".to_string(), String::new(), vec![])?;
@@ -148,6 +148,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         app.grid.clear();
         app.cursor_row = 0;
         app.cursor_col = 0;
+        app.viewport_row = 0;
+        app.viewport_col = 0;
 
         // Refresh notes list
         if let Ok(notes) = app.notes_mode.db.list_notes(100) {
@@ -162,15 +164,16 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     if key.code == KeyCode::Up && key.modifiers.contains(KeyModifiers::CONTROL) {
         if app.selected_note_index > 0 {
             // Save current note
-            if let Some(ref current_note) = app.notes_mode.current_note {
-                let lines = app.grid.to_lines();
-                let content = lines.join("\n");
-                let _ = app.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
-            }
+            app.save_current_note()?;
 
             app.selected_note_index -= 1;
             if app.selected_note_index < app.notes_list_scroll {
                 app.notes_list_scroll = app.selected_note_index;
+            }
+
+            // Reload notes list to get fresh data
+            if let Ok(notes) = app.notes_mode.db.list_notes(100) {
+                app.notes_list = notes;
             }
 
             // Load selected note
@@ -180,6 +183,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
                 app.cursor_row = 0;
                 app.cursor_col = 0;
+                app.viewport_row = 0;
+                app.viewport_col = 0;
                 app.notes_mode.current_note = Some(note.clone());
             }
 
@@ -191,16 +196,16 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     if key.code == KeyCode::Down && key.modifiers.contains(KeyModifiers::CONTROL) {
         if app.selected_note_index < app.notes_list.len().saturating_sub(1) {
             // Save current note
-            if let Some(ref current_note) = app.notes_mode.current_note {
-                let lines = app.grid.to_lines();
-                let content = lines.join("\n");
-                let _ = app.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
-            }
+            app.save_current_note()?;
 
             app.selected_note_index += 1;
-            let visible_count = 30; // Approximate
-            if app.selected_note_index >= app.notes_list_scroll + visible_count {
-                app.notes_list_scroll = app.selected_note_index - visible_count + 1;
+            if app.selected_note_index >= app.notes_list_scroll + crate::VISIBLE_NOTE_COUNT_APPROX {
+                app.notes_list_scroll = app.selected_note_index - crate::VISIBLE_NOTE_COUNT_APPROX + 1;
+            }
+
+            // Reload notes list to get fresh data
+            if let Ok(notes) = app.notes_mode.db.list_notes(100) {
+                app.notes_list = notes;
             }
 
             // Load selected note
@@ -210,6 +215,8 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
                 app.cursor_row = 0;
                 app.cursor_col = 0;
+                app.viewport_row = 0;
+                app.viewport_col = 0;
                 app.notes_mode.current_note = Some(note.clone());
             }
 
@@ -245,31 +252,35 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             if app.cursor_col > 0 {
                 app.cursor_col -= 1;
                 app.grid.delete_at(app.cursor_row, app.cursor_col);
+                app.mark_dirty();
             } else if app.cursor_row > 0 {
-                // TODO: Handle backspace at start of line
+                // Move to end of previous line
                 app.cursor_row -= 1;
+                // Find the end of the previous line
+                let mut end_col = 0;
+                for col in 0..1000 {
+                    if app.grid.get(app.cursor_row, col) != ' ' {
+                        end_col = col + 1;
+                    }
+                }
+                app.cursor_col = end_col;
             }
             app.needs_redraw = true;
         }
         KeyCode::Enter => {
             app.cursor_row += 1;
             app.cursor_col = 0;
+            app.mark_dirty();
             app.needs_redraw = true;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::SUPER) => {
             // Insert character at cursor position
             app.grid.set(app.cursor_row, app.cursor_col, c);
             app.cursor_col += 1;
+            app.mark_dirty();
             app.needs_redraw = true;
         }
         _ => {}
-    }
-
-    // Auto-save after edits
-    if let Some(ref current_note) = app.notes_mode.current_note {
-        let lines = app.grid.to_lines();
-        let content = lines.join("\n");
-        let _ = app.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
     }
 
     Ok(true)

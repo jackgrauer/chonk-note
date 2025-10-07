@@ -19,7 +19,7 @@ impl Default for MouseState {
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
     let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
-    let notes_list_width = if app.sidebar_expanded { 30 } else { 4 };
+    let notes_list_width = if app.sidebar_expanded { crate::SIDEBAR_WIDTH_EXPANDED } else { crate::SIDEBAR_WIDTH_COLLAPSED };
 
     match event {
         // Left click - position cursor or select note
@@ -33,10 +33,11 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
 
                     if note_index < app.notes_list.len() {
                         // Save current note
-                        if let Some(ref current_note) = app.notes_mode.current_note {
-                            let lines = app.grid.to_lines();
-                            let content = lines.join("\n");
-                            let _ = app.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone());
+                        app.save_current_note()?;
+
+                        // Reload notes list to get fresh data
+                        if let Ok(notes) = app.notes_mode.db.list_notes(100) {
+                            app.notes_list = notes;
                         }
 
                         // Load selected note
@@ -48,6 +49,8 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                         app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
                         app.cursor_row = 0;
                         app.cursor_col = 0;
+                        app.viewport_row = 0;
+                        app.viewport_col = 0;
 
                         app.notes_mode.current_note = Some(note.clone());
 

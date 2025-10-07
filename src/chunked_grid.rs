@@ -258,40 +258,6 @@ impl ChunkedGrid {
         grid
     }
 
-    /// Find next non-empty position in a direction
-    pub fn next_content(&self, row: usize, col: usize, direction: Direction) -> Option<(usize, usize)> {
-        match direction {
-            Direction::Right => {
-                // Search current row for next content
-                let (chunk_pos, local_pos) = Self::pos_to_chunk(row, col);
-
-                // Check rest of current chunk
-                if let Some(chunk) = self.chunks.get(&chunk_pos) {
-                    for local_col in (local_pos.1 + 1)..CHUNK_SIZE {
-                        if chunk.get(local_pos.0, local_col) != ' ' {
-                            return Some((row, col + (local_col - local_pos.1)));
-                        }
-                    }
-                }
-
-                // Check next chunks
-                for next_chunk_col in (chunk_pos.1 + 1)..=self.max_chunk.1 {
-                    let next_chunk = (chunk_pos.0, next_chunk_col);
-                    if let Some(chunk) = self.chunks.get(&next_chunk) {
-                        for ((local_row, local_col), _) in chunk.cells() {
-                            if local_row == local_pos.0 {
-                                let (_, found_col) = Self::chunk_to_pos(next_chunk, (local_row, local_col));
-                                return Some((row, found_col));
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            _ => None, // Implement other directions as needed
-        }
-    }
-
     /// Clear the entire grid
     pub fn clear(&mut self) {
         self.chunks.clear();
@@ -308,43 +274,6 @@ impl ChunkedGrid {
     pub fn from_string(content: &str) -> Self {
         let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         Self::from_lines(&lines)
-    }
-
-    /// Save grid to .grid file (binary format with chunk metadata)
-    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::File::create(path)?;
-
-        // Write magic header
-        file.write_all(b"GRID")?;
-
-        // Write version
-        file.write_all(&[1, 0])?;
-
-        // Write chunk count
-        let chunk_count = self.chunks.len() as u32;
-        file.write_all(&chunk_count.to_le_bytes())?;
-
-        // Write each chunk
-        for (&(chunk_row, chunk_col), chunk) in &self.chunks {
-            // Write chunk coordinates
-            file.write_all(&chunk_row.to_le_bytes())?;
-            file.write_all(&chunk_col.to_le_bytes())?;
-
-            // Write cell count
-            let cell_count = chunk.cells.len() as u32;
-            file.write_all(&cell_count.to_le_bytes())?;
-
-            // Write cells
-            for (&(local_row, local_col), &ch) in &chunk.cells {
-                file.write_all(&[local_row as u8, local_col as u8])?;
-                let mut buf = [0u8; 4];
-                ch.encode_utf8(&mut buf);
-                file.write_all(&buf)?;
-            }
-        }
-
-        Ok(())
     }
 
     /// Start block selection at current position
@@ -407,71 +336,6 @@ impl ChunkedGrid {
                 self.set(row + line_offset, col + col_offset, ch);
             }
         }
-    }
-
-    /// Load grid from .grid file
-    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
-        use std::io::Read;
-        let mut file = std::fs::File::open(path)?;
-
-        // Read and verify magic header
-        let mut magic = [0u8; 4];
-        file.read_exact(&mut magic)?;
-        if &magic != b"GRID" {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid .grid file format"
-            ));
-        }
-
-        // Read version
-        let mut version = [0u8; 2];
-        file.read_exact(&mut version)?;
-
-        // Read chunk count
-        let mut chunk_count_bytes = [0u8; 4];
-        file.read_exact(&mut chunk_count_bytes)?;
-        let chunk_count = u32::from_le_bytes(chunk_count_bytes);
-
-        let mut grid = Self::new();
-
-        // Read each chunk
-        for _ in 0..chunk_count {
-            // Read chunk coordinates
-            let mut chunk_row_bytes = [0u8; 4];
-            let mut chunk_col_bytes = [0u8; 4];
-            file.read_exact(&mut chunk_row_bytes)?;
-            file.read_exact(&mut chunk_col_bytes)?;
-            let chunk_row = i32::from_le_bytes(chunk_row_bytes);
-            let chunk_col = i32::from_le_bytes(chunk_col_bytes);
-
-            // Read cell count
-            let mut cell_count_bytes = [0u8; 4];
-            file.read_exact(&mut cell_count_bytes)?;
-            let cell_count = u32::from_le_bytes(cell_count_bytes);
-
-            // Read cells
-            for _ in 0..cell_count {
-                let mut pos = [0u8; 2];
-                file.read_exact(&mut pos)?;
-                let local_row = pos[0] as usize;
-                let local_col = pos[1] as usize;
-
-                let mut char_bytes = [0u8; 4];
-                file.read_exact(&mut char_bytes)?;
-                if let Ok(ch_str) = std::str::from_utf8(&char_bytes) {
-                    if let Some(ch) = ch_str.chars().next() {
-                        let (global_row, global_col) = Self::chunk_to_pos(
-                            (chunk_row, chunk_col),
-                            (local_row, local_col)
-                        );
-                        grid.set(global_row, global_col, ch);
-                    }
-                }
-            }
-        }
-
-        Ok(grid)
     }
 }
 

@@ -5,7 +5,6 @@ use crate::notes_database::{NotesDatabase, Note};
 pub struct NotesMode {
     pub db: NotesDatabase,
     pub current_note: Option<Note>,
-    pub search_results: Vec<Note>,
 }
 
 impl NotesMode {
@@ -13,7 +12,6 @@ impl NotesMode {
         Ok(Self {
             db: NotesDatabase::new()?,
             current_note: None,
-            search_results: Vec::new(),
         })
     }
 }

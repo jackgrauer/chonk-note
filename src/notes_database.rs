@@ -23,8 +23,7 @@ impl NotesDatabase {
     pub fn new() -> Result<Self> {
         let mut path = dirs::data_local_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find data directory"))?;
-        path.push("chonker7");
-        path.push("notes");
+        path.push("chonk-note");
         std::fs::create_dir_all(&path)?;
         path.push("notes.db");
 
@@ -113,7 +112,7 @@ impl NotesDatabase {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, content, tags, created_at, updated_at
              FROM notes
-             ORDER BY updated_at DESC
+             ORDER BY created_at DESC
              LIMIT ?1"
         )?;
 
