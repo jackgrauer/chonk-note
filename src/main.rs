@@ -2,6 +2,9 @@
 use anyhow::Result;
 use std::io::{self, Write};
 
+// Embed hamster emoji PNG at compile time
+const HAMSTER_PNG: &[u8] = include_bytes!("../assets/hamster.png");
+
 mod keyboard;
 mod kitty_native;
 mod mouse;
@@ -15,11 +18,11 @@ use chunked_grid::ChunkedGrid;
 
 // UI Constants
 const SIDEBAR_WIDTH_EXPANDED: u16 = 30;
-const SIDEBAR_WIDTH_COLLAPSED: u16 = 4;
+const SIDEBAR_WIDTH_COLLAPSED: u16 = 0;
 const GRID_VERTICAL_SPACING: usize = 8;
 const GRID_HORIZONTAL_SPACING: usize = 4;
 const VISIBLE_NOTE_COUNT_APPROX: usize = 30;
-const FRAME_TIME_MS: u128 = 50; // 20 FPS
+const FRAME_TIME_MS: u128 = 16; // 60 FPS for smooth selection dragging
 
 pub struct App {
     // Notes database
@@ -48,7 +51,6 @@ pub struct App {
     pub needs_redraw: bool,
     pub show_grid_lines: bool,
     pub block_clipboard: Option<Vec<String>>,
-    pub word_wrap: bool,
 
     // Delete confirmation
     pub delete_confirmation_note: Option<usize>,
@@ -95,7 +97,6 @@ impl App {
             needs_redraw: true,
             show_grid_lines: false,
             block_clipboard: None,
-            word_wrap: false,
             delete_confirmation_note: None,
             dirty: false,
             last_save_time: std::time::Instant::now(),
@@ -103,66 +104,37 @@ impl App {
     }
 
     /// Update viewport to keep cursor visible
+    pub fn clamp_cursor_to_visible_area(&mut self, sidebar_width: u16) {
+        // Ensure cursor is not in the area covered by sidebar
+        let min_col = if self.sidebar_expanded { 0 } else { sidebar_width as usize };
+        if self.cursor_col < min_col {
+            self.cursor_col = min_col;
+        }
+    }
+
     pub fn update_viewport(&mut self, viewport_width: u16, viewport_height: u16) {
-        if self.word_wrap {
-            // In wrap mode, we need to calculate visual line position
-            self.viewport_col = 0;
+        // Normal mode - logical lines
+        let margin_rows = (viewport_height / 3) as usize;
+        let margin_cols = 0; // No margin for columns - scroll only at edge
 
-            // Build visual lines to find cursor position
-            let wrap_width = viewport_width as usize;
-            let all_lines = self.grid.to_lines();
-            let mut visual_line_count = 0;
-            let mut cursor_visual_line = 0;
+        // Scroll down if cursor is too far down
+        if self.cursor_row >= self.viewport_row + viewport_height as usize - margin_rows {
+            self.viewport_row = self.cursor_row.saturating_sub(viewport_height as usize - margin_rows - 1);
+        }
 
-            for (logical_row, line) in all_lines.iter().enumerate() {
-                let line_len = if line.is_empty() { 1 } else {
-                    ((line.chars().count() + wrap_width - 1) / wrap_width).max(1)
-                };
+        // Scroll up if cursor is too far up
+        if self.cursor_row < self.viewport_row + margin_rows {
+            self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
+        }
 
-                if logical_row < self.cursor_row {
-                    visual_line_count += line_len;
-                } else if logical_row == self.cursor_row {
-                    // Which visual line within this logical line?
-                    let visual_offset = self.cursor_col / wrap_width;
-                    cursor_visual_line = visual_line_count + visual_offset;
-                    break;
-                }
-            }
+        // Scroll right if cursor is too far right
+        if self.cursor_col >= self.viewport_col + viewport_width as usize - margin_cols {
+            self.viewport_col = self.cursor_col.saturating_sub(viewport_width as usize - margin_cols - 1);
+        }
 
-            // Adjust viewport to show cursor
-            let margin = (viewport_height / 3) as usize;
-
-            if cursor_visual_line >= self.viewport_row + viewport_height as usize - margin {
-                self.viewport_row = cursor_visual_line.saturating_sub(viewport_height as usize - margin - 1);
-            }
-
-            if cursor_visual_line < self.viewport_row + margin {
-                self.viewport_row = cursor_visual_line.saturating_sub(margin);
-            }
-        } else {
-            // Normal mode - logical lines
-            let margin_rows = (viewport_height / 3) as usize;
-            let margin_cols = (viewport_width / 3) as usize;
-
-            // Scroll down if cursor is too far down
-            if self.cursor_row >= self.viewport_row + viewport_height as usize - margin_rows {
-                self.viewport_row = self.cursor_row.saturating_sub(viewport_height as usize - margin_rows - 1);
-            }
-
-            // Scroll up if cursor is too far up
-            if self.cursor_row < self.viewport_row + margin_rows {
-                self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
-            }
-
-            // Scroll right if cursor is too far right
-            if self.cursor_col >= self.viewport_col + viewport_width as usize - margin_cols {
-                self.viewport_col = self.cursor_col.saturating_sub(viewport_width as usize - margin_cols - 1);
-            }
-
-            // Scroll left if cursor is too far left
-            if self.cursor_col < self.viewport_col + margin_cols {
-                self.viewport_col = self.cursor_col.saturating_sub(margin_cols);
-            }
+        // Scroll left if cursor is too far left
+        if self.cursor_col < self.viewport_col + margin_cols {
+            self.viewport_col = self.cursor_col.saturating_sub(margin_cols);
         }
     }
 
@@ -279,36 +251,52 @@ async fn run_app(app: &mut App) -> Result<()> {
             } else {
                 "Untitled"
             };
-            let wrap_indicator = if app.word_wrap { " [WRAP]" } else { "" };
-            let title_text = format!("{}{}", note_name, wrap_indicator);
-            print!("\x1b[1;1H\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m {}{}\x1b[0m",
-                title_text,
-                " ".repeat((term_width as usize).saturating_sub(title_text.len() + 1)));
 
-            // Sidebar width - with minimum window width check
+            // Show sidebar indicator when collapsed (always 2 chars to prevent jostling)
+            let sidebar_indicator = if !app.sidebar_expanded { "▸ " } else { "  " };
+            let title_text = format!("{}{}", sidebar_indicator, note_name);
+
+            // Right-aligned branding constants (calculate first for fixed positioning)
+            let branding_text = "  Chonk-Note";
+            let branding_len = branding_text.len();
+            let hamster_cols = 2; // Hamster image takes 2 terminal columns
+            let hamster_rows = 1; // Hamster image takes 1 terminal row
+            let total_width = term_width as usize;
+
+            // Calculate absolute position for branding from right edge
+            let branding_start_col = total_width.saturating_sub(branding_len);
+            let hamster_start_col = branding_start_col.saturating_sub(hamster_cols);
+
+            // Draw full yellow bar first (always full width)
+            print!("\x1b[1;1H\x1b[48;2;255;255;0m{}\x1b[0m", " ".repeat(total_width));
+
+            // Draw title text on top at left
+            print!("\x1b[1;1H\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m{}\x1b[0m", title_text);
+
+            // Position cursor at fixed hamster position using absolute positioning
+            print!("\x1b[1;{}H", hamster_start_col + 1); // Move to exact column (1-based)
+
+            // Display hamster emoji as inline PNG (2 cols x 1 row)
+            let _ = KittyTerminal::display_inline_png(HAMSTER_PNG, hamster_cols as u16, hamster_rows as u16);
+
+            // Continue with branding text on same background
+            print!("\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m{}\x1b[0m", branding_text);
+
+            // Sidebar width
             let notes_list_width = if app.sidebar_expanded { SIDEBAR_WIDTH_EXPANDED } else { SIDEBAR_WIDTH_COLLAPSED };
 
-            // Ensure we have enough space for both sidebar and editor
-            let min_editor_width = 40;
-            let available_width = term_width.saturating_sub(notes_list_width);
+            // Ensure cursor is not under the sidebar
+            app.clamp_cursor_to_visible_area(notes_list_width);
 
-            // If window is too small, collapse sidebar or reduce its width
-            let (actual_sidebar_width, remaining_width) = if available_width < min_editor_width {
-                // Window too small - use minimal sidebar
-                let minimal_sidebar = 2;
-                (minimal_sidebar, term_width.saturating_sub(minimal_sidebar))
-            } else {
-                (notes_list_width, available_width)
-            };
+            // Update viewport to keep cursor visible (use full width for editor, subtract 1 row for title bar)
+            let editor_height = term_height.saturating_sub(1);
+            app.update_viewport(term_width, editor_height);
 
-            // Render notes list sidebar
-            render_notes_list(&app, 0, 1, actual_sidebar_width, term_height.saturating_sub(1))?;
+            // Render notes editor at full width starting at row 2 (after 1-row title bar)
+            let cursor_screen_pos = render_notes_pane(&mut *app, 0, 1, term_width, editor_height)?;
 
-            // Update viewport to keep cursor visible
-            app.update_viewport(remaining_width, term_height.saturating_sub(1));
-
-            // Render notes editor and get cursor position
-            let cursor_screen_pos = render_notes_pane(&mut *app, actual_sidebar_width, 1, remaining_width, term_height.saturating_sub(1))?;
+            // Render notes list sidebar on top of editor (overlay, also starting at row 2)
+            render_notes_list(&app, 0, 1, notes_list_width, editor_height)?;
 
             // Position terminal cursor at the actual cursor location
             if let Some((screen_x, screen_y)) = cursor_screen_pos {
@@ -349,13 +337,7 @@ async fn run_app(app: &mut App) -> Result<()> {
 }
 
 fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
-    if app.word_wrap {
-        // Soft wrap mode: split logical lines into visual lines
-        render_notes_pane_wrapped(app, x, y, width, height)
-    } else {
-        // Normal mode: direct grid rendering
-        render_notes_pane_normal(app, x, y, width, height)
-    }
+    render_notes_pane_normal(app, x, y, width, height)
 }
 
 fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
@@ -438,103 +420,13 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
     Ok(cursor_screen_pos)
 }
 
-fn render_notes_pane_wrapped(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
-    let wrap_width = width as usize;
-
-    // Build a list of visual lines from logical lines
-    let mut visual_lines: Vec<(usize, usize, String)> = Vec::new(); // (logical_row, start_col, content)
-
-    // Get all logical lines from the grid
-    let all_lines = app.grid.to_lines();
-
-    for (logical_row, line) in all_lines.iter().enumerate() {
-        if line.is_empty() {
-            // Empty line becomes one visual line
-            visual_lines.push((logical_row, 0, String::new()));
-        } else {
-            // Split into chunks of wrap_width
-            let chars: Vec<char> = line.chars().collect();
-            let mut start_col = 0;
-
-            while start_col < chars.len() {
-                let end_col = (start_col + wrap_width).min(chars.len());
-                let chunk: String = chars[start_col..end_col].iter().collect();
-                visual_lines.push((logical_row, start_col, chunk));
-                start_col = end_col;
-            }
-        }
-    }
-
-    // Calculate which visual line the cursor is on
-    let cursor_visual_line = calculate_cursor_visual_line(&visual_lines, app.cursor_row, app.cursor_col, wrap_width);
-
-    // Determine which visual lines to show (viewport)
-    let viewport_start = app.viewport_row;
-    let viewport_end = (viewport_start + height as usize).min(visual_lines.len());
-
-    // Render the visible visual lines
-    for (screen_row, visual_idx) in (viewport_start..viewport_end).enumerate() {
-        if visual_idx >= visual_lines.len() {
-            break;
-        }
-
-        let (logical_row, start_col, content) = &visual_lines[visual_idx];
-
-        // Clear line
-        print!("\x1b[{};{}H\x1b[K", y + screen_row as u16 + 1, x + 1);
-
-        // Render the content
-        for (col_offset, ch) in content.chars().enumerate() {
-            let grid_col = start_col + col_offset;
-
-            // Check if this position is in the selection
-            let in_selection = if let Some(ref sel) = app.grid.selection {
-                sel.contains(*logical_row, grid_col)
-            } else {
-                false
-            };
-
-            if in_selection {
-                // For selected cells, always show background even for spaces
-                let display_ch = if ch == ' ' { ' ' } else { ch };
-                print!("\x1b[48;2;255;20;147m\x1b[38;2;255;255;255m{}\x1b[0m", display_ch);
-            } else {
-                print!("{}", ch);
-            }
-        }
-    }
-
-    // Calculate cursor screen position
-    let cursor_screen_pos = if let Some(cursor_vis_line) = cursor_visual_line {
-        if cursor_vis_line >= viewport_start && cursor_vis_line < viewport_end {
-            let screen_row = cursor_vis_line - viewport_start;
-            let (_, start_col, _) = &visual_lines[cursor_vis_line];
-            let screen_col = app.cursor_col - start_col;
-            Some((x + screen_col as u16, y + screen_row as u16))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok(cursor_screen_pos)
-}
-
-fn calculate_cursor_visual_line(visual_lines: &[(usize, usize, String)], cursor_row: usize, cursor_col: usize, wrap_width: usize) -> Option<usize> {
-    for (vis_idx, (logical_row, start_col, _)) in visual_lines.iter().enumerate() {
-        if *logical_row == cursor_row {
-            let end_col = start_col + wrap_width;
-            if cursor_col >= *start_col && cursor_col < end_col {
-                return Some(vis_idx);
-            }
-        }
-    }
-    None
-}
-
 
 fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+    // Don't render anything if sidebar is collapsed (width = 0)
+    if width == 0 {
+        return Ok(());
+    }
+
     // Clear sidebar with blue background
     for row in 0..height {
         print!("\x1b[{};{}H\x1b[48;2;30;60;100m{}\x1b[0m", y + row + 1, x + 1, " ".repeat(width as usize));

@@ -15,6 +15,7 @@ tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "fs", "time
 # Terminal UI
 crossterm = "0.28"
 arboard = "3.4"
+base64 = "0.22"  # For Kitty graphics protocol
 
 # Basic utilities
 lazy_static = "1.4"

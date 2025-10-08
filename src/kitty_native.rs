@@ -8,6 +8,7 @@ pub enum KeyCode {
     Char(char),
     Enter,
     Backspace,
+    Delete,
     Tab,
     Esc,
     Up,
@@ -37,6 +38,7 @@ pub struct MouseEvent {
     pub button: Option<MouseButton>,
     pub x: u16,
     pub y: u16,
+    #[allow(dead_code)]
     pub modifiers: KeyModifiers,
     pub is_press: bool,  // true = press, false = release
     pub is_drag: bool,
@@ -60,8 +62,6 @@ pub struct KeyModifiers {
 impl KeyModifiers {
     pub const CONTROL: Self = KeyModifiers { ctrl: true, alt: false, shift: false, cmd: false };
     pub const SUPER: Self = KeyModifiers { ctrl: false, alt: false, shift: false, cmd: true };
-    pub const SHIFT: Self = KeyModifiers { ctrl: false, alt: false, shift: true, cmd: false };
-    pub const ALT: Self = KeyModifiers { ctrl: false, alt: true, shift: false, cmd: false };
 
     pub fn contains(&self, other: KeyModifiers) -> bool {
         (!other.ctrl || self.ctrl) &&
@@ -285,14 +285,6 @@ impl KittyTerminal {
         Self::parse_input_with_remainder(&bytes, &mut buffer_guard)
     }
 
-    // Compatibility wrapper for existing code
-    pub fn read_key() -> Result<Option<KeyEvent>, io::Error> {
-        match Self::read_input()? {
-            Some(InputEvent::Key(key_event)) => Ok(Some(key_event)),
-            _ => Ok(None), // Ignore mouse events in legacy API
-        }
-    }
-
     // Parse input with remainder handling for multiple events
     fn parse_input_with_remainder(bytes: &[u8], buffer: &mut Vec<u8>) -> Result<Option<InputEvent>, io::Error> {
         if bytes.is_empty() {
@@ -423,6 +415,9 @@ impl KittyTerminal {
             // Page Up/Down
             [27, 91, 53, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::PageUp, modifiers })), 4)),
             [27, 91, 54, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::PageDown, modifiers })), 4)),
+
+            // Delete key
+            [27, 91, 51, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Delete, modifiers })), 4)),
 
             // IMPORTANT: Consume all escape sequences to prevent character leakage
             // Any unrecognized escape sequence starting with ESC should be consumed, not ignored
@@ -609,5 +604,23 @@ impl KittyTerminal {
 
             Ok(result > 0)
         }
+    }
+
+    /// Display inline PNG image using Kitty graphics protocol
+    /// Returns the number of terminal columns the image occupies
+    pub fn display_inline_png(png_data: &[u8], cols: u16, rows: u16) -> Result<u16, io::Error> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let encoded = STANDARD.encode(png_data);
+
+        // Kitty graphics protocol:
+        // a=T: transmit and display
+        // f=100: PNG format
+        // c=cols, r=rows: display size in terminal cells
+        // C=1: Preserve aspect ratio but fill the cell area (no letterboxing)
+        print!("\x1b_Ga=T,f=100,c={},r={},C=1;{}\x1b\\", cols, rows, encoded);
+
+        io::stdout().flush()?;
+        Ok(cols)
     }
 }

@@ -22,12 +22,22 @@ impl Default for MouseState {
 }
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
-    let (_term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
+    let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
     let notes_list_width = if app.sidebar_expanded { crate::SIDEBAR_WIDTH_EXPANDED } else { crate::SIDEBAR_WIDTH_COLLAPSED };
 
     match event {
         // Left click - position cursor or select note
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, .. } => {
+            // Click on title bar (row 0) - toggle sidebar if clicking on indicator
+            if y == 0 {
+                // Click on the left part of title bar (first 2 chars) toggles sidebar
+                if x <= 1 {
+                    app.sidebar_expanded = !app.sidebar_expanded;
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+            }
+
             // Click in notes list sidebar
             if x < notes_list_width {
                 if !app.notes_list.is_empty() {
@@ -93,13 +103,13 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             app.sidebar_expanded = false;
             app.editing_title = false;
 
-            // Calculate cursor position from click
-            let screen_x = x.saturating_sub(notes_list_width) as usize;
+            // Calculate cursor position from click (editor now spans full width)
+            let screen_x = x as usize;
             let screen_y = y.saturating_sub(1) as usize;
 
-            // Set cursor directly - chunked grid handles virtual space
-            app.cursor_row = screen_y;
-            app.cursor_col = screen_x;
+            // Set cursor position
+            app.cursor_row = app.viewport_row + screen_y;
+            app.cursor_col = app.viewport_col + screen_x;
 
             // Clear any existing selection on new click
             app.grid.clear_selection();
@@ -120,16 +130,23 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 f.flush()
             })();
 
-            if x >= notes_list_width {
-                let screen_x = x.saturating_sub(notes_list_width) as usize;
-                let screen_y = y.saturating_sub(1) as usize;
+            // Editor now spans full width, so use x directly
+            let screen_x = x as usize;
+            let screen_y = y.saturating_sub(1) as usize;
+
+            // Only process if we're dragging
+            if mouse_state.is_dragging || x >= notes_list_width {
 
                 // Start selection if this is first drag event
                 if !mouse_state.is_dragging {
                     if let Some((start_x, start_y)) = mouse_state.last_click_pos {
-                        let start_screen_x = start_x.saturating_sub(notes_list_width) as usize;
+                        // Editor now spans full width, use coordinates directly
+                        let start_screen_x = start_x as usize;
                         let start_screen_y = start_y.saturating_sub(1) as usize;
-                        app.grid.start_selection(start_screen_y, start_screen_x);
+                        // Start selection at actual grid position
+                        let start_grid_row = app.viewport_row + start_screen_y;
+                        let start_grid_col = app.viewport_col + start_screen_x;
+                        app.grid.start_selection(start_grid_row, start_grid_col);
                         mouse_state.is_dragging = true;
 
                         let _ = (|| -> std::io::Result<()> {
@@ -141,12 +158,36 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     }
                 }
 
+                // Auto-scroll viewport when dragging near edges
+                let scroll_margin = 2; // cells from edge to trigger scrolling
+
+                // Scroll vertically - allow cursor to keep moving at edges
+                if screen_y < scroll_margin {
+                    if app.viewport_row > 0 {
+                        app.viewport_row = app.viewport_row.saturating_sub(1);
+                    }
+                    // Even if we can't scroll, cursor can still move within visible area
+                } else if screen_y >= (term_height.saturating_sub(2) as usize).saturating_sub(scroll_margin) {
+                    app.viewport_row += 1;
+                }
+
+                // Scroll horizontally
+                let editor_width = (term_width.saturating_sub(notes_list_width)) as usize;
+                if screen_x < scroll_margin {
+                    if app.viewport_col > 0 {
+                        app.viewport_col = app.viewport_col.saturating_sub(1);
+                    }
+                    // Even if we can't scroll, cursor can still move within visible area
+                } else if screen_x >= editor_width.saturating_sub(scroll_margin) {
+                    app.viewport_col += 1;
+                }
+
                 // Update cursor position
-                app.cursor_row = screen_y;
-                app.cursor_col = screen_x;
+                app.cursor_row = app.viewport_row + screen_y;
+                app.cursor_col = app.viewport_col + screen_x;
 
                 // Update block selection
-                app.grid.update_selection(screen_y, screen_x);
+                app.grid.update_selection(app.cursor_row, app.cursor_col);
 
                 let _ = (|| -> std::io::Result<()> {
                     use std::io::Write;

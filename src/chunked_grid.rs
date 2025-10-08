@@ -347,14 +347,6 @@ pub struct Viewport {
     pub end_col: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -65,19 +65,6 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(true);
     }
 
-    // Ctrl+R - Toggle word wrap
-    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        let _ = std::fs::write("/tmp/chonk-debug.log", format!("Ctrl+R detected! wrap={}\n", app.word_wrap));
-        app.word_wrap = !app.word_wrap;
-        app.status_message = if app.word_wrap {
-            "Word wrap ON".to_string()
-        } else {
-            "Word wrap OFF".to_string()
-        };
-        app.needs_redraw = true;
-        return Ok(true);
-    }
-
     // Ctrl+A - Select all
     if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
         // Find the bounds of all content
@@ -311,6 +298,7 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
 
+
     // Arrow keys - Move cursor
     match key.code {
         KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -326,11 +314,30 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Left => {
             if app.cursor_col > 0 {
                 app.cursor_col -= 1;
+            } else if app.cursor_row > 0 {
+                // Move to end of previous line
+                app.cursor_row -= 1;
+                let lines = app.grid.to_lines();
+                if app.cursor_row < lines.len() {
+                    app.cursor_col = lines[app.cursor_row].chars().count();
+                }
             }
             app.needs_redraw = true;
         }
         KeyCode::Right => {
-            app.cursor_col += 1;
+            let lines = app.grid.to_lines();
+            if app.cursor_row < lines.len() {
+                let line_len = lines[app.cursor_row].chars().count();
+                if app.cursor_col < line_len {
+                    app.cursor_col += 1;
+                } else {
+                    // Move to start of next line
+                    app.cursor_row += 1;
+                    app.cursor_col = 0;
+                }
+            } else {
+                app.cursor_col += 1;
+            }
             app.needs_redraw = true;
         }
         KeyCode::Backspace => {
@@ -342,66 +349,219 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 return Ok(true);
             }
 
-            // Normal backspace behavior
+            // Microsoft Word style backspace
             if app.cursor_col > 0 {
-                app.cursor_col -= 1;
-                app.grid.delete_at(app.cursor_row, app.cursor_col);
-                app.mark_dirty();
-            } else if app.cursor_row > 0 {
-                // Move to end of previous line
-                app.cursor_row -= 1;
-                // Find the end of the previous line
-                let mut end_col = 0;
-                for col in 0..1000 {
-                    if app.grid.get(app.cursor_row, col) != ' ' {
-                        end_col = col + 1;
+                // Delete character before cursor
+                let lines = app.grid.to_lines();
+                if app.cursor_row < lines.len() {
+                    let line = &lines[app.cursor_row];
+                    let chars: Vec<char> = line.chars().collect();
+
+                    // Build new line without the character before cursor
+                    let mut new_chars = Vec::new();
+                    for (i, &ch) in chars.iter().enumerate() {
+                        if i != app.cursor_col - 1 {
+                            new_chars.push(ch);
+                        }
+                    }
+
+                    // Clear the line and write new content
+                    for col in 0..line.len() {
+                        app.grid.set(app.cursor_row, col, ' ');
+                    }
+                    for (i, &ch) in new_chars.iter().enumerate() {
+                        app.grid.set(app.cursor_row, i, ch);
                     }
                 }
-                app.cursor_col = end_col;
+                app.cursor_col -= 1;
+                app.mark_dirty();
+            } else if app.cursor_row > 0 {
+                // Join with previous line (like Word)
+                let lines = app.grid.to_lines();
+                let current_line = if app.cursor_row < lines.len() {
+                    lines[app.cursor_row].clone()
+                } else {
+                    String::new()
+                };
+                let prev_line = &lines[app.cursor_row - 1];
+                let prev_line_len = prev_line.chars().count();
+
+                // Clear current line
+                for col in 0..current_line.len() {
+                    app.grid.set(app.cursor_row, col, ' ');
+                }
+
+                // Shift all lines below up by one
+                for row in app.cursor_row..lines.len() {
+                    let next_line = if row + 1 < lines.len() {
+                        lines[row + 1].clone()
+                    } else {
+                        String::new()
+                    };
+
+                    // Clear the row
+                    for col in 0..1000 {
+                        app.grid.set(row, col, ' ');
+                    }
+
+                    // Write next line content
+                    for (col, ch) in next_line.chars().enumerate() {
+                        app.grid.set(row, col, ch);
+                    }
+                }
+
+                // Append current line content to previous line
+                for (i, ch) in current_line.chars().enumerate() {
+                    app.grid.set(app.cursor_row - 1, prev_line_len + i, ch);
+                }
+
+                // Move cursor to end of previous line
+                app.cursor_row -= 1;
+                app.cursor_col = prev_line_len;
+                app.mark_dirty();
+            }
+            app.needs_redraw = true;
+        }
+        KeyCode::Delete => {
+            // Microsoft Word style delete - delete character at cursor
+            let lines = app.grid.to_lines();
+            if app.cursor_row < lines.len() {
+                let line = &lines[app.cursor_row];
+                let line_len = line.chars().count();
+
+                if app.cursor_col < line_len {
+                    // Delete character at cursor position
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut new_chars = Vec::new();
+                    for (i, &ch) in chars.iter().enumerate() {
+                        if i != app.cursor_col {
+                            new_chars.push(ch);
+                        }
+                    }
+
+                    // Clear the line and write new content
+                    for col in 0..line.len() {
+                        app.grid.set(app.cursor_row, col, ' ');
+                    }
+                    for (i, &ch) in new_chars.iter().enumerate() {
+                        app.grid.set(app.cursor_row, i, ch);
+                    }
+                    app.mark_dirty();
+                } else if app.cursor_row + 1 < lines.len() {
+                    // At end of line - join with next line
+                    let next_line = lines[app.cursor_row + 1].clone();
+
+                    // Append next line to current line
+                    for (i, ch) in next_line.chars().enumerate() {
+                        app.grid.set(app.cursor_row, line_len + i, ch);
+                    }
+
+                    // Clear next line
+                    for col in 0..next_line.len() {
+                        app.grid.set(app.cursor_row + 1, col, ' ');
+                    }
+
+                    // Shift all lines below up by one
+                    for row in (app.cursor_row + 1)..lines.len() {
+                        let next_line = if row + 1 < lines.len() {
+                            lines[row + 1].clone()
+                        } else {
+                            String::new()
+                        };
+
+                        // Clear the row
+                        for col in 0..1000 {
+                            app.grid.set(row, col, ' ');
+                        }
+
+                        // Write next line content
+                        for (col, ch) in next_line.chars().enumerate() {
+                            app.grid.set(row, col, ch);
+                        }
+                    }
+                    app.mark_dirty();
+                }
             }
             app.needs_redraw = true;
         }
         KeyCode::Enter => {
-            // Get everything from cursor to end of line
-            let mut chars_after_cursor = Vec::new();
-            for col in app.cursor_col..10000 {
-                let ch = app.grid.get(app.cursor_row, col);
-                if ch != ' ' {
-                    chars_after_cursor.push((col, ch));
-                } else if !chars_after_cursor.is_empty() {
-                    // Hit a space after we found content - keep going to get all content
-                    chars_after_cursor.push((col, ch));
-                }
-            }
+            // Microsoft Word style enter - insert new line and move content after cursor down
+            let lines = app.grid.to_lines();
+            let current_line = if app.cursor_row < lines.len() {
+                lines[app.cursor_row].clone()
+            } else {
+                String::new()
+            };
 
-            // Find the actual last non-space character
-            while let Some(&(_, ch)) = chars_after_cursor.last() {
-                if ch == ' ' {
-                    chars_after_cursor.pop();
+            let chars: Vec<char> = current_line.chars().collect();
+
+            // Split at cursor: before and after
+            let before: String = chars.iter().take(app.cursor_col).collect();
+            let after: String = chars.iter().skip(app.cursor_col).collect();
+
+            // Shift all lines below down by one (starting from bottom)
+            for row in (app.cursor_row + 1..=lines.len()).rev() {
+                let prev_line = if row > 0 && row - 1 < lines.len() {
+                    lines[row - 1].clone()
                 } else {
-                    break;
+                    String::new()
+                };
+
+                // Clear the row
+                for col in 0..1000 {
+                    app.grid.set(row, col, ' ');
+                }
+
+                // Write previous line content (unless it's the current line being split)
+                if row != app.cursor_row + 1 {
+                    for (col, ch) in prev_line.chars().enumerate() {
+                        app.grid.set(row, col, ch);
+                    }
                 }
             }
 
-            // Clear everything after cursor on current line
-            for col in app.cursor_col..10000 {
+            // Write "before" part to current line
+            for col in 0..current_line.len() {
                 app.grid.set(app.cursor_row, col, ' ');
             }
+            for (col, ch) in before.chars().enumerate() {
+                app.grid.set(app.cursor_row, col, ch);
+            }
 
-            // Move to next line
+            // Write "after" part to next line
+            for (col, ch) in after.chars().enumerate() {
+                app.grid.set(app.cursor_row + 1, col, ch);
+            }
+
+            // Move cursor to beginning of new line
             app.cursor_row += 1;
             app.cursor_col = 0;
-
-            // Write the chars on the new line
-            for (i, (_, ch)) in chars_after_cursor.iter().enumerate() {
-                app.grid.set(app.cursor_row, i, *ch);
-            }
 
             app.mark_dirty();
             app.needs_redraw = true;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::SUPER) => {
-            // Insert character at cursor position
+            // Read characters from grid up to a reasonable limit
+            let max_col = 10000;
+            let mut chars_on_line = Vec::new();
+            for col in 0..max_col {
+                let ch = app.grid.get(app.cursor_row, col);
+                chars_on_line.push(ch);
+
+                // Stop if we've gone way past the cursor and only seeing spaces
+                if col > app.cursor_col + 100 && chars_on_line[col.saturating_sub(100)..].iter().all(|&c| c == ' ') {
+                    break;
+                }
+            }
+
+            // Shift everything at and after cursor position to the right
+            for col in (app.cursor_col..chars_on_line.len()).rev() {
+                if col + 1 < max_col {
+                    app.grid.set(app.cursor_row, col + 1, chars_on_line[col]);
+                }
+            }
+
+            // Insert the new character at cursor position
             app.grid.set(app.cursor_row, app.cursor_col, c);
             app.cursor_col += 1;
             app.mark_dirty();

@@ -1,6 +1,6 @@
 # chonk-note
 
-A lightweight, terminal-based notes editor built with Rust, featuring Helix editor's text manipulation core and a spatial grid-based editing system.
+A lightweight, terminal-based notes editor built with Rust, featuring a chunked grid system and Microsoft Word-style text editing.
 
 ## 🎯 Current State
 
@@ -13,26 +13,28 @@ chonk-note is a functional terminal notes application that provides a distractio
 ### Core Functionality
 
 - 📝 **SQLite-backed storage** - All notes are persisted in a local database
-- 🎯 **Helix-powered editing** - Uses Helix editor's core for robust text manipulation
-- 📋 **Block selection** - Vim-style visual block mode for column editing
-- 🖱️ **Mouse support** - Click to position cursor, select text
-- 📑 **Sidebar navigation** - Collapsible notes list with keyboard navigation
-- ⚡ **Fast & lightweight** - Instant startup, minimal dependencies
+- 🎯 **Chunked grid editing** - Efficient sparse grid system for text manipulation
+- 📋 **Block selection** - Visual block mode with mouse drag support
+- 🖱️ **Full mouse support** - Click to position cursor, drag to select, scroll notes list
+- 📑 **Sidebar navigation** - Collapsible notes list with mouse and keyboard navigation
+- ⚡ **Fast & lightweight** - Instant startup, native Kitty terminal integration
 
 ### Editing Features
 
-- **Virtual grid cursor** - Move cursor beyond text boundaries (useful for ASCII art/tables)
-- **Smart text wrapping** - Toggle between wrapped and unwrapped display
-- **Block clipboard** - Copy/paste rectangular text selections
-- **Undo/redo history** - Full edit history per note
-- **Title editing** - Inline title editing for better organization
+- **Microsoft Word-style editing** - Insert mode with character shifting, line splitting/joining
+- **Virtual grid cursor** - Move cursor anywhere on the infinite grid
+- **Block clipboard** - Copy/paste rectangular text selections with system clipboard integration
+- **Double-click rename** - Double-click notes in sidebar to rename
+- **Auto-save** - Notes save automatically every 2 seconds when modified
+- **Grid lines toggle** - Optional visual grid overlay (Ctrl+G)
 
 ### UI/UX
 
-- **Flicker-free rendering** - Synchronized terminal updates at 20 FPS
+- **Kitty graphics protocol** - Displays emoji as inline PNG images
+- **60 FPS rendering** - Smooth mouse drag selection
 - **Responsive layout** - Adapts to terminal resizing
 - **Status messages** - Contextual hints and feedback
-- **Color-coded interface** - Visual hierarchy with syntax highlighting
+- **Color-coded interface** - Yellow title bar, blue sidebar, pink selection highlights
 
 ## 🚀 Installation
 
@@ -54,11 +56,8 @@ sudo cp target/release/chonk-note /usr/local/bin/
 ## 📋 Requirements
 
 - Rust 1.70+
-- A terminal emulator with:
-  - 256 color support
-  - UTF-8 encoding
-  - Mouse support (optional but recommended)
-- Kitty terminal recommended for best experience
+- Kitty terminal emulator (required for graphics protocol and mouse support)
+- macOS, Linux, or Windows with WSL
 
 ## ⌨️ Keyboard Shortcuts
 
@@ -69,42 +68,58 @@ sudo cp target/release/chonk-note /usr/local/bin/
 | `Ctrl+N` | Create new note |
 | `Ctrl+↑/↓` | Navigate between notes |
 | Arrow keys | Move cursor |
+| `Ctrl+Q` | Quit application |
 
 ### Editing
 
 | Key | Action |
 |-----|--------|
-| `Cmd+C` | Copy selection |
-| `Cmd+X` | Cut selection |
-| `Cmd+V` | Paste |
-| `Cmd+A` | Select all |
-| `Backspace` | Delete character |
-| `Enter` | New line |
+| `Ctrl+C` | Copy selection to system clipboard |
+| `Ctrl+X` | Cut selection to system clipboard |
+| `Ctrl+V` | Paste from system clipboard |
+| `Ctrl+A` | Select all |
+| `Backspace` | Delete character before cursor (Word-style) |
+| `Delete` | Delete character at cursor (Word-style) |
+| `Enter` | Split line at cursor (Word-style) |
+| `Esc` | Clear selection |
 
-### Application
+### View
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+Q` | Quit application |
-| `Esc` | Cancel current operation |
+| `Ctrl+G` | Toggle grid lines |
+
+### Note Management
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+D` | Delete current note (press twice to confirm) |
+| Double-click note | Enter rename mode |
+
+## 🖱️ Mouse Controls
+
+- **Click in editor** - Position cursor
+- **Click in sidebar** - Switch to note (expands sidebar if collapsed)
+- **Double-click note** - Rename note
+- **Drag in editor** - Block selection
+- **Scroll in sidebar** - Scroll notes list
+- **Click title bar left edge** - Toggle sidebar
 
 ## 🗂️ Project Structure
 
 ```
 chonk-note/
 ├── src/
-│   ├── main.rs                 # Application entry point
-│   ├── edit_renderer.rs        # Terminal rendering engine
+│   ├── main.rs                 # Application entry point and rendering
 │   ├── keyboard.rs             # Keyboard input handling
 │   ├── mouse.rs                # Mouse event processing
-│   ├── block_selection.rs      # Visual block mode
+│   ├── chunked_grid.rs         # Sparse grid with block selection
 │   ├── notes_database.rs       # SQLite persistence layer
 │   ├── notes_mode.rs           # Notes management logic
-│   ├── virtual_grid.rs         # Spatial text grid
-│   ├── grid_cursor.rs          # Cursor positioning system
-│   ├── kitty_native.rs         # Terminal abstraction
-│   └── debug.rs                # Debug logging utilities
-└── Cargo.toml                   # Dependencies and build config
+│   └── kitty_native.rs         # Kitty terminal protocol
+├── assets/
+│   └── hamster.png             # Hamster emoji for title bar
+└── Cargo.toml                  # Dependencies and build config
 ```
 
 ## 🔧 Technical Details
@@ -112,18 +127,19 @@ chonk-note/
 ### Core Technologies
 
 - **Language**: Rust
-- **Text Engine**: Helix-core (rope data structure for efficient text manipulation)
+- **Grid System**: Chunked sparse grid (1000x1000 chunks)
 - **Database**: SQLite with rusqlite bindings
-- **Terminal UI**: Custom ANSI escape sequence renderer
+- **Terminal Protocol**: Kitty native (ANSI + Kitty extensions)
 - **Async Runtime**: Tokio for non-blocking I/O
+- **Graphics**: Kitty graphics protocol for PNG rendering
 
 ### Design Decisions
 
 - **No TUI framework**: Direct terminal control for better performance
-- **Rope-based editing**: Efficient for large texts and complex operations
-- **Virtual grid system**: Allows cursor positioning beyond text boundaries
-- **20 FPS cap**: Balances responsiveness with CPU usage
-- **Synchronized updates**: Prevents screen tearing and flicker
+- **Chunked grid**: Efficient sparse storage with O(1) access
+- **Word-style editing**: Familiar text manipulation behavior
+- **60 FPS updates**: Smooth drag selection with frame limiting
+- **Kitty-native**: Leverages Kitty's advanced features (graphics, mouse, etc.)
 
 ## 📁 Data Storage
 
@@ -136,47 +152,48 @@ Notes are stored in a SQLite database at:
 Each note contains:
 - Unique SHA-256 ID
 - Title (editable)
-- Content (UTF-8 text)
+- Content (stored as lines)
 - Creation timestamp
 - Last modified timestamp
+- Tags (array, currently unused)
 
 ## 🚧 Current Limitations & Future Work
 
 ### Known Limitations
 
-- No search functionality across notes yet
+- Requires Kitty terminal (no fallback for other terminals)
+- No search functionality across notes
 - No export options (Markdown, plain text)
-- No tags or categories system
+- No tags system implementation
 - Single database only (no sync/multiple profiles)
-- Limited to terminal environments
+- No syntax highlighting or Markdown rendering
 
 ### Potential Enhancements
 
-- [ ] Full-text search with ripgrep integration
-- [ ] Note templates
-- [ ] Markdown preview mode
-- [ ] Export to various formats
+- [ ] Full-text search across all notes
 - [ ] Tag system with filtering
+- [ ] Export to Markdown/plain text
+- [ ] Import from existing files
+- [ ] Markdown preview mode
+- [ ] Multiple database profiles
 - [ ] Vim keybinding mode
 - [ ] Encrypted notes option
-- [ ] Multiple database support
 - [ ] Config file for customization
 
 ## 🐛 Debugging
 
-Debug logs are written to `/tmp/chonk-debug.log` during runtime. Enable verbose logging by setting:
-
-```bash
-export CHONK_DEBUG=1
-```
+Debug logs are written to `/tmp/chonk-debug.log` during runtime. This includes:
+- Mouse event coordinates
+- Selection state changes
+- Application lifecycle events
 
 ## 📊 Statistics
 
-- **Total lines of code**: ~2,800
-- **Core files**: 11
-- **Dependencies**: Minimal (helix-core, rusqlite, tokio)
-- **Build time**: <5 seconds
-- **Binary size**: ~2MB (optimized release)
+- **Total lines of code**: ~1,500
+- **Core files**: 7
+- **Dependencies**: Minimal (rusqlite, tokio, arboard, sha2, base64)
+- **Build time**: <3 seconds
+- **Binary size**: ~1.5MB (optimized release)
 
 ## 📜 License
 
@@ -185,3 +202,7 @@ MIT License - see LICENSE file for details
 ## 🤝 Contributing
 
 This is a personal project, but suggestions and bug reports are welcome via GitHub issues.
+
+---
+
+Made with 🐹 and Rust
