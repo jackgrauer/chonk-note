@@ -6,6 +6,8 @@ use anyhow::Result;
 pub struct MouseState {
     pub last_click_pos: Option<(u16, u16)>,
     pub is_dragging: bool,
+    pub last_click_time: std::time::Instant,
+    pub last_clicked_note: Option<usize>,
 }
 
 impl Default for MouseState {
@@ -13,6 +15,8 @@ impl Default for MouseState {
         Self {
             last_click_pos: None,
             is_dragging: false,
+            last_click_time: std::time::Instant::now(),
+            last_clicked_note: None,
         }
     }
 }
@@ -27,39 +31,59 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
             // Click in notes list sidebar
             if x < notes_list_width {
                 if !app.notes_list.is_empty() {
+                    // First click: just expand sidebar if collapsed
+                    if !app.sidebar_expanded {
+                        app.sidebar_expanded = true;
+                        app.needs_redraw = true;
+                        return Ok(());
+                    }
+
+                    // Check for double-click
                     let clicked_row = y.saturating_sub(1) as usize;
                     let visible_start = app.notes_list_scroll;
                     let note_index = visible_start + clicked_row;
 
                     if note_index < app.notes_list.len() {
-                        // Save current note
-                        app.save_current_note()?;
+                        let now = std::time::Instant::now();
+                        let time_since_last_click = now.duration_since(mouse_state.last_click_time).as_millis();
+                        let is_double_click = time_since_last_click < 500 && mouse_state.last_clicked_note == Some(note_index);
 
-                        // Reload notes list to get fresh data
-                        if let Ok(notes) = app.notes_mode.db.list_notes(100) {
-                            app.notes_list = notes;
+                        mouse_state.last_click_time = now;
+                        mouse_state.last_clicked_note = Some(note_index);
+
+                        if is_double_click {
+                            // Double-click: enter rename mode
+                            app.selected_note_index = note_index;
+                            let note = &app.notes_list[note_index];
+                            app.editing_title = true;
+                            app.title_buffer = note.title.clone();
+                            app.needs_redraw = true;
+                        } else {
+                            // Single click: switch to the note
+                            // Save current note
+                            app.save_current_note()?;
+
+                            // Reload notes list to get fresh data
+                            if let Ok(notes) = app.notes_mode.db.list_notes(100) {
+                                app.notes_list = notes;
+                            }
+
+                            // Load selected note
+                            app.selected_note_index = note_index;
+                            let note = &app.notes_list[note_index];
+
+                            // Load note content into grid
+                            let lines: Vec<String> = note.content.lines().map(|s| s.to_string()).collect();
+                            app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
+                            app.cursor_row = 0;
+                            app.cursor_col = 0;
+                            app.viewport_row = 0;
+                            app.viewport_col = 0;
+
+                            app.notes_mode.current_note = Some(note.clone());
+
+                            app.needs_redraw = true;
                         }
-
-                        // Load selected note
-                        app.selected_note_index = note_index;
-                        let note = &app.notes_list[note_index];
-
-                        // Load note content into grid
-                        let lines: Vec<String> = note.content.lines().map(|s| s.to_string()).collect();
-                        app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
-                        app.cursor_row = 0;
-                        app.cursor_col = 0;
-                        app.viewport_row = 0;
-                        app.viewport_col = 0;
-
-                        app.notes_mode.current_note = Some(note.clone());
-
-                        // Expand sidebar and enter title editing mode
-                        app.sidebar_expanded = true;
-                        app.editing_title = true;
-                        app.title_buffer = note.title.clone();
-
-                        app.needs_redraw = true;
                     }
                 }
                 return Ok(());

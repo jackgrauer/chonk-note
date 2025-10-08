@@ -40,6 +40,9 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.needs_redraw = true;
                 return Ok(true);
             }
+            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
+                // Let Ctrl/Cmd shortcuts fall through to be handled below
+            }
             _ => return Ok(true),
         }
     }
@@ -59,6 +62,40 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             "Grid lines OFF".to_string()
         };
         app.needs_redraw = true;
+        return Ok(true);
+    }
+
+    // Ctrl+R - Toggle word wrap
+    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        let _ = std::fs::write("/tmp/chonk-debug.log", format!("Ctrl+R detected! wrap={}\n", app.word_wrap));
+        app.word_wrap = !app.word_wrap;
+        app.status_message = if app.word_wrap {
+            "Word wrap ON".to_string()
+        } else {
+            "Word wrap OFF".to_string()
+        };
+        app.needs_redraw = true;
+        return Ok(true);
+    }
+
+    // Ctrl+A - Select all
+    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Find the bounds of all content
+        let lines = app.grid.to_lines();
+        if !lines.is_empty() {
+            let max_row = lines.len() - 1;
+            let max_col = lines.iter()
+                .map(|line| line.trim_end().len())
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(1);
+
+            // Select from (0,0) to (max_row, max_col)
+            app.grid.start_selection(0, 0);
+            app.grid.update_selection(max_row, max_col);
+            app.status_message = format!("Selected all ({} rows)", lines.len());
+            app.needs_redraw = true;
+        }
         return Ok(true);
     }
 
@@ -160,6 +197,54 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(true);
     }
 
+    // Ctrl+D - Delete current note (with confirmation)
+    if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(confirm_note) = app.delete_confirmation_note {
+            // Second press - actually delete
+            if confirm_note == app.selected_note_index && !app.notes_list.is_empty() {
+                let note_id = app.notes_list[app.selected_note_index].id.clone();
+                app.notes_mode.db.delete_note(&note_id)?;
+
+                // Refresh notes list
+                if let Ok(notes) = app.notes_mode.db.list_notes(100) {
+                    app.notes_list = notes;
+                }
+
+                // Load first note if any remain
+                if !app.notes_list.is_empty() {
+                    app.selected_note_index = 0;
+                    let first_note = &app.notes_list[0];
+                    let lines: Vec<String> = first_note.content.lines().map(|s| s.to_string()).collect();
+                    app.grid = crate::chunked_grid::ChunkedGrid::from_lines(&lines);
+                    app.notes_mode.current_note = Some(first_note.clone());
+                } else {
+                    app.grid.clear();
+                    app.notes_mode.current_note = None;
+                }
+
+                app.cursor_row = 0;
+                app.cursor_col = 0;
+                app.delete_confirmation_note = None;
+                app.status_message = "Note deleted".to_string();
+                app.needs_redraw = true;
+            }
+        } else {
+            // First press - ask for confirmation
+            app.delete_confirmation_note = Some(app.selected_note_index);
+            app.status_message = "Press Ctrl+D again to delete this note".to_string();
+            app.needs_redraw = true;
+        }
+
+        return Ok(true);
+    }
+
+    // Any other key - cancel delete confirmation
+    if app.delete_confirmation_note.is_some() {
+        app.delete_confirmation_note = None;
+        app.status_message = "Delete cancelled".to_string();
+        app.needs_redraw = true;
+    }
+
     // Ctrl+Up/Down - Navigate notes
     if key.code == KeyCode::Up && key.modifiers.contains(KeyModifiers::CONTROL) {
         if app.selected_note_index > 0 {
@@ -249,6 +334,15 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
         KeyCode::Backspace => {
+            // If there's a selection, delete it
+            if app.grid.selection.is_some() {
+                app.grid.cut_block(); // Just clears the block, no copying
+                app.mark_dirty();
+                app.needs_redraw = true;
+                return Ok(true);
+            }
+
+            // Normal backspace behavior
             if app.cursor_col > 0 {
                 app.cursor_col -= 1;
                 app.grid.delete_at(app.cursor_row, app.cursor_col);
@@ -268,8 +362,41 @@ pub async fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
         KeyCode::Enter => {
+            // Get everything from cursor to end of line
+            let mut chars_after_cursor = Vec::new();
+            for col in app.cursor_col..10000 {
+                let ch = app.grid.get(app.cursor_row, col);
+                if ch != ' ' {
+                    chars_after_cursor.push((col, ch));
+                } else if !chars_after_cursor.is_empty() {
+                    // Hit a space after we found content - keep going to get all content
+                    chars_after_cursor.push((col, ch));
+                }
+            }
+
+            // Find the actual last non-space character
+            while let Some(&(_, ch)) = chars_after_cursor.last() {
+                if ch == ' ' {
+                    chars_after_cursor.pop();
+                } else {
+                    break;
+                }
+            }
+
+            // Clear everything after cursor on current line
+            for col in app.cursor_col..10000 {
+                app.grid.set(app.cursor_row, col, ' ');
+            }
+
+            // Move to next line
             app.cursor_row += 1;
             app.cursor_col = 0;
+
+            // Write the chars on the new line
+            for (i, (_, ch)) in chars_after_cursor.iter().enumerate() {
+                app.grid.set(app.cursor_row, i, *ch);
+            }
+
             app.mark_dirty();
             app.needs_redraw = true;
         }
