@@ -78,6 +78,24 @@ impl BlockSelection {
         let (min_row, min_col, max_row, max_col) = self.bounds();
         row >= min_row && row <= max_row && col >= min_col && col <= max_col
     }
+
+    /// Linear selection check - for wrap mode where selection flows like text
+    pub fn contains_linear(&self, row: usize, col: usize) -> bool {
+        let (min_row, min_col, max_row, max_col) = self.bounds();
+
+        // Before selection start
+        if row < min_row || (row == min_row && col < min_col) {
+            return false;
+        }
+
+        // After selection end
+        if row > max_row || (row == max_row && col > max_col) {
+            return false;
+        }
+
+        // Within selection range
+        true
+    }
 }
 
 /// Infinite canvas using chunked storage
@@ -152,6 +170,40 @@ impl ChunkedGrid {
             .unwrap_or(' ')
     }
 
+    /// Get the bounds (min_col, max_col) of a specific row - O(1) chunk lookup
+    pub fn get_line_bounds(&self, row: usize) -> Option<(usize, usize)> {
+        let start_chunk_row = (row / CHUNK_SIZE) as i32;
+
+        let mut min_col = None;
+        let mut max_col = None;
+
+        // Only check chunks in this row
+        for (&(chunk_row, chunk_col), chunk) in &self.chunks {
+            if chunk_row != start_chunk_row {
+                continue;
+            }
+
+            // Check all cells in this chunk for this specific row
+            let local_row = row % CHUNK_SIZE;
+            for ((local_r, local_c), _) in chunk.cells() {
+                if local_r == local_row {
+                    let col = (chunk_col as usize * CHUNK_SIZE) + local_c;
+                    min_col = Some(min_col.map_or(col, |m: usize| m.min(col)));
+                    max_col = Some(max_col.map_or(col, |m: usize| m.max(col)));
+                }
+            }
+        }
+
+        min_col.and_then(|min| max_col.map(|max| (min, max)))
+    }
+
+    /// Get the length of a line (rightmost non-space character + 1)
+    pub fn get_line_length(&self, row: usize) -> usize {
+        self.get_line_bounds(row)
+            .map(|(_, max)| max + 1)
+            .unwrap_or(0)
+    }
+
     /// Insert string at position
     pub fn insert_at(&mut self, row: usize, col: usize, text: &str) {
         for (i, ch) in text.chars().enumerate() {
@@ -165,6 +217,61 @@ impl ChunkedGrid {
     /// Delete character at position
     pub fn delete_at(&mut self, row: usize, col: usize) {
         self.set(row, col, ' ');
+    }
+
+    /// Shift characters right starting at position (for insertion)
+    pub fn shift_right(&mut self, row: usize, start_col: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        let line_len = self.get_line_length(row);
+        if start_col >= line_len {
+            return; // Nothing to shift
+        }
+
+        // Shift characters from right to left to avoid overwrites
+        for col in (start_col..line_len).rev() {
+            let ch = self.get(row, col);
+            self.set(row, col + count, ch);
+        }
+
+        // Clear the gap
+        for col in start_col..(start_col + count).min(line_len) {
+            self.set(row, col, ' ');
+        }
+    }
+
+    /// Shift characters left starting at position (for deletion)
+    pub fn shift_left(&mut self, row: usize, start_col: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        let line_len = self.get_line_length(row);
+        if start_col >= line_len {
+            return; // Nothing to shift
+        }
+
+        // Shift characters from left to right
+        for col in start_col..line_len {
+            if col + count < line_len {
+                let ch = self.get(row, col + count);
+                self.set(row, col, ch);
+            } else {
+                self.set(row, col, ' ');
+            }
+        }
+    }
+
+    /// Delete range of characters on a line
+    pub fn delete_range(&mut self, row: usize, start_col: usize, end_col: usize) {
+        if start_col >= end_col {
+            return;
+        }
+
+        let count = end_col - start_col;
+        self.shift_left(row, start_col, count);
     }
 
     /// Get all chunks that intersect with a viewport

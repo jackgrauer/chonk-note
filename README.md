@@ -22,10 +22,13 @@ chonk-note is a functional terminal notes application that provides a distractio
 ### Editing Features
 
 - **Microsoft Word-style editing** - Insert mode with character shifting, line splitting/joining
+- **Full undo/redo** - Complete undo stack for all editing operations (Ctrl+Z/Ctrl+Y)
 - **Virtual grid cursor** - Move cursor anywhere on the infinite grid
-- **Block clipboard** - Copy/paste rectangular text selections with system clipboard integration
+- **Block clipboard** - Copy/cut/paste rectangular text selections with system clipboard integration
+- **Search functionality** - Full-text search within current note (Ctrl+F)
 - **Double-click rename** - Double-click notes in sidebar to rename
 - **Auto-save** - Notes save automatically every 2 seconds when modified
+- **Settings panel** - Toggle soft-wrapped paste, grid lines, and other options
 - **Grid lines toggle** - Optional visual grid overlay (Ctrl+G)
 
 ### UI/UX
@@ -65,7 +68,7 @@ sudo cp target/release/chonk-note /usr/local/bin/
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+N` | Create new note |
+| `Ctrl+N` | Create new note (or next search result if searching) |
 | `Ctrl+↑/↓` | Navigate between notes |
 | Arrow keys | Move cursor |
 | `Ctrl+Q` | Quit application |
@@ -78,16 +81,29 @@ sudo cp target/release/chonk-note /usr/local/bin/
 | `Ctrl+X` | Cut selection to system clipboard |
 | `Ctrl+V` | Paste from system clipboard |
 | `Ctrl+A` | Select all |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 | `Backspace` | Delete character before cursor (Word-style) |
 | `Delete` | Delete character at cursor (Word-style) |
 | `Enter` | Split line at cursor (Word-style) |
 | `Esc` | Clear selection |
+
+### Search
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+F` | Start search mode |
+| `Ctrl+N` | Next search result (when results exist) |
+| `Ctrl+P` | Previous search result (when results exist) |
+| `Enter` | Jump to first result and exit search |
+| `Esc` | Cancel search |
 
 ### View
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+G` | Toggle grid lines |
+| `Ctrl+S` | Manual save (auto-save every 2 seconds) |
 
 ### Note Management
 
@@ -103,7 +119,10 @@ sudo cp target/release/chonk-note /usr/local/bin/
 - **Double-click note** - Rename note
 - **Drag in editor** - Block selection
 - **Scroll in sidebar** - Scroll notes list
-- **Click title bar left edge** - Toggle sidebar
+- **Scroll in editor** - Scroll viewport up/down
+- **Click "Notes ▾"** - Toggle notes sidebar and dropdown menu
+- **Click "Settings ▾"** - Toggle settings panel and dropdown menu
+- **Click settings toggles** - Toggle soft-wrapped paste, grid lines, etc.
 
 ## 🗂️ Project Structure
 
@@ -116,6 +135,8 @@ chonk-note/
 │   ├── chunked_grid.rs         # Sparse grid with block selection
 │   ├── notes_database.rs       # SQLite persistence layer
 │   ├── notes_mode.rs           # Notes management logic
+│   ├── undo.rs                 # Undo/redo system
+│   ├── config.rs               # Configuration constants and colors
 │   └── kitty_native.rs         # Kitty terminal protocol
 ├── assets/
 │   └── hamster.png             # Hamster emoji for title bar
@@ -162,15 +183,15 @@ Each note contains:
 ### Known Limitations
 
 - Requires Kitty terminal (no fallback for other terminals)
-- No search functionality across notes
 - No export options (Markdown, plain text)
 - No tags system implementation
 - Single database only (no sync/multiple profiles)
 - No syntax highlighting or Markdown rendering
+- Search is limited to current note only (not across all notes)
 
 ### Potential Enhancements
 
-- [ ] Full-text search across all notes
+- [ ] Full-text search across all notes (currently only searches within active note)
 - [ ] Tag system with filtering
 - [ ] Export to Markdown/plain text
 - [ ] Import from existing files
@@ -179,6 +200,7 @@ Each note contains:
 - [ ] Vim keybinding mode
 - [ ] Encrypted notes option
 - [ ] Config file for customization
+- [ ] Improved word wrapping with configurable width
 
 ## 🐛 Debugging
 

@@ -5,24 +5,19 @@ use std::io::{self, Write};
 // Embed hamster emoji PNG at compile time
 const HAMSTER_PNG: &[u8] = include_bytes!("../assets/hamster.png");
 
+mod config;
 mod keyboard;
 mod kitty_native;
 mod mouse;
 mod notes_database;
 mod notes_mode;
 mod chunked_grid;
+mod undo;
 
 use kitty_native::KittyTerminal;
 use mouse::MouseState;
 use chunked_grid::ChunkedGrid;
-
-// UI Constants
-const SIDEBAR_WIDTH_EXPANDED: u16 = 30;
-const SIDEBAR_WIDTH_COLLAPSED: u16 = 0;
-const GRID_VERTICAL_SPACING: usize = 8;
-const GRID_HORIZONTAL_SPACING: usize = 4;
-const VISIBLE_NOTE_COUNT_APPROX: usize = 30;
-const FRAME_TIME_MS: u128 = 16; // 60 FPS for smooth selection dragging
+use config::{layout, timing, colors, rgb_bg, rgb_fg};
 
 pub struct App {
     // Notes database
@@ -58,6 +53,21 @@ pub struct App {
     // Auto-save debouncing
     pub dirty: bool,
     pub last_save_time: std::time::Instant,
+
+    // Undo/Redo system
+    pub undo_stack: undo::UndoStack,
+
+    // Search functionality
+    pub search_mode: bool,
+    pub search_query: String,
+    pub search_results: Vec<(usize, usize)>, // (row, col) positions
+    pub current_search_index: usize,
+
+    // Menu bar and settings
+    pub soft_wrap_paste: bool,
+    pub notes_menu_expanded: bool,
+    pub settings_menu_expanded: bool,
+    pub settings_panel_expanded: bool,
 }
 
 impl App {
@@ -92,7 +102,7 @@ impl App {
             sidebar_expanded: false,
             editing_title: false,
             title_buffer: String::new(),
-            status_message: "Click anywhere and type! Ctrl+N: New | Ctrl+Q: Quit | Ctrl+G: Grid Lines".to_string(),
+            status_message: "Ready".to_string(),
             exit_requested: false,
             needs_redraw: true,
             show_grid_lines: false,
@@ -100,13 +110,22 @@ impl App {
             delete_confirmation_note: None,
             dirty: false,
             last_save_time: std::time::Instant::now(),
+            undo_stack: undo::UndoStack::new(100), // Max 100 undo levels
+            search_mode: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            current_search_index: 0,
+            soft_wrap_paste: true, // Default to ON
+            notes_menu_expanded: false,
+            settings_menu_expanded: false,
+            settings_panel_expanded: false,
         })
     }
 
     /// Update viewport to keep cursor visible
     pub fn clamp_cursor_to_visible_area(&mut self, sidebar_width: u16) {
-        // Ensure cursor is not in the area covered by sidebar
-        let min_col = if self.sidebar_expanded { 0 } else { sidebar_width as usize };
+        // Ensure cursor is not in the area covered by sidebar when expanded
+        let min_col = if self.sidebar_expanded { sidebar_width as usize } else { 0 };
         if self.cursor_col < min_col {
             self.cursor_col = min_col;
         }
@@ -140,14 +159,12 @@ impl App {
 
     /// Save current note if dirty and enough time has passed
     pub fn auto_save(&mut self) -> Result<()> {
-        const SAVE_INTERVAL_MS: u128 = 2000; // 2 seconds
-
         if !self.dirty {
             return Ok(());
         }
 
         let now = std::time::Instant::now();
-        if now.duration_since(self.last_save_time).as_millis() < SAVE_INTERVAL_MS {
+        if now.duration_since(self.last_save_time).as_millis() < timing::SAVE_INTERVAL_MS {
             return Ok(());
         }
 
@@ -170,6 +187,55 @@ impl App {
     /// Mark note as dirty (needs saving)
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Perform search and populate results
+    pub fn perform_search(&mut self) {
+        self.search_results.clear();
+
+        if self.search_query.is_empty() {
+            return;
+        }
+
+        let lines = self.grid.to_lines();
+        let query_lower = self.search_query.to_lowercase();
+
+        for (row, line) in lines.iter().enumerate() {
+            let line_lower = line.to_lowercase();
+            let mut start = 0;
+
+            while let Some(pos) = line_lower[start..].find(&query_lower) {
+                let col = start + pos;
+                self.search_results.push((row, col));
+                start = col + 1;
+            }
+        }
+
+        self.current_search_index = 0;
+    }
+
+    /// Jump to next search result
+    pub fn next_search_result(&mut self) {
+        if !self.search_results.is_empty() {
+            self.current_search_index = (self.current_search_index + 1) % self.search_results.len();
+            let (row, col) = self.search_results[self.current_search_index];
+            self.cursor_row = row;
+            self.cursor_col = col;
+        }
+    }
+
+    /// Jump to previous search result
+    pub fn prev_search_result(&mut self) {
+        if !self.search_results.is_empty() {
+            self.current_search_index = if self.current_search_index == 0 {
+                self.search_results.len() - 1
+            } else {
+                self.current_search_index - 1
+            };
+            let (row, col) = self.search_results[self.current_search_index];
+            self.cursor_row = row;
+            self.cursor_col = col;
+        }
     }
 }
 
@@ -230,11 +296,11 @@ async fn run_app(app: &mut App) -> Result<()> {
             last_term_size = (term_width, term_height);
         }
 
-        // Redraw when necessary (max 20 FPS)
+        // Redraw when necessary (max 60 FPS)
         let now = std::time::Instant::now();
         let frame_time = now.duration_since(last_render_time);
 
-        if app.needs_redraw && frame_time.as_millis() >= FRAME_TIME_MS {
+        if app.needs_redraw && frame_time.as_millis() >= timing::FRAME_TIME_MS {
             KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
@@ -246,50 +312,51 @@ async fn run_app(app: &mut App) -> Result<()> {
             print!("\x1b[2J");
 
             // Render title bar
-            let note_name = if !app.notes_list.is_empty() && app.selected_note_index < app.notes_list.len() {
-                &app.notes_list[app.selected_note_index].title
-            } else {
-                "Untitled"
-            };
-
-            // Show sidebar indicator when collapsed (always 2 chars to prevent jostling)
-            let sidebar_indicator = if !app.sidebar_expanded { "▸ " } else { "  " };
-            let title_text = format!("{}{}", sidebar_indicator, note_name);
-
-            // Right-aligned branding constants (calculate first for fixed positioning)
-            let branding_text = "  Chonk-Note";
-            let branding_len = branding_text.len();
-            let hamster_cols = 2; // Hamster image takes 2 terminal columns
-            let hamster_rows = 1; // Hamster image takes 1 terminal row
             let total_width = term_width as usize;
+            let title_bg = rgb_bg(colors::TITLE_BAR_BG.0, colors::TITLE_BAR_BG.1, colors::TITLE_BAR_BG.2);
+            let title_fg = rgb_fg(colors::TITLE_BAR_FG.0, colors::TITLE_BAR_FG.1, colors::TITLE_BAR_FG.2);
 
-            // Calculate absolute position for branding from right edge
-            let branding_start_col = total_width.saturating_sub(branding_len);
-            let hamster_start_col = branding_start_col.saturating_sub(hamster_cols);
+            // Draw full teal bar first (always full width)
+            print!("\x1b[1;1H{}{}\x1b[0m", title_bg, " ".repeat(total_width));
 
-            // Draw full yellow bar first (always full width)
-            print!("\x1b[1;1H\x1b[48;2;255;255;0m{}\x1b[0m", " ".repeat(total_width));
+            // Left side: "Notes ▾" and "Settings ▾" menu buttons
+            let notes_text = if app.notes_menu_expanded { "Notes ▴" } else { "Notes ▾" };
+            let settings_text = if app.settings_menu_expanded { "Settings ▴" } else { "Settings ▾" };
 
-            // Draw title text on top at left
-            print!("\x1b[1;1H\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m{}\x1b[0m", title_text);
+            let notes_start_col = 0;
+            let settings_start_col = 10; // After "Notes ▾ "
 
-            // Position cursor at fixed hamster position using absolute positioning
-            print!("\x1b[1;{}H", hamster_start_col + 1); // Move to exact column (1-based)
+            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", notes_start_col + 1, title_bg, title_fg, notes_text);
+            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", settings_start_col + 1, title_bg, title_fg, settings_text);
 
-            // Display hamster emoji as inline PNG (2 cols x 1 row)
+            // Right side: Hamster + "Chonk-Note"
+            let branding_text = "  Chonk-Note "; // Extra space at start to move text right
+            let branding_len = branding_text.len();
+            let hamster_cols = 2;
+            let hamster_rows = 1;
+            let right_col = total_width.saturating_sub(branding_len + hamster_cols + 1); // Move left by 1
+
+            print!("\x1b[1;{}H", right_col + 1); // Position for hamster
             let _ = KittyTerminal::display_inline_png(HAMSTER_PNG, hamster_cols as u16, hamster_rows as u16);
+            print!("{}{}\x1b[1m{}\x1b[0m", title_bg, title_fg, branding_text);
 
-            // Continue with branding text on same background
-            print!("\x1b[48;2;255;255;0m\x1b[38;2;0;0;0m\x1b[1m{}\x1b[0m", branding_text);
+            // Render dropdown menus if expanded
+            if app.notes_menu_expanded {
+                render_notes_menu(app, notes_start_col as u16, 2)?;
+            }
+            if app.settings_menu_expanded {
+                render_settings_menu(app, settings_start_col as u16, 2)?;
+            }
 
-            // Sidebar width
-            let notes_list_width = if app.sidebar_expanded { SIDEBAR_WIDTH_EXPANDED } else { SIDEBAR_WIDTH_COLLAPSED };
+            // Sidebar widths
+            let notes_list_width = if app.sidebar_expanded { layout::SIDEBAR_WIDTH_EXPANDED } else { layout::SIDEBAR_WIDTH_COLLAPSED };
+            let settings_panel_width = if app.settings_panel_expanded { layout::SETTINGS_PANEL_WIDTH } else { 0 };
 
             // Ensure cursor is not under the sidebar
             app.clamp_cursor_to_visible_area(notes_list_width);
 
-            // Update viewport to keep cursor visible (use full width for editor, subtract 1 row for title bar)
-            let editor_height = term_height.saturating_sub(1);
+            // Update viewport to keep cursor visible (subtract 2 rows: 1 for title bar, 1 for status line)
+            let editor_height = term_height.saturating_sub(2);
             app.update_viewport(term_width, editor_height);
 
             // Render notes editor at full width starting at row 2 (after 1-row title bar)
@@ -297,6 +364,15 @@ async fn run_app(app: &mut App) -> Result<()> {
 
             // Render notes list sidebar on top of editor (overlay, also starting at row 2)
             render_notes_list(&app, 0, 1, notes_list_width, editor_height)?;
+
+            // Render settings panel on right side (overlay)
+            if settings_panel_width > 0 {
+                let panel_x = term_width.saturating_sub(settings_panel_width);
+                render_settings_panel(&app, panel_x, 1, settings_panel_width, editor_height)?;
+            }
+
+            // Render status line at bottom
+            render_status_line(&app, term_width, term_height)?;
 
             // Position terminal cursor at the actual cursor location
             if let Some((screen_x, screen_y)) = cursor_screen_pos {
@@ -367,7 +443,9 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
             if in_selection {
                 // For selected cells, always show background even for spaces
                 let display_ch = if ch == ' ' { ' ' } else { ch };
-                print!("\x1b[48;2;255;20;147m\x1b[38;2;255;255;255m{}\x1b[0m", display_ch);
+                let sel_bg = rgb_bg(colors::SELECTION_BG.0, colors::SELECTION_BG.1, colors::SELECTION_BG.2);
+                let sel_fg = rgb_fg(colors::SELECTION_FG.0, colors::SELECTION_FG.1, colors::SELECTION_FG.2);
+                print!("{}{}{}\x1b[0m", sel_bg, sel_fg, display_ch);
             } else {
                 print!("{}", ch);
             }
@@ -376,8 +454,10 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
 
     // Render grid lines if enabled
     if app.show_grid_lines {
+        let grid_fg = rgb_fg(colors::GRID_LINE_FG.0, colors::GRID_LINE_FG.1, colors::GRID_LINE_FG.2);
+
         // Vertical lines every 8 characters
-        for col in (GRID_VERTICAL_SPACING..width as usize).step_by(GRID_VERTICAL_SPACING) {
+        for col in (layout::GRID_VERTICAL_SPACING..width as usize).step_by(layout::GRID_VERTICAL_SPACING) {
             for row in 0..height {
                 let grid_row = viewport_start_row + row as usize;
                 let grid_col = viewport_start_col + col;
@@ -385,14 +465,14 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
 
                 // Only draw grid line if cell is empty
                 if ch == ' ' {
-                    print!("\x1b[{};{}H\x1b[38;2;60;60;60m│\x1b[0m",
-                           y + row as u16 + 1, x + col as u16 + 1);
+                    print!("\x1b[{};{}H{}│\x1b[0m",
+                           y + row as u16 + 1, x + col as u16 + 1, grid_fg);
                 }
             }
         }
 
         // Horizontal lines every 4 rows
-        for row in (GRID_HORIZONTAL_SPACING..height as usize).step_by(GRID_HORIZONTAL_SPACING) {
+        for row in (layout::GRID_HORIZONTAL_SPACING..height as usize).step_by(layout::GRID_HORIZONTAL_SPACING) {
             for col in 0..width as usize {
                 let grid_row = viewport_start_row + row;
                 let grid_col = viewport_start_col + col;
@@ -400,8 +480,8 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
 
                 // Only draw grid line if cell is empty
                 if ch == ' ' {
-                    print!("\x1b[{};{}H\x1b[38;2;60;60;60m─\x1b[0m",
-                           y + row as u16 + 1, x + col as u16 + 1);
+                    print!("\x1b[{};{}H{}─\x1b[0m",
+                           y + row as u16 + 1, x + col as u16 + 1, grid_fg);
                 }
             }
         }
@@ -427,26 +507,33 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
         return Ok(());
     }
 
+    let sidebar_bg = rgb_bg(colors::SIDEBAR_BG.0, colors::SIDEBAR_BG.1, colors::SIDEBAR_BG.2);
+    let sidebar_fg = rgb_fg(colors::SIDEBAR_FG.0, colors::SIDEBAR_FG.1, colors::SIDEBAR_FG.2);
+    let sidebar_icon_fg = rgb_fg(colors::SIDEBAR_ICON_FG.0, colors::SIDEBAR_ICON_FG.1, colors::SIDEBAR_ICON_FG.2);
+
     // Clear sidebar with blue background
     for row in 0..height {
-        print!("\x1b[{};{}H\x1b[48;2;30;60;100m{}\x1b[0m", y + row + 1, x + 1, " ".repeat(width as usize));
+        print!("\x1b[{};{}H{}{}\x1b[0m", y + row + 1, x + 1, sidebar_bg, " ".repeat(width as usize));
     }
 
     if app.notes_list.is_empty() {
-        print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;200;200;200m +\x1b[0m", y + 2, x + 1);
+        print!("\x1b[{};{}H{}{} +\x1b[0m", y + 2, x + 1, sidebar_bg, sidebar_icon_fg);
     } else {
         let visible_count = (height - 2) as usize;
         let start_index = app.notes_list_scroll;
         let end_index = (start_index + visible_count).min(app.notes_list.len());
+
+        let selected_bg = rgb_bg(colors::SELECTED_ITEM_BG.0, colors::SELECTED_ITEM_BG.1, colors::SELECTED_ITEM_BG.2);
+        let selected_fg = rgb_fg(colors::SELECTED_ITEM_FG.0, colors::SELECTED_ITEM_FG.1, colors::SELECTED_ITEM_FG.2);
 
         for (display_pos, note_idx) in (start_index..end_index).enumerate() {
             let is_selected = note_idx == app.selected_note_index;
             let note = &app.notes_list[note_idx];
 
             let (bg_color, text_color) = if is_selected {
-                ("\x1b[48;2;255;193;7m", "\x1b[38;2;0;0;0m")
+                (&selected_bg, &selected_fg)
             } else {
-                ("\x1b[48;2;30;60;100m", "\x1b[38;2;220;220;220m")
+                (&sidebar_bg, &sidebar_fg)
             };
 
             if app.sidebar_expanded {
@@ -482,13 +569,191 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
         }
 
         // Scroll indicators
+        let scroll_fg = rgb_fg(colors::SIDEBAR_SCROLL_FG.0, colors::SIDEBAR_SCROLL_FG.1, colors::SIDEBAR_SCROLL_FG.2);
         if start_index > 0 {
-            print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;76;175;80m↑\x1b[0m", y, x + 2);
+            print!("\x1b[{};{}H{}{}↑\x1b[0m", y, x + 2, sidebar_bg, scroll_fg);
         }
         if end_index < app.notes_list.len() {
-            print!("\x1b[{};{}H\x1b[48;2;30;60;100m\x1b[38;2;76;175;80m↓\x1b[0m", y + height - 1, x + 2);
+            print!("\x1b[{};{}H{}{}↓\x1b[0m", y + height - 1, x + 2, sidebar_bg, scroll_fg);
         }
     }
+
+    Ok(())
+}
+
+fn render_notes_menu(app: &App, x: u16, y: u16) -> Result<()> {
+    let menu_bg = rgb_bg(250, 250, 250); // Light gray
+    let menu_fg = rgb_fg(0, 0, 0); // Black text
+
+    let menu_width = 45;
+    let menu_items = vec![
+        "─────────────────────────────────────────────".to_string(),
+        "Manage Notes:".to_string(),
+        "  Ctrl+N  - New note".to_string(),
+        "  Ctrl+D  - Delete note (press twice)".to_string(),
+        "  Ctrl+S  - Save note".to_string(),
+        "  Ctrl+↑/↓ - Navigate notes".to_string(),
+        "  Double-click - Rename note".to_string(),
+        "─────────────────────────────────────────────".to_string(),
+    ];
+
+    for (i, item) in menu_items.iter().enumerate() {
+        let display_text = format!("{:<width$}", item, width = menu_width);
+        print!("\x1b[{};{}H{}{}{}\x1b[0m", y + i as u16, x + 1, menu_bg, menu_fg, display_text);
+    }
+
+    Ok(())
+}
+
+fn render_settings_menu(app: &App, x: u16, y: u16) -> Result<()> {
+    // Menu background color
+    let menu_bg = rgb_bg(250, 250, 250); // Light gray
+    let menu_fg = rgb_fg(0, 0, 0); // Black text
+    let button_bg = if app.soft_wrap_paste {
+        rgb_bg(76, 175, 80) // Green when ON
+    } else {
+        rgb_bg(200, 200, 200) // Gray when OFF
+    };
+    let button_fg = rgb_fg(255, 255, 255); // White text
+
+    let menu_width = 45;
+    let button_text = if app.soft_wrap_paste { " ON " } else { " OFF " };
+    let soft_wrap_line = format!("Soft-Wrapped Paste: {}", button_text);
+    let menu_items = vec![
+        "─────────────────────────────────────────────".to_string(),
+        soft_wrap_line,
+        "─────────────────────────────────────────────".to_string(),
+    ];
+
+    for (i, item) in menu_items.iter().enumerate() {
+        if i == 1 {
+            // Render toggle button for soft-wrap line
+            let label = "Soft-Wrapped Paste: ";
+            print!("\x1b[{};{}H{}{}{}", y + i as u16, x + 1, menu_bg, menu_fg, label);
+            print!("{}{}{}\x1b[0m", button_bg, button_fg, button_text);
+            // Fill rest of line with menu background
+            let remaining = menu_width - label.len() - button_text.len();
+            print!("{}{}{}\x1b[0m", menu_bg, menu_fg, " ".repeat(remaining));
+        } else {
+            let display_text = format!("{:<width$}", item, width = menu_width);
+            print!("\x1b[{};{}H{}{}{}\x1b[0m",
+                y + i as u16,
+                x + 1,
+                menu_bg,
+                menu_fg,
+                display_text
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn render_settings_panel(app: &App, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
+    let panel_bg = rgb_bg(colors::SIDEBAR_BG.0, colors::SIDEBAR_BG.1, colors::SIDEBAR_BG.2);
+    let panel_fg = rgb_fg(colors::SIDEBAR_FG.0, colors::SIDEBAR_FG.1, colors::SIDEBAR_FG.2);
+    let on_bg = rgb_bg(76, 175, 80); // Green
+    let off_bg = rgb_bg(200, 200, 200); // Gray
+    let toggle_fg = rgb_fg(255, 255, 255); // White
+
+    // Clear panel background
+    for row in 0..height {
+        print!("\x1b[{};{}H{}{}\x1b[0m", y + row + 1, x + 1, panel_bg, " ".repeat(width as usize));
+    }
+
+    // Title
+    print!("\x1b[{};{}H{}\x1b[1m{}Settings\x1b[0m", y + 1, x + 2, panel_bg, panel_fg);
+
+    // Separator
+    print!("\x1b[{};{}H{}{}{}\x1b[0m", y + 2, x + 1, panel_bg, panel_fg, "─".repeat(width as usize));
+
+    // Toggle switches
+    let toggle_row_start = 3;
+
+    // 1. Soft-Wrapped Paste
+    let soft_wrap_label = "Soft-Wrapped Paste";
+    let soft_wrap_state = if app.soft_wrap_paste { " ON " } else { " OFF" };
+    let soft_wrap_bg = if app.soft_wrap_paste { &on_bg } else { &off_bg };
+
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start, x + 2, panel_bg, panel_fg, soft_wrap_label);
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start + 1, x + 2, soft_wrap_bg, &toggle_fg, soft_wrap_state);
+
+    // 2. Grid Lines (placeholder for future)
+    let grid_lines_label = "Show Grid Lines";
+    let grid_lines_state = if app.show_grid_lines { " ON " } else { " OFF" };
+    let grid_lines_bg = if app.show_grid_lines { &on_bg } else { &off_bg };
+
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start + 3, x + 2, panel_bg, panel_fg, grid_lines_label);
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start + 4, x + 2, grid_lines_bg, &toggle_fg, grid_lines_state);
+
+    // 3. Auto-Save (placeholder - always on for now)
+    let autosave_label = "Auto-Save";
+    let autosave_state = " ON ";
+
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start + 6, x + 2, panel_bg, panel_fg, autosave_label);
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        y + toggle_row_start + 7, x + 2, &on_bg, &toggle_fg, autosave_state);
+
+    Ok(())
+}
+
+fn render_status_line(app: &App, term_width: u16, term_height: u16) -> Result<()> {
+    // Status line at bottom row
+    let status_row = term_height;
+
+    // Status line colors (dark gray background)
+    let status_bg = rgb_bg(40, 40, 40);
+    let status_fg = rgb_fg(200, 200, 200);
+    let dirty_fg = rgb_fg(255, 193, 7); // Amber for dirty indicator
+
+    // Build status line content
+    let dirty_indicator = if app.dirty { "*" } else { " " };
+    let position_info = format!("Ln {}, Col {} ", app.cursor_row + 1, app.cursor_col + 1);
+
+    // Left side: status message with dirty indicator
+    let left_text = format!("{}{}", dirty_indicator, app.status_message);
+
+    // Calculate how much space we have
+    let total_width = term_width as usize;
+    let position_len = position_info.len();
+    let max_message_len = total_width.saturating_sub(position_len).saturating_sub(1); // -1 for spacing
+
+    // Truncate message if needed
+    let truncated_left = if left_text.len() > max_message_len {
+        format!("{}…", &left_text[..max_message_len.saturating_sub(1)])
+    } else {
+        left_text
+    };
+
+    // Clear status line with background color
+    print!("\x1b[{};1H{}{}\x1b[0m", status_row, status_bg, " ".repeat(total_width));
+
+    // Draw left side (message + dirty indicator)
+    if app.dirty {
+        // Highlight dirty indicator in amber
+        print!("\x1b[{};1H{}{}{}\x1b[0m{}{}{}\x1b[0m",
+            status_row,
+            status_bg, dirty_fg, dirty_indicator,
+            status_bg, status_fg, &truncated_left[1..] // Skip first char (dirty indicator)
+        );
+    } else {
+        print!("\x1b[{};1H{}{}{}\x1b[0m",
+            status_row,
+            status_bg, status_fg, truncated_left
+        );
+    }
+
+    // Draw right side (position info) - right-aligned
+    let position_col = total_width.saturating_sub(position_len) + 1;
+    print!("\x1b[{};{}H{}{}{}\x1b[0m",
+        status_row, position_col,
+        status_bg, status_fg, position_info
+    );
 
     Ok(())
 }

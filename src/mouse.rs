@@ -1,6 +1,7 @@
 // Mouse handling for chonk-note
 use crate::App;
 use crate::kitty_native::MouseEvent;
+use crate::config::layout;
 use anyhow::Result;
 
 pub struct MouseState {
@@ -23,17 +24,122 @@ impl Default for MouseState {
 
 pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut MouseState) -> Result<()> {
     let (term_width, term_height) = crate::kitty_native::KittyTerminal::size()?;
-    let notes_list_width = if app.sidebar_expanded { crate::SIDEBAR_WIDTH_EXPANDED } else { crate::SIDEBAR_WIDTH_COLLAPSED };
+    let notes_list_width = if app.sidebar_expanded { layout::SIDEBAR_WIDTH_EXPANDED } else { layout::SIDEBAR_WIDTH_COLLAPSED };
 
     match event {
         // Left click - position cursor or select note
         MouseEvent { button: Some(crate::kitty_native::MouseButton::Left), is_press: true, is_drag: false, x, y, .. } => {
-            // Click on title bar (row 0) - toggle sidebar if clicking on indicator
+            // Click on title bar (row 0) - handle menu buttons
             if y == 0 {
-                // Click on the left part of title bar (first 2 chars) toggles sidebar
-                if x <= 1 {
-                    app.sidebar_expanded = !app.sidebar_expanded;
+                // Menu button positions (left side of title bar)
+                let notes_start_col = 0;
+                let notes_end_col = 8; // "Notes ▾" is 8 chars
+                let settings_start_col = 10;
+                let settings_end_col = 21; // "Settings ▾" is 11 chars
+
+                // Click on Notes menu button
+                if x >= notes_start_col as u16 && x < notes_end_col as u16 {
+                    app.notes_menu_expanded = !app.notes_menu_expanded;
+                    app.sidebar_expanded = !app.sidebar_expanded; // ALSO toggle sidebar
+                    app.settings_menu_expanded = false; // Close other menu
                     app.needs_redraw = true;
+                    return Ok(());
+                }
+
+                // Click on Settings menu button
+                if x >= settings_start_col as u16 && x < settings_end_col as u16 {
+                    app.settings_menu_expanded = !app.settings_menu_expanded;
+                    app.settings_panel_expanded = !app.settings_panel_expanded; // ALSO toggle panel
+                    app.notes_menu_expanded = false; // Close other menu
+                    app.needs_redraw = true;
+                    return Ok(());
+                }
+            }
+
+            // Click in Settings menu dropdown (when expanded) - handle menu item clicks
+            if app.settings_menu_expanded && y >= 2 && y <= 20 {
+                let settings_start_col = 10; // Settings menu column
+                let settings_end_col = settings_start_col + 45; // Menu width
+
+                if x >= settings_start_col as u16 && x < settings_end_col as u16 {
+                    // Check if clicked on the soft-wrap toggle (row 1 in menu items = y=3)
+                    if y == 3 {
+                        app.soft_wrap_paste = !app.soft_wrap_paste;
+                        app.status_message = if app.soft_wrap_paste {
+                            "Soft-wrapped paste: ON".to_string()
+                        } else {
+                            "Soft-wrapped paste: OFF".to_string()
+                        };
+                        app.needs_redraw = true;
+                        // Don't close menu, just redraw
+                        return Ok(());
+                    }
+                    // Other menu rows - just keep menu open
+                    return Ok(());
+                } else {
+                    // Clicked outside menu while it was open - close it
+                    app.settings_menu_expanded = false;
+                    app.needs_redraw = true;
+                }
+            }
+
+            // Click in Notes menu dropdown (when expanded)
+            if app.notes_menu_expanded && y >= 2 && y <= 20 {
+                let notes_start_col = 0;
+                let notes_end_col = notes_start_col + 45; // Menu width
+
+                if x >= notes_start_col as u16 && x < notes_end_col as u16 {
+                    // Just keep menu open for now - no actions yet
+                    return Ok(());
+                } else {
+                    // Clicked outside menu while it was open - close it
+                    app.notes_menu_expanded = false;
+                    app.needs_redraw = true;
+                }
+            }
+
+            // Click in settings panel (when expanded)
+            if app.settings_panel_expanded {
+                let settings_panel_width = layout::SETTINGS_PANEL_WIDTH;
+                let panel_x = term_width.saturating_sub(settings_panel_width);
+
+                if x >= panel_x {
+                    // Clicked inside settings panel
+                    // Toggle row positions (matching render_settings_panel)
+                    let toggle_row_start = 3;
+
+                    // Soft-Wrapped Paste toggle (rows 3-4)
+                    if y >= toggle_row_start as u16 && y <= (toggle_row_start + 1) as u16 {
+                        app.soft_wrap_paste = !app.soft_wrap_paste;
+                        app.status_message = if app.soft_wrap_paste {
+                            "Soft-wrapped paste: ON".to_string()
+                        } else {
+                            "Soft-wrapped paste: OFF".to_string()
+                        };
+                        app.needs_redraw = true;
+                        return Ok(());
+                    }
+
+                    // Show Grid Lines toggle (rows 6-7)
+                    if y >= (toggle_row_start + 3) as u16 && y <= (toggle_row_start + 4) as u16 {
+                        app.show_grid_lines = !app.show_grid_lines;
+                        app.status_message = if app.show_grid_lines {
+                            "Grid lines: ON".to_string()
+                        } else {
+                            "Grid lines: OFF".to_string()
+                        };
+                        app.needs_redraw = true;
+                        return Ok(());
+                    }
+
+                    // Auto-Save toggle (rows 9-10) - placeholder, always on
+                    if y >= (toggle_row_start + 6) as u16 && y <= (toggle_row_start + 7) as u16 {
+                        app.status_message = "Auto-save is always enabled".to_string();
+                        app.needs_redraw = true;
+                        return Ok(());
+                    }
+
+                    // Clicked elsewhere in panel - just keep it open
                     return Ok(());
                 }
             }
@@ -99,8 +205,9 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                 return Ok(());
             }
 
-            // Click in editor area - collapse sidebar and position cursor
+            // Click in editor area - collapse sidebar/settings and position cursor
             app.sidebar_expanded = false;
+            app.settings_panel_expanded = false;
             app.editing_title = false;
 
             // Calculate cursor position from click (editor now spans full width)
@@ -214,6 +321,12 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.notes_list_scroll -= 1;
                     app.needs_redraw = true;
                 }
+            } else {
+                // Scroll editor viewport up
+                if app.viewport_row > 0 {
+                    app.viewport_row = app.viewport_row.saturating_sub(3); // Scroll by 3 rows
+                    app.needs_redraw = true;
+                }
             }
         }
 
@@ -227,6 +340,10 @@ pub async fn handle_mouse(app: &mut App, event: MouseEvent, mouse_state: &mut Mo
                     app.notes_list_scroll += 1;
                     app.needs_redraw = true;
                 }
+            } else {
+                // Scroll editor viewport down
+                app.viewport_row += 3; // Scroll by 3 rows
+                app.needs_redraw = true;
             }
         }
 

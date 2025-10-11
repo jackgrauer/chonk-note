@@ -419,15 +419,77 @@ impl KittyTerminal {
             // Delete key
             [27, 91, 51, 126, ..] => Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Delete, modifiers })), 4)),
 
-            // IMPORTANT: Consume all escape sequences to prevent character leakage
-            // Any unrecognized escape sequence starting with ESC should be consumed, not ignored
-            bytes if bytes.len() > 0 && bytes[0] == 27 => {
-                // This is an escape sequence we don't recognize - consume it ALL
-                // This prevents escape sequences from being interpreted as regular characters
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/jack/chonker7_debug.log") {
-                    writeln!(file, "[PARSE_KEYBOARD] Consumed unrecognized escape sequence: {:?}", bytes).ok();
+            // Ctrl+Arrow keys (used for note navigation, but might also be trackpad gestures)
+            [27, 91, 49, 59, 53, 65, ..] => {
+                modifiers.ctrl = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 53, 66, ..] => {
+                modifiers.ctrl = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 53, 68, ..] => {
+                modifiers.ctrl = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 53, 67, ..] => {
+                modifiers.ctrl = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })), 6))
+            }
+
+            // Cmd+Arrow keys (macOS, often used for home/end, page up/down)
+            [27, 91, 49, 59, 57, 65, ..] => {
+                modifiers.cmd = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Up, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 57, 66, ..] => {
+                modifiers.cmd = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Down, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 57, 68, ..] => {
+                modifiers.cmd = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Left, modifiers })), 6))
+            }
+            [27, 91, 49, 59, 57, 67, ..] => {
+                modifiers.cmd = true;
+                Ok((Some(InputEvent::Key(KeyEvent { code: KeyCode::Right, modifiers })), 6))
+            }
+
+            // IMPORTANT: Consume CSI sequences that we don't recognize
+            // CSI sequences: ESC [ ... (letter or ~)
+            bytes if bytes.len() >= 2 && bytes[0] == 27 && bytes[1] == b'[' => {
+                // Find the end of the CSI sequence
+                let mut consumed = 2;
+                for i in 2..bytes.len() {
+                    let b = bytes[i];
+                    // CSI sequences end with a letter (A-Z, a-z) or ~
+                    if (b >= b'A' && b <= b'Z') || (b >= b'a' && b <= b'z') || b == b'~' {
+                        consumed = i + 1;
+                        break;
+                    }
+                    // Also check for semicolons and digits which are parameter bytes
+                    if !(b == b';' || (b >= b'0' && b <= b'9')) {
+                        // Unexpected character, consume up to here
+                        consumed = i + 1;
+                        break;
+                    }
                 }
-                Ok((None, bytes.len())) // Consume entire buffer
+
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log") {
+                    writeln!(file, "[PARSE_KEYBOARD] Consumed CSI sequence ({} bytes): {:?}", consumed, &bytes[..consumed]).ok();
+                }
+                Ok((None, consumed))
+            }
+
+            // Other escape sequences (ESC + something else)
+            bytes if bytes.len() > 0 && bytes[0] == 27 => {
+                // Consume just the escape sequence, not the whole buffer
+                // For now, consume ESC + next byte
+                let consumed = if bytes.len() > 1 { 2 } else { 1 };
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/chonk-debug.log") {
+                    writeln!(file, "[PARSE_KEYBOARD] Consumed escape sequence ({} bytes): {:?}", consumed, &bytes[..consumed]).ok();
+                }
+                Ok((None, consumed))
             }
 
             _ => Ok((None, 1)) // Consume one byte of unknown input
