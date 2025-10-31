@@ -47,13 +47,11 @@ git clone https://github.com/jackgrauer/chonk-note.git
 cd chonk-note
 
 # Build and install (requires Rust toolchain)
-cargo build --release
+cargo install --path .
 
-# Optional: Copy to system path
-sudo cp target/release/chonk-note /usr/local/bin/
-
-# Or run directly
-./target/release/chonk-note
+# The binary will be installed to ~/.cargo/bin/chonk-note
+# and can be run from anywhere:
+chonk-note
 ```
 
 ## 📋 Requirements
