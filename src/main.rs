@@ -9,22 +9,22 @@ mod config;
 mod keyboard;
 mod kitty_native;
 mod mouse;
-mod notes_database;
-mod notes_mode;
-mod chunked_grid;
+mod notes;
+mod text_buffer;
 mod undo;
 
 use kitty_native::KittyTerminal;
 use mouse::MouseState;
-use chunked_grid::ChunkedGrid;
+use text_buffer::TextBuffer;
 use config::{layout, timing, colors, rgb_bg, rgb_fg};
 
 pub struct App {
-    // Notes database
-    pub notes_mode: notes_mode::NotesMode,
+    // Notes manager
+    pub notes_manager: notes::NotesManager,
+    pub current_note: Option<notes::Note>,
 
-    // Chunked grid - the ONLY data structure
-    pub grid: ChunkedGrid,
+    // Simple text buffer
+    pub text_buffer: TextBuffer,
     pub cursor_row: usize,
     pub cursor_col: usize,
 
@@ -33,7 +33,7 @@ pub struct App {
     pub viewport_col: usize,
 
     // Notes list sidebar
-    pub notes_list: Vec<notes_database::Note>,
+    pub notes_list: Vec<notes::Note>,
     pub selected_note_index: usize,
     pub notes_list_scroll: usize,
     pub sidebar_expanded: bool,
@@ -44,8 +44,7 @@ pub struct App {
     pub status_message: String,
     pub exit_requested: bool,
     pub needs_redraw: bool,
-    pub show_grid_lines: bool,
-    pub block_clipboard: Option<Vec<String>>,
+    pub force_immediate_render: bool,
 
     // Delete confirmation
     pub delete_confirmation_note: Option<usize>,
@@ -66,32 +65,41 @@ pub struct App {
     // Menu bar and settings
     pub soft_wrap_paste: bool,
     pub notes_menu_expanded: bool,
-    pub settings_menu_expanded: bool,
     pub settings_panel_expanded: bool,
+    pub help_menu_expanded: bool,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
-        let mut notes_mode = notes_mode::NotesMode::new()?;
-        let mut notes_list = Vec::new();
-        let mut grid = ChunkedGrid::new();
+        let notes_manager = notes::NotesManager::new()?;
+        let mut notes_list = notes_manager.list_notes()?;
+        let mut text_buffer = TextBuffer::new();
+        let mut current_note = None;
 
-        // Load existing notes
-        if let Ok(notes) = notes_mode.db.list_notes(100) {
-            notes_list = notes;
-        }
-
-        // Load the first note if available
-        if !notes_list.is_empty() {
-            let first_note = &notes_list[0];
-            let lines: Vec<String> = first_note.content.lines().map(|s| s.to_string()).collect();
-            grid = ChunkedGrid::from_lines(&lines);
-            notes_mode.current_note = Some(first_note.clone());
+        // If no notes exist, create two default notes
+        if notes_list.is_empty() {
+            let note1 = notes_manager.create_note(
+                "Welcome to Chonk-Note",
+                "This is your first note.\nYou can edit this text.\n\nPress Ctrl+N to create a new note.\nPress Ctrl+S to save.\nPress Ctrl+Q to quit."
+            )?;
+            let note2 = notes_manager.create_note(
+                "Second Note",
+                "This is your second note.\nYou can switch between notes using the Notes menu.\n\nClick on \"Notes\" at the top to see all your notes!"
+            )?;
+            notes_list = vec![note1.clone(), note2];
+            text_buffer = TextBuffer::from_string(&note1.content);
+            current_note = Some(note1);
+        } else {
+            // Load the first note if available
+            let first_note = notes_list[0].clone();
+            text_buffer = TextBuffer::from_string(&first_note.content);
+            current_note = Some(first_note);
         }
 
         Ok(Self {
-            notes_mode,
-            grid,
+            notes_manager,
+            current_note,
+            text_buffer,
             cursor_row: 0,
             cursor_col: 0,
             viewport_row: 0,
@@ -105,8 +113,7 @@ impl App {
             status_message: "Ready".to_string(),
             exit_requested: false,
             needs_redraw: true,
-            show_grid_lines: false,
-            block_clipboard: None,
+            force_immediate_render: false,
             delete_confirmation_note: None,
             dirty: false,
             last_save_time: std::time::Instant::now(),
@@ -117,8 +124,8 @@ impl App {
             current_search_index: 0,
             soft_wrap_paste: true, // Default to ON
             notes_menu_expanded: false,
-            settings_menu_expanded: false,
             settings_panel_expanded: false,
+            help_menu_expanded: false,
         })
     }
 
@@ -174,10 +181,22 @@ impl App {
 
     /// Force save current note immediately
     pub fn save_current_note(&mut self) -> Result<()> {
-        if let Some(ref current_note) = self.notes_mode.current_note {
-            let lines = self.grid.to_lines();
-            let content = lines.join("\n");
-            self.notes_mode.db.update_note(&current_note.id, current_note.title.clone(), content, current_note.tags.clone())?;
+        if let Some(ref mut current_note) = self.current_note {
+            // Update content and title from buffer
+            current_note.content = self.text_buffer.to_string();
+
+            // Extract title from first line
+            let lines: Vec<&str> = current_note.content.lines().collect();
+            current_note.title = lines.first().unwrap_or(&"Untitled").to_string();
+
+            // Save to disk
+            self.notes_manager.save_note(current_note)?;
+
+            // Update the cached notes_list entry
+            if self.selected_note_index < self.notes_list.len() {
+                self.notes_list[self.selected_note_index] = current_note.clone();
+            }
+
             self.dirty = false;
             self.last_save_time = std::time::Instant::now();
         }
@@ -197,17 +216,18 @@ impl App {
             return;
         }
 
-        let lines = self.grid.to_lines();
         let query_lower = self.search_query.to_lowercase();
 
-        for (row, line) in lines.iter().enumerate() {
-            let line_lower = line.to_lowercase();
-            let mut start = 0;
+        for row in 0..self.text_buffer.line_count() {
+            if let Some(line) = self.text_buffer.get_line(row) {
+                let line_lower = line.to_lowercase();
+                let mut start = 0;
 
-            while let Some(pos) = line_lower[start..].find(&query_lower) {
-                let col = start + pos;
-                self.search_results.push((row, col));
-                start = col + 1;
+                while let Some(pos) = line_lower[start..].find(&query_lower) {
+                    let col = start + pos;
+                    self.search_results.push((row, col));
+                    start = col + 1;
+                }
             }
         }
 
@@ -296,17 +316,25 @@ async fn run_app(app: &mut App) -> Result<()> {
             last_term_size = (term_width, term_height);
         }
 
-        // Redraw when necessary (max 60 FPS)
+        // Redraw when necessary (max 120 FPS, or immediately if forced)
         let now = std::time::Instant::now();
         let frame_time = now.duration_since(last_render_time);
 
-        if app.needs_redraw && frame_time.as_millis() >= timing::FRAME_TIME_MS {
+        let should_render = app.needs_redraw && (app.force_immediate_render || frame_time.as_millis() >= timing::FRAME_TIME_MS);
+
+        if should_render {
+            let bypass_sync = app.force_immediate_render;
+            app.force_immediate_render = false;
+
             KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
-            // BEGIN SYNCHRONIZED UPDATE - prevents flicker
-            print!("\x1b[?2026h");
-            print!("\x1b[s");
+            // Skip synchronized updates entirely - they may be causing buffering issues
+            // // BEGIN SYNCHRONIZED UPDATE - skip for immediate renders to avoid buffering
+            // if !bypass_sync {
+            //     print!("\x1b[?2026h");
+            //     print!("\x1b[s");
+            // }
 
             // Clear entire screen first to prevent artifacts
             print!("\x1b[2J");
@@ -319,15 +347,29 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Draw full teal bar first (always full width)
             print!("\x1b[1;1H{}{}\x1b[0m", title_bg, " ".repeat(total_width));
 
-            // Left side: "Notes ▾" and "Settings ▾" menu buttons
+            // Left side: "Notes ▾" and "Help ▾" menu buttons
             let notes_text = if app.notes_menu_expanded { "Notes ▴" } else { "Notes ▾" };
-            let settings_text = if app.settings_menu_expanded { "Settings ▴" } else { "Settings ▾" };
+            let help_text = if app.help_menu_expanded { "Help ▴" } else { "Help ▾" };
 
             let notes_start_col = 0;
-            let settings_start_col = 10; // After "Notes ▾ "
+            let help_start_col = 10; // After "Notes ▾ "
 
             print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", notes_start_col + 1, title_bg, title_fg, notes_text);
-            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", settings_start_col + 1, title_bg, title_fg, settings_text);
+            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", help_start_col + 1, title_bg, title_fg, help_text);
+
+            // Current note indicator (after Help menu)
+            let note_indicator_col = 18;
+            if let Some(ref current_note) = app.current_note {
+                let dirty_marker = if app.dirty { "*" } else { "" };
+                let max_title_width = total_width.saturating_sub(40); // Leave space for branding on right
+                let title = if current_note.title.len() > max_title_width {
+                    format!("{}...", &current_note.title[..max_title_width.saturating_sub(3)])
+                } else {
+                    current_note.title.clone()
+                };
+                let indicator = format!(" │ {}{}", title, dirty_marker);
+                print!("\x1b[1;{}H{}{}{}\x1b[0m", note_indicator_col + 1, title_bg, title_fg, indicator);
+            }
 
             // Right side: Hamster + "Chonk-Note"
             let branding_text = "  Chonk-Note "; // Extra space at start to move text right
@@ -339,14 +381,6 @@ async fn run_app(app: &mut App) -> Result<()> {
             print!("\x1b[1;{}H", right_col + 1); // Position for hamster
             let _ = KittyTerminal::display_inline_png(HAMSTER_PNG, hamster_cols as u16, hamster_rows as u16);
             print!("{}{}\x1b[1m{}\x1b[0m", title_bg, title_fg, branding_text);
-
-            // Render dropdown menus if expanded
-            if app.notes_menu_expanded {
-                render_notes_menu(app, notes_start_col as u16, 2)?;
-            }
-            if app.settings_menu_expanded {
-                render_settings_menu(app, settings_start_col as u16, 2)?;
-            }
 
             // Sidebar widths
             let notes_list_width = if app.sidebar_expanded { layout::SIDEBAR_WIDTH_EXPANDED } else { layout::SIDEBAR_WIDTH_COLLAPSED };
@@ -371,24 +405,42 @@ async fn run_app(app: &mut App) -> Result<()> {
                 render_settings_panel(&app, panel_x, 1, settings_panel_width, editor_height)?;
             }
 
+            // Render dropdown menus AFTER everything else (they're overlays on top)
+            if app.notes_menu_expanded {
+                render_notes_menu(app, notes_start_col as u16, 2)?;
+            }
+            if app.help_menu_expanded {
+                render_help_menu(app, help_start_col as u16, 2)?;
+            }
+
             // Render status line at bottom
             render_status_line(&app, term_width, term_height)?;
 
             // Position terminal cursor at the actual cursor location
-            if let Some((screen_x, screen_y)) = cursor_screen_pos {
-                print!("\x1b[{};{}H", screen_y + 1, screen_x + 1); // Move to cursor position (1-based)
+            // Hide cursor when menus are open
+            if app.notes_menu_expanded || app.help_menu_expanded {
+                print!("\x1b[?25l");  // Hide cursor
+            } else {
+                if let Some((screen_x, screen_y)) = cursor_screen_pos {
+                    print!("\x1b[{};{}H", screen_y + 1, screen_x + 1); // Move to cursor position (1-based)
+                }
+                print!("\x1b[?25h");  // Show cursor
             }
 
-            // Make sure cursor is visible
-            print!("\x1b[?25h");  // Show cursor
-            print!("\x1b[?2026l");
+            // Skip synchronized updates entirely
+            // // END SYNCHRONIZED UPDATE - only if we started it
+            // if !bypass_sync {
+            //     print!("\x1b[?2026l");
+            // }
+
+            // Always flush immediately
             stdout.flush()?;
 
             app.needs_redraw = false;
         }
 
-        // Handle input
-        if KittyTerminal::poll_input()? {
+        // Handle input (but skip if we need immediate render)
+        if !app.force_immediate_render && KittyTerminal::poll_input()? {
             if let Some(input) = KittyTerminal::read_input()? {
                 match input {
                     kitty_native::InputEvent::Key(key) => {
@@ -401,6 +453,27 @@ async fn run_app(app: &mut App) -> Result<()> {
                     }
                     kitty_native::InputEvent::Mouse(mouse_event) => {
                         mouse::handle_mouse(app, mouse_event, &mut mouse_state).await?;
+                    }
+                    kitty_native::InputEvent::Paste(text) => {
+                        // Handle bracketed paste - insert all text at once
+                        if !text.is_empty() {
+                            // Delete selection if exists
+                            if app.text_buffer.selection.is_some() {
+                                let sel = app.text_buffer.selection.as_ref().unwrap();
+                                let (start_row, start_col, _, _) = sel.normalized();
+                                app.text_buffer.delete_selection();
+                                app.cursor_row = start_row;
+                                app.cursor_col = start_col;
+                            }
+
+                            // Insert the pasted text
+                            let (new_row, new_col) = app.text_buffer.insert_text(app.cursor_row, app.cursor_col, &text);
+                            app.cursor_row = new_row;
+                            app.cursor_col = new_col;
+                            app.mark_dirty();
+                            app.status_message = format!("Pasted {} chars", text.len());
+                            app.needs_redraw = true;
+                        }
                     }
                 }
             }
@@ -422,68 +495,47 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
 
     // Render visible lines with selection highlighting
     for screen_row in 0..height {
-        let grid_row = viewport_start_row + screen_row as usize;
+        let buffer_row = viewport_start_row + screen_row as usize;
 
         // Clear line
         print!("\x1b[{};{}H\x1b[K", y + screen_row + 1, x + 1);
 
-        // Render each character with selection highlighting
-        for screen_col in 0..width as usize {
-            let grid_col = viewport_start_col + screen_col;
-            let ch = app.grid.get(grid_row, grid_col);
+        // Get the line content
+        if let Some(line) = app.text_buffer.get_line(buffer_row) {
+            // Remove trailing newline if present
+            let line = line.trim_end_matches('\n');
+            let line_chars: Vec<char> = line.chars().collect();
 
-            // Check if this position is in the selection
-            let in_selection = if let Some(ref sel) = app.grid.selection {
-                sel.contains(grid_row, grid_col)
-            } else {
-                false
-            };
+            // Build output string to minimize print! calls
+            let mut output = String::with_capacity(width as usize * 20); // Preallocate for escape codes
 
-            // Render with appropriate color
-            if in_selection {
-                // For selected cells, always show background even for spaces
-                let display_ch = if ch == ' ' { ' ' } else { ch };
-                let sel_bg = rgb_bg(colors::SELECTION_BG.0, colors::SELECTION_BG.1, colors::SELECTION_BG.2);
-                let sel_fg = rgb_fg(colors::SELECTION_FG.0, colors::SELECTION_FG.1, colors::SELECTION_FG.2);
-                print!("{}{}{}\x1b[0m", sel_bg, sel_fg, display_ch);
-            } else {
-                print!("{}", ch);
-            }
-        }
-    }
+            // Render each character with selection highlighting
+            for screen_col in 0..width as usize {
+                let buffer_col = viewport_start_col + screen_col;
 
-    // Render grid lines if enabled
-    if app.show_grid_lines {
-        let grid_fg = rgb_fg(colors::GRID_LINE_FG.0, colors::GRID_LINE_FG.1, colors::GRID_LINE_FG.2);
+                if buffer_col < line_chars.len() {
+                    let ch = line_chars[buffer_col];
 
-        // Vertical lines every 8 characters
-        for col in (layout::GRID_VERTICAL_SPACING..width as usize).step_by(layout::GRID_VERTICAL_SPACING) {
-            for row in 0..height {
-                let grid_row = viewport_start_row + row as usize;
-                let grid_col = viewport_start_col + col;
-                let ch = app.grid.get(grid_row, grid_col);
+                    // Check if this position is in the selection
+                    let in_selection = if let Some(ref sel) = app.text_buffer.selection {
+                        sel.contains(buffer_row, buffer_col)
+                    } else {
+                        false
+                    };
 
-                // Only draw grid line if cell is empty
-                if ch == ' ' {
-                    print!("\x1b[{};{}H{}│\x1b[0m",
-                           y + row as u16 + 1, x + col as u16 + 1, grid_fg);
+                    // Add character with appropriate color
+                    if in_selection {
+                        let sel_bg = rgb_bg(colors::SELECTION_BG.0, colors::SELECTION_BG.1, colors::SELECTION_BG.2);
+                        let sel_fg = rgb_fg(colors::SELECTION_FG.0, colors::SELECTION_FG.1, colors::SELECTION_FG.2);
+                        output.push_str(&format!("{}{}{}\x1b[0m", sel_bg, sel_fg, ch));
+                    } else {
+                        output.push(ch);
+                    }
                 }
             }
-        }
 
-        // Horizontal lines every 4 rows
-        for row in (layout::GRID_HORIZONTAL_SPACING..height as usize).step_by(layout::GRID_HORIZONTAL_SPACING) {
-            for col in 0..width as usize {
-                let grid_row = viewport_start_row + row;
-                let grid_col = viewport_start_col + col;
-                let ch = app.grid.get(grid_row, grid_col);
-
-                // Only draw grid line if cell is empty
-                if ch == ' ' {
-                    print!("\x1b[{};{}H{}─\x1b[0m",
-                           y + row as u16 + 1, x + col as u16 + 1, grid_fg);
-                }
-            }
+            // Print entire line at once
+            print!("{}", output);
         }
     }
 
@@ -584,66 +636,90 @@ fn render_notes_list(app: &App, x: u16, y: u16, width: u16, height: u16) -> Resu
 fn render_notes_menu(app: &App, x: u16, y: u16) -> Result<()> {
     let menu_bg = rgb_bg(250, 250, 250); // Light gray
     let menu_fg = rgb_fg(0, 0, 0); // Black text
+    let selected_bg = rgb_bg(200, 200, 255); // Light blue for selected
+
+    let menu_width = 45;
+    let max_notes = 15; // Max notes to show in dropdown
+
+    // Header
+    print!("\x1b[{};{}H{}{}{:<width$}\x1b[0m",
+        y, x + 1, menu_bg, menu_fg,
+        "─────────────────────────────────────────────",
+        width = menu_width);
+
+    let row_offset = 1;
+
+    // Show notes list
+    if app.notes_list.is_empty() {
+        let empty_msg = "  No notes - Press Ctrl+N to create";
+        print!("\x1b[{};{}H{}{}{:<width$}\x1b[0m",
+            y + row_offset, x + 1, menu_bg, menu_fg, empty_msg, width = menu_width);
+    } else {
+        let notes_to_show = app.notes_list.len().min(max_notes);
+        for i in 0..notes_to_show {
+            let note = &app.notes_list[i];
+            let is_current = i == app.selected_note_index;
+            let bg = if is_current { &selected_bg } else { &menu_bg };
+
+            // Show editing buffer if this note is being renamed
+            let title = if is_current && app.editing_title {
+                format!("{}_", &app.title_buffer) // Show cursor with underscore
+            } else if note.title.is_empty() {
+                "Untitled".to_string()
+            } else {
+                note.title.clone()
+            };
+
+            let prefix = if is_current { "▸ " } else { "  " };
+            let display = format!("{}{}", prefix, title);
+            let truncated = if display.len() > menu_width - 2 {
+                format!("{}…", &display[..menu_width - 3])
+            } else {
+                display
+            };
+
+            print!("\x1b[{};{}H{}{}{:<width$}\x1b[0m",
+                y + row_offset + i as u16, x + 1, bg, menu_fg, truncated, width = menu_width);
+        }
+
+        if app.notes_list.len() > max_notes {
+            print!("\x1b[{};{}H{}{}{:<width$}\x1b[0m",
+                y + row_offset + max_notes as u16, x + 1, menu_bg, menu_fg,
+                format!("  ... {} more notes", app.notes_list.len() - max_notes),
+                width = menu_width);
+        }
+    }
+
+    Ok(())
+}
+
+fn render_help_menu(_app: &App, x: u16, y: u16) -> Result<()> {
+    let menu_bg = rgb_bg(250, 250, 250); // Light gray
+    let menu_fg = rgb_fg(0, 0, 0); // Black text
 
     let menu_width = 45;
     let menu_items = vec![
         "─────────────────────────────────────────────".to_string(),
-        "Manage Notes:".to_string(),
+        "Keyboard Shortcuts:".to_string(),
+        "─────────────────────────────────────────────".to_string(),
         "  Ctrl+N  - New note".to_string(),
         "  Ctrl+D  - Delete note (press twice)".to_string(),
         "  Ctrl+S  - Save note".to_string(),
+        "  Ctrl+F  - Search in note".to_string(),
         "  Ctrl+↑/↓ - Navigate notes".to_string(),
-        "  Double-click - Rename note".to_string(),
+        "  Ctrl+Z/Y - Undo/Redo".to_string(),
+        "  Ctrl+C/X/V - Copy/Cut/Paste".to_string(),
+        "  Ctrl+A  - Select all".to_string(),
+        "  Ctrl+Q  - Quit".to_string(),
+        "─────────────────────────────────────────────".to_string(),
+        "  Double-click note to rename".to_string(),
+        "  Drag to select text".to_string(),
         "─────────────────────────────────────────────".to_string(),
     ];
 
     for (i, item) in menu_items.iter().enumerate() {
         let display_text = format!("{:<width$}", item, width = menu_width);
         print!("\x1b[{};{}H{}{}{}\x1b[0m", y + i as u16, x + 1, menu_bg, menu_fg, display_text);
-    }
-
-    Ok(())
-}
-
-fn render_settings_menu(app: &App, x: u16, y: u16) -> Result<()> {
-    // Menu background color
-    let menu_bg = rgb_bg(250, 250, 250); // Light gray
-    let menu_fg = rgb_fg(0, 0, 0); // Black text
-    let button_bg = if app.soft_wrap_paste {
-        rgb_bg(76, 175, 80) // Green when ON
-    } else {
-        rgb_bg(200, 200, 200) // Gray when OFF
-    };
-    let button_fg = rgb_fg(255, 255, 255); // White text
-
-    let menu_width = 45;
-    let button_text = if app.soft_wrap_paste { " ON " } else { " OFF " };
-    let soft_wrap_line = format!("Soft-Wrapped Paste: {}", button_text);
-    let menu_items = vec![
-        "─────────────────────────────────────────────".to_string(),
-        soft_wrap_line,
-        "─────────────────────────────────────────────".to_string(),
-    ];
-
-    for (i, item) in menu_items.iter().enumerate() {
-        if i == 1 {
-            // Render toggle button for soft-wrap line
-            let label = "Soft-Wrapped Paste: ";
-            print!("\x1b[{};{}H{}{}{}", y + i as u16, x + 1, menu_bg, menu_fg, label);
-            print!("{}{}{}\x1b[0m", button_bg, button_fg, button_text);
-            // Fill rest of line with menu background
-            let remaining = menu_width - label.len() - button_text.len();
-            print!("{}{}{}\x1b[0m", menu_bg, menu_fg, " ".repeat(remaining));
-        } else {
-            let display_text = format!("{:<width$}", item, width = menu_width);
-            print!("\x1b[{};{}H{}{}{}\x1b[0m",
-                y + i as u16,
-                x + 1,
-                menu_bg,
-                menu_fg,
-                display_text
-            );
-        }
     }
 
     Ok(())
@@ -680,24 +756,14 @@ fn render_settings_panel(app: &App, x: u16, y: u16, width: u16, height: u16) -> 
     print!("\x1b[{};{}H{}{}{}\x1b[0m",
         y + toggle_row_start + 1, x + 2, soft_wrap_bg, &toggle_fg, soft_wrap_state);
 
-    // 2. Grid Lines (placeholder for future)
-    let grid_lines_label = "Show Grid Lines";
-    let grid_lines_state = if app.show_grid_lines { " ON " } else { " OFF" };
-    let grid_lines_bg = if app.show_grid_lines { &on_bg } else { &off_bg };
-
-    print!("\x1b[{};{}H{}{}{}\x1b[0m",
-        y + toggle_row_start + 3, x + 2, panel_bg, panel_fg, grid_lines_label);
-    print!("\x1b[{};{}H{}{}{}\x1b[0m",
-        y + toggle_row_start + 4, x + 2, grid_lines_bg, &toggle_fg, grid_lines_state);
-
-    // 3. Auto-Save (placeholder - always on for now)
+    // 2. Auto-Save (always on)
     let autosave_label = "Auto-Save";
     let autosave_state = " ON ";
 
     print!("\x1b[{};{}H{}{}{}\x1b[0m",
-        y + toggle_row_start + 6, x + 2, panel_bg, panel_fg, autosave_label);
+        y + toggle_row_start + 3, x + 2, panel_bg, panel_fg, autosave_label);
     print!("\x1b[{};{}H{}{}{}\x1b[0m",
-        y + toggle_row_start + 7, x + 2, &on_bg, &toggle_fg, autosave_state);
+        y + toggle_row_start + 4, x + 2, &on_bg, &toggle_fg, autosave_state);
 
     Ok(())
 }

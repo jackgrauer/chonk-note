@@ -49,6 +49,7 @@ pub struct MouseEvent {
 pub enum InputEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    Paste(String),  // Bracketed paste text
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +92,12 @@ impl KittyTerminal {
         print!("\x1b[H");       // Move to top-left
         print!("\x1b[?25l");    // Hide cursor
 
+        // Enable bracketed paste mode - wraps pasted text in escape sequences
+        print!("\x1b[?2004h");  // Enable bracketed paste mode
+
+        // Enable Kitty enhanced keyboard protocol (passes through ALL keys including Cmd+C, Cmd+X, etc.)
+        print!("\x1b[>1u");     // Enable kitty keyboard protocol with disambiguation
+
         // Enable mouse tracking
         print!("\x1b[?1000h");  // Enable mouse tracking (this should grab the mouse)
         print!("\x1b[?1002h");  // Enable mouse drag tracking
@@ -106,6 +113,8 @@ impl KittyTerminal {
         print!("\x1b[?1006l");  // Disable SGR mouse mode
         print!("\x1b[?1002l");  // Disable mouse drag tracking
         print!("\x1b[?1000l");  // Disable mouse tracking
+        print!("\x1b[<u");      // Disable kitty keyboard protocol
+        print!("\x1b[?2004l");  // Disable bracketed paste mode
         print!("\x1b[?25h");    // Show cursor
         print!("\x1b[2J");      // Clear screen
         print!("\x1b[H");       // Move to top-left
@@ -275,6 +284,19 @@ impl KittyTerminal {
             return Ok(None);
         }
 
+        // Debug log raw input bytes
+        let input_bytes = &buffer[..bytes_read];
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/chonk-input-debug.log")
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "=== RAW INPUT ({} bytes) ===", bytes_read)?;
+                writeln!(f, "Hex: {:02X?}", input_bytes)?;
+                writeln!(f, "ASCII: {:?}", String::from_utf8_lossy(input_bytes))?;
+                Ok(())
+            });
 
         // Add new bytes to buffer and parse
         let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
@@ -282,7 +304,19 @@ impl KittyTerminal {
 
         // Parse with remainder handling
         let bytes = buffer_guard.clone();
-        Self::parse_input_with_remainder(&bytes, &mut buffer_guard)
+        let result = Self::parse_input_with_remainder(&bytes, &mut buffer_guard);
+
+        // Debug log parsed event
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .open("/tmp/chonk-input-debug.log")
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "Parsed: {:?}\n", result)?;
+                Ok(())
+            });
+
+        result
     }
 
     // Parse input with remainder handling for multiple events
@@ -308,6 +342,27 @@ impl KittyTerminal {
 
     fn parse_single_event(bytes: &[u8]) -> Result<(Option<InputEvent>, usize), io::Error> {
         if bytes.is_empty() {
+            return Ok((None, 0));
+        }
+
+        // Check for bracketed paste start: ESC [ 2 0 0 ~
+        if bytes.len() >= 6 && bytes[0] == 27 && bytes[1] == b'[' &&
+           bytes[2] == b'2' && bytes[3] == b'0' && bytes[4] == b'0' && bytes[5] == b'~' {
+
+            // Look for the end marker: ESC [ 2 0 1 ~
+            let end_marker = b"\x1b[201~";
+            if let Some(end_pos) = bytes[6..].windows(end_marker.len())
+                .position(|window| window == end_marker) {
+
+                let text_start = 6;
+                let text_end = 6 + end_pos;
+                let pasted_text = String::from_utf8_lossy(&bytes[text_start..text_end]).to_string();
+                let consumed = text_end + end_marker.len();
+
+                return Ok((Some(InputEvent::Paste(pasted_text)), consumed));
+            }
+
+            // Incomplete paste, wait for more data
             return Ok((None, 0));
         }
 
@@ -457,7 +512,41 @@ impl KittyTerminal {
 
             // IMPORTANT: Consume CSI sequences that we don't recognize
             // CSI sequences: ESC [ ... (letter or ~)
+            // Also handles Kitty enhanced keyboard protocol: ESC [ key_code ; modifiers u
             bytes if bytes.len() >= 2 && bytes[0] == 27 && bytes[1] == b'[' => {
+                // Try to parse as Kitty enhanced keyboard protocol first (ESC[key_code;modifiers u)
+                if let Some(u_pos) = bytes[2..].iter().position(|&b| b == b'u') {
+                    let end_pos = 2 + u_pos + 1;
+                    let seq = &bytes[2..2 + u_pos]; // Everything between '[' and 'u'
+
+                    // Parse "key_code;modifiers"
+                    if let Some(semicolon_pos) = seq.iter().position(|&b| b == b';') {
+                        let key_str = std::str::from_utf8(&seq[..semicolon_pos]).ok();
+                        let mod_str = std::str::from_utf8(&seq[semicolon_pos + 1..]).ok();
+
+                        if let (Some(key_s), Some(mod_s)) = (key_str, mod_str) {
+                            if let (Ok(key_code), Ok(mod_bits)) = (key_s.parse::<u32>(), mod_s.parse::<u8>()) {
+                                // Decode modifiers
+                                let mods = KeyModifiers {
+                                    shift: (mod_bits & 1) != 0,
+                                    alt: (mod_bits & 2) != 0,
+                                    ctrl: (mod_bits & 4) != 0,
+                                    cmd: (mod_bits & 8) != 0,
+                                };
+
+                                // Convert key_code to char
+                                if let Some(ch) = char::from_u32(key_code) {
+                                    return Ok((Some(InputEvent::Key(KeyEvent {
+                                        code: KeyCode::Char(ch),
+                                        modifiers: mods,
+                                    })), end_pos));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Generic CSI sequence handling (if not Kitty protocol)
                 // Find the end of the CSI sequence
                 let mut consumed = 2;
                 for i in 2..bytes.len() {
