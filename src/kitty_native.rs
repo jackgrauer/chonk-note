@@ -251,72 +251,100 @@ impl KittyTerminal {
             }
         }
 
-        let mut buffer = [0u8; 64];  // Increased for SGR mouse sequences
+        let mut buffer = [0u8; 4096];  // Large buffer for big pastes
         let mut stdin = io::stdin();
 
-        // Check if input is available
-        unsafe {
-            let mut fds: libc::fd_set = std::mem::zeroed();
-            libc::FD_ZERO(&mut fds);
-            libc::FD_SET(libc::STDIN_FILENO, &mut fds);
-
-            let mut timeout = libc::timeval {
-                tv_sec: 0,
-                tv_usec: 16000, // 16ms timeout for 60 FPS
+        // Keep reading until we get a complete event or no more input
+        loop {
+            // Check if we're in the middle of a bracketed paste
+            let in_paste = {
+                let buffer_guard = INPUT_BUFFER.lock().unwrap();
+                buffer_guard.len() >= 6 &&
+                buffer_guard[0] == 27 &&
+                buffer_guard[1] == b'[' &&
+                buffer_guard[2] == b'2' &&
+                buffer_guard[3] == b'0' &&
+                buffer_guard[4] == b'0' &&
+                buffer_guard[5] == b'~'
             };
 
-            let result = libc::select(
-                libc::STDIN_FILENO + 1,
-                &mut fds,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut timeout,
-            );
+            // Check if input is available
+            unsafe {
+                let mut fds: libc::fd_set = std::mem::zeroed();
+                libc::FD_ZERO(&mut fds);
+                libc::FD_SET(libc::STDIN_FILENO, &mut fds);
 
-            if result <= 0 {
-                return Ok(None); // No input available or timeout
+                let mut timeout = libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: if in_paste { 100000 } else { 1000 }, // 100ms if pasting, 1ms otherwise
+                };
+
+                let result = libc::select(
+                    libc::STDIN_FILENO + 1,
+                    &mut fds,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut timeout,
+                );
+
+                if result <= 0 {
+                    // No more input available - try parsing what we have
+                    let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
+                    if !buffer_guard.is_empty() {
+                        let bytes = buffer_guard.clone();
+                        if let Some(event) = Self::parse_input_with_remainder(&bytes, &mut buffer_guard)? {
+                            return Ok(Some(event));
+                        }
+                    }
+                    return Ok(None);
+                }
             }
+
+            // Read input
+            let bytes_read = stdin.read(&mut buffer)?;
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            // Debug log raw input bytes
+            let input_bytes = &buffer[..bytes_read];
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/chonk-input-debug.log")
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "=== RAW INPUT ({} bytes) ===", bytes_read)?;
+                    writeln!(f, "Hex: {:02X?}", input_bytes)?;
+                    writeln!(f, "ASCII: {:?}", String::from_utf8_lossy(input_bytes))?;
+                    Ok(())
+                });
+
+            // Add new bytes to buffer and parse
+            let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
+            buffer_guard.extend_from_slice(&buffer[..bytes_read]);
+
+            // Try to parse with remainder handling
+            let bytes = buffer_guard.clone();
+            let result = Self::parse_input_with_remainder(&bytes, &mut buffer_guard);
+
+            // Debug log parsed event
+            let _ = std::fs::OpenOptions::new()
+                .append(true)
+                .open("/tmp/chonk-input-debug.log")
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "Parsed: {:?}\n", result)?;
+                    Ok(())
+                });
+
+            // If we got a complete event, return it
+            if let Ok(Some(event)) = result {
+                return Ok(Some(event));
+            }
+
+            // Otherwise, continue reading (we have incomplete data)
         }
-
-        // Read input
-        let bytes_read = stdin.read(&mut buffer)?;
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        // Debug log raw input bytes
-        let input_bytes = &buffer[..bytes_read];
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/chonk-input-debug.log")
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "=== RAW INPUT ({} bytes) ===", bytes_read)?;
-                writeln!(f, "Hex: {:02X?}", input_bytes)?;
-                writeln!(f, "ASCII: {:?}", String::from_utf8_lossy(input_bytes))?;
-                Ok(())
-            });
-
-        // Add new bytes to buffer and parse
-        let mut buffer_guard = INPUT_BUFFER.lock().unwrap();
-        buffer_guard.extend_from_slice(&buffer[..bytes_read]);
-
-        // Parse with remainder handling
-        let bytes = buffer_guard.clone();
-        let result = Self::parse_input_with_remainder(&bytes, &mut buffer_guard);
-
-        // Debug log parsed event
-        let _ = std::fs::OpenOptions::new()
-            .append(true)
-            .open("/tmp/chonk-input-debug.log")
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "Parsed: {:?}\n", result)?;
-                Ok(())
-            });
-
-        result
     }
 
     // Parse input with remainder handling for multiple events

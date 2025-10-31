@@ -139,28 +139,47 @@ impl App {
     }
 
     pub fn update_viewport(&mut self, viewport_width: u16, viewport_height: u16) {
-        // Normal mode - logical lines
+        // With text wrapping, we don't need horizontal scrolling
+        self.viewport_col = 0;
+
+        // Calculate how many screen rows the cursor is at (accounting for wrapping)
+        let wrap_width = viewport_width as usize;
+        let mut screen_row = 0;
+
+        for row in 0..=self.cursor_row {
+            if row >= self.text_buffer.line_count() {
+                break;
+            }
+
+            let line_len = self.text_buffer.get_line_length(row);
+
+            if row < self.cursor_row {
+                // Count wrapped lines for rows before cursor
+                let wrapped_lines = if line_len == 0 {
+                    1
+                } else {
+                    (line_len + wrap_width - 1) / wrap_width
+                };
+                screen_row += wrapped_lines;
+            } else {
+                // For cursor row, count up to cursor position
+                let cursor_wrapped_line = self.cursor_col / wrap_width;
+                screen_row += cursor_wrapped_line;
+            }
+        }
+
+        // Scroll to keep cursor visible with margin
         let margin_rows = (viewport_height / 3) as usize;
-        let margin_cols = 0; // No margin for columns - scroll only at edge
 
-        // Scroll down if cursor is too far down
-        if self.cursor_row >= self.viewport_row + viewport_height as usize - margin_rows {
-            self.viewport_row = self.cursor_row.saturating_sub(viewport_height as usize - margin_rows - 1);
-        }
-
-        // Scroll up if cursor is too far up
-        if self.cursor_row < self.viewport_row + margin_rows {
-            self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
-        }
-
-        // Scroll right if cursor is too far right
-        if self.cursor_col >= self.viewport_col + viewport_width as usize - margin_cols {
-            self.viewport_col = self.cursor_col.saturating_sub(viewport_width as usize - margin_cols - 1);
-        }
-
-        // Scroll left if cursor is too far left
-        if self.cursor_col < self.viewport_col + margin_cols {
-            self.viewport_col = self.cursor_col.saturating_sub(margin_cols);
+        if screen_row >= viewport_height as usize - margin_rows {
+            // Cursor too far down - scroll down
+            // Simple approach: if cursor goes off screen, move viewport down by one logical line
+            if self.viewport_row < self.cursor_row {
+                self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
+            }
+        } else if screen_row < margin_rows && self.viewport_row > 0 {
+            // Cursor too far up - scroll up
+            self.viewport_row = self.viewport_row.saturating_sub(1);
         }
     }
 
@@ -457,6 +476,9 @@ async fn run_app(app: &mut App) -> Result<()> {
                     kitty_native::InputEvent::Paste(text) => {
                         // Handle bracketed paste - insert all text at once
                         if !text.is_empty() {
+                            // Save undo state before modification
+                            app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
                             // Delete selection if exists
                             if app.text_buffer.selection.is_some() {
                                 let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -491,14 +513,16 @@ fn render_notes_pane(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> 
 
 fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u16) -> Result<Option<(u16, u16)>> {
     let viewport_start_row = app.viewport_row;
-    let viewport_start_col = app.viewport_col;
+    let wrap_width = width as usize;
 
-    // Render visible lines with selection highlighting
-    for screen_row in 0..height {
-        let buffer_row = viewport_start_row + screen_row as usize;
+    let mut screen_row = 0;
+    let mut cursor_screen_pos = None;
 
-        // Clear line
-        print!("\x1b[{};{}H\x1b[K", y + screen_row + 1, x + 1);
+    // Render lines with wrapping
+    for buffer_row in viewport_start_row.. {
+        if screen_row >= height as usize || buffer_row >= app.text_buffer.line_count() {
+            break;
+        }
 
         // Get the line content
         if let Some(line) = app.text_buffer.get_line(buffer_row) {
@@ -506,14 +530,32 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
             let line = line.trim_end_matches('\n');
             let line_chars: Vec<char> = line.chars().collect();
 
-            // Build output string to minimize print! calls
-            let mut output = String::with_capacity(width as usize * 20); // Preallocate for escape codes
+            // Check if this is the title line (first line)
+            let is_title_line = buffer_row == 0;
 
-            // Render each character with selection highlighting
-            for screen_col in 0..width as usize {
-                let buffer_col = viewport_start_col + screen_col;
+            // Wrap the line into chunks that fit the width
+            let mut col = 0;
+            while col < line_chars.len() || (col == 0 && line_chars.is_empty()) {
+                if screen_row >= height as usize {
+                    break;
+                }
 
-                if buffer_col < line_chars.len() {
+                // Clear line
+                print!("\x1b[{};{}H\x1b[K", y + screen_row as u16 + 1, x + 1);
+
+                // Build output string
+                let mut output = String::with_capacity(wrap_width * 20);
+
+                // If title line, set background and foreground
+                if is_title_line {
+                    let title_bg = rgb_bg(colors::TITLE_LINE_BG.0, colors::TITLE_LINE_BG.1, colors::TITLE_LINE_BG.2);
+                    let title_fg = rgb_fg(colors::TITLE_LINE_FG.0, colors::TITLE_LINE_FG.1, colors::TITLE_LINE_FG.2);
+                    output.push_str(&format!("{}{}", title_bg, title_fg));
+                }
+
+                // Render characters for this wrapped segment
+                let end_col = (col + wrap_width).min(line_chars.len());
+                for buffer_col in col..end_col {
                     let ch = line_chars[buffer_col];
 
                     // Check if this position is in the selection
@@ -528,26 +570,63 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
                         let sel_bg = rgb_bg(colors::SELECTION_BG.0, colors::SELECTION_BG.1, colors::SELECTION_BG.2);
                         let sel_fg = rgb_fg(colors::SELECTION_FG.0, colors::SELECTION_FG.1, colors::SELECTION_FG.2);
                         output.push_str(&format!("{}{}{}\x1b[0m", sel_bg, sel_fg, ch));
+                        // Restore title colors if on title line
+                        if is_title_line {
+                            let title_bg = rgb_bg(colors::TITLE_LINE_BG.0, colors::TITLE_LINE_BG.1, colors::TITLE_LINE_BG.2);
+                            let title_fg = rgb_fg(colors::TITLE_LINE_FG.0, colors::TITLE_LINE_FG.1, colors::TITLE_LINE_FG.2);
+                            output.push_str(&format!("{}{}", title_bg, title_fg));
+                        }
                     } else {
                         output.push(ch);
                     }
+
+                    // Check if cursor is at this position
+                    if buffer_row == app.cursor_row && buffer_col == app.cursor_col {
+                        let screen_col = buffer_col - col;
+                        cursor_screen_pos = Some((x + screen_col as u16, y + screen_row as u16));
+                    }
+                }
+
+                // Fill rest of title line with spaces to show background
+                if is_title_line && end_col - col < wrap_width {
+                    for _ in 0..(wrap_width - (end_col - col)) {
+                        output.push(' ');
+                    }
+                }
+
+                // Reset colors at end of line
+                if is_title_line {
+                    output.push_str("\x1b[0m");
+                }
+
+                // Print entire wrapped segment
+                print!("{}", output);
+
+                // Check if cursor is at end of this line
+                if buffer_row == app.cursor_row && app.cursor_col == line_chars.len() && col == 0 && line_chars.is_empty() {
+                    cursor_screen_pos = Some((x, y + screen_row as u16));
+                } else if buffer_row == app.cursor_row && app.cursor_col >= end_col && app.cursor_col < end_col + wrap_width {
+                    let screen_col = app.cursor_col - col;
+                    if screen_col < wrap_width {
+                        cursor_screen_pos = Some((x + screen_col as u16, y + screen_row as u16));
+                    }
+                }
+
+                col = end_col;
+                screen_row += 1;
+
+                // If this was an empty line, still increment screen_row and break
+                if line_chars.is_empty() {
+                    break;
                 }
             }
-
-            // Print entire line at once
-            print!("{}", output);
         }
     }
 
-    // Calculate cursor screen position
-    let cursor_screen_row = app.cursor_row.saturating_sub(viewport_start_row);
-    let cursor_screen_col = app.cursor_col.saturating_sub(viewport_start_col);
-
-    let cursor_screen_pos = if cursor_screen_row < height as usize && cursor_screen_col < width as usize {
-        Some((x + cursor_screen_col as u16, y + cursor_screen_row as u16))
-    } else {
-        None
-    };
+    // Clear remaining screen rows
+    for row in screen_row..height as usize {
+        print!("\x1b[{};{}H\x1b[K", y + row as u16 + 1, x + 1);
+    }
 
     Ok(cursor_screen_pos)
 }

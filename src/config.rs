@@ -44,6 +44,10 @@ pub mod colors {
     /// Selected item colors
     pub const SELECTED_ITEM_BG: (u8, u8, u8) = (255, 193, 7); // Amber/Gold
     pub const SELECTED_ITEM_FG: (u8, u8, u8) = (0, 0, 0); // Black
+
+    /// Title line colors (first line of note)
+    pub const TITLE_LINE_BG: (u8, u8, u8) = (245, 245, 250); // Very light blue-gray
+    pub const TITLE_LINE_FG: (u8, u8, u8) = (0, 0, 0); // Black text
 }
 
 /// Helper function to format RGB color for terminal escape code

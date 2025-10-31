@@ -178,6 +178,9 @@ async fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<bool> {
     // Regular character input and navigation
     match key.code {
         KeyCode::Char(c) => {
+            // Save undo state before modification
+            app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
             // If there's a selection, delete it first
             if app.text_buffer.selection.is_some() {
                 let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -193,6 +196,9 @@ async fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
         KeyCode::Enter => {
+            // Save undo state before modification
+            app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
             // If there's a selection, delete it first
             if app.text_buffer.selection.is_some() {
                 let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -209,6 +215,9 @@ async fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
         KeyCode::Backspace => {
+            // Save undo state before modification
+            app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
             // If there's a selection, delete it instead of backspacing
             if app.text_buffer.selection.is_some() {
                 let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -226,6 +235,9 @@ async fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Delete => {
+            // Save undo state before modification
+            app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
             // If there's a selection, delete it instead of deleting single char
             if app.text_buffer.selection.is_some() {
                 let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -393,6 +405,28 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
 
+        // Undo
+        KeyCode::Char('z') | KeyCode::Char('Z') => {
+            if app.undo_stack.undo(&mut app.text_buffer, &mut app.cursor_row, &mut app.cursor_col) {
+                app.mark_dirty();
+                app.status_message = "Undo".to_string();
+            } else {
+                app.status_message = "Nothing to undo".to_string();
+            }
+            app.needs_redraw = true;
+        }
+
+        // Redo
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if app.undo_stack.redo(&mut app.text_buffer, &mut app.cursor_row, &mut app.cursor_col) {
+                app.mark_dirty();
+                app.status_message = "Redo".to_string();
+            } else {
+                app.status_message = "Nothing to redo".to_string();
+            }
+            app.needs_redraw = true;
+        }
+
         // Navigate notes
         KeyCode::Up => {
             if app.selected_note_index > 0 {
@@ -437,6 +471,9 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
         // Cut
         KeyCode::Char('x') | KeyCode::Char('X') => {
             if let Some(text) = app.text_buffer.get_selected_text() {
+                // Save undo state before modification
+                app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(text);
                     app.text_buffer.delete_selection();
@@ -461,6 +498,9 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
                                 app.status_message = "Clipboard is empty".to_string();
                                 app.needs_redraw = true;
                             } else {
+                                // Save undo state before modification
+                                app.undo_stack.push_state(&app.text_buffer, app.cursor_row, app.cursor_col);
+
                                 // If there's a selection, delete it first
                                 if app.text_buffer.selection.is_some() {
                                     let sel = app.text_buffer.selection.as_ref().unwrap();
@@ -516,22 +556,15 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.needs_redraw = true;
         }
 
-        // Undo
-        KeyCode::Char('z') | KeyCode::Char('Z') => {
-            if app.undo_stack.undo(&mut app.text_buffer) {
-                app.status_message = "Undone".to_string();
-                app.mark_dirty();
-                app.needs_redraw = true;
-            }
-        }
-
-        // Redo
+        // Redo (Cmd+Y for compatibility)
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if app.undo_stack.redo(&mut app.text_buffer) {
-                app.status_message = "Redone".to_string();
+            if app.undo_stack.redo(&mut app.text_buffer, &mut app.cursor_row, &mut app.cursor_col) {
                 app.mark_dirty();
-                app.needs_redraw = true;
+                app.status_message = "Redo".to_string();
+            } else {
+                app.status_message = "Nothing to redo".to_string();
             }
+            app.needs_redraw = true;
         }
 
         _ => {}
