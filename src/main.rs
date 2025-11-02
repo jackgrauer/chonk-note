@@ -233,17 +233,16 @@ impl App {
             }
         }
 
-        // Scroll to keep cursor visible with margin
-        let margin_rows = (viewport_height / 3) as usize;
+        // Simple natural scrolling - only scroll when cursor goes off screen
+        let max_visible_row = viewport_height.saturating_sub(1) as usize;
 
-        if screen_row >= viewport_height as usize - margin_rows {
-            // Cursor too far down - scroll down
-            if self.viewport_row < self.cursor_row {
-                self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
-            }
-        } else if screen_row < margin_rows && self.viewport_row > 0 {
-            // Cursor too far up - scroll up
-            self.viewport_row = self.viewport_row.saturating_sub(1);
+        if screen_row >= max_visible_row {
+            // Cursor below visible area - scroll down just enough to show it
+            let lines_over = screen_row - max_visible_row + 1;
+            self.viewport_row += lines_over;
+        } else if self.viewport_row > 0 && screen_row == 0 && self.cursor_row < self.viewport_row {
+            // Cursor above visible area - scroll up to show it
+            self.viewport_row = self.cursor_row;
         }
     }
 

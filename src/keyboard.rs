@@ -515,18 +515,9 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
                                 app.cursor_row = new_row;
                                 app.cursor_col = new_col;
 
-                                // Force viewport update IMMEDIATELY to ensure new content is visible
-                                app.viewport_row = 0;
-                                app.viewport_col = 0;
-
                                 app.mark_dirty();
                                 app.status_message = format!("Pasted {} chars", text.len());
-
-                                // Force immediate render without buffering
                                 app.needs_redraw = true;
-                                app.force_immediate_render = true;
-
-                                // Flush stdout immediately
                                 let _ = std::io::Write::flush(&mut std::io::stdout());
                             }
                         }
