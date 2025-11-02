@@ -138,6 +138,39 @@ impl App {
         }
     }
 
+    /// Calculate word-aware wrap point for a line segment
+    /// Returns the end column for wrapping, ensuring we break at word boundaries
+    fn calculate_wrap_point(line_chars: &[char], start_col: usize, wrap_width: usize) -> usize {
+        if start_col >= line_chars.len() {
+            return line_chars.len();
+        }
+
+        let remaining = line_chars.len() - start_col;
+        if remaining <= wrap_width {
+            // Entire remaining text fits
+            return line_chars.len();
+        }
+
+        // Need to wrap - find last whitespace before wrap_width
+        let max_end = start_col + wrap_width;
+        let mut wrap_point = max_end;
+
+        // Look backwards from max_end for whitespace
+        for i in (start_col..max_end).rev() {
+            if i < line_chars.len() && line_chars[i].is_whitespace() {
+                wrap_point = i + 1; // Break after the space
+                break;
+            }
+        }
+
+        // If no space found (long word), hard break at width
+        if wrap_point == max_end {
+            wrap_point = max_end;
+        }
+
+        wrap_point.min(line_chars.len())
+    }
+
     /// Calculate how many screen rows a line will take with word wrapping
     fn calculate_wrapped_line_count(&self, row: usize, wrap_width: usize) -> usize {
         if let Some(line) = self.text_buffer.get_line(row) {
@@ -151,27 +184,7 @@ impl App {
             let mut wrapped_lines = 0;
 
             while col < line_chars.len() {
-                // Simulate word-aware wrapping
-                let end_col = if col + wrap_width >= line_chars.len() {
-                    line_chars.len()
-                } else {
-                    let max_end = col + wrap_width;
-                    let mut wrap_point = max_end;
-
-                    for i in (col..max_end).rev() {
-                        if line_chars[i].is_whitespace() {
-                            wrap_point = i + 1;
-                            break;
-                        }
-                    }
-
-                    if wrap_point == max_end && wrap_point > col {
-                        wrap_point = max_end;
-                    }
-
-                    wrap_point.min(line_chars.len())
-                };
-
+                let end_col = Self::calculate_wrap_point(&line_chars, col, wrap_width);
                 wrapped_lines += 1;
                 col = end_col;
             }
@@ -207,25 +220,7 @@ impl App {
                     let mut col = 0;
 
                     while col < line_chars.len() && col <= self.cursor_col {
-                        let end_col = if col + wrap_width >= line_chars.len() {
-                            line_chars.len()
-                        } else {
-                            let max_end = col + wrap_width;
-                            let mut wrap_point = max_end;
-
-                            for i in (col..max_end).rev() {
-                                if line_chars[i].is_whitespace() {
-                                    wrap_point = i + 1;
-                                    break;
-                                }
-                            }
-
-                            if wrap_point == max_end && wrap_point > col {
-                                wrap_point = max_end;
-                            }
-
-                            wrap_point.min(line_chars.len())
-                        };
+                        let end_col = Self::calculate_wrap_point(&line_chars, col, wrap_width);
 
                         if self.cursor_col >= col && self.cursor_col <= end_col {
                             break;
@@ -624,30 +619,9 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
                     output.push_str(&format!("{}{}", title_bg, title_fg));
                 }
 
-                // Find word-aware wrap point
-                let end_col = if col + wrap_width >= line_chars.len() {
-                    // Fits entirely, use rest of line
-                    line_chars.len()
-                } else {
-                    // Need to wrap - find last space before wrap_width
-                    let max_end = col + wrap_width;
-                    let mut wrap_point = max_end;
+                // Calculate word-aware wrap point using centralized logic
+                let end_col = App::calculate_wrap_point(&line_chars, col, wrap_width);
 
-                    // Look backwards from max_end for a space
-                    for i in (col..max_end).rev() {
-                        if line_chars[i].is_whitespace() {
-                            wrap_point = i + 1; // Break after the space
-                            break;
-                        }
-                    }
-
-                    // If no space found (single long word), hard break at width
-                    if wrap_point == max_end && wrap_point > col {
-                        wrap_point = max_end;
-                    }
-
-                    wrap_point.min(line_chars.len())
-                };
                 for buffer_col in col..end_col {
                     let ch = line_chars[buffer_col];
 
