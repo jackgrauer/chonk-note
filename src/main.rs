@@ -386,15 +386,21 @@ async fn run_app(app: &mut App) -> Result<()> {
                 frame.push_str(&format!("\x1b[1;{}H{}{}{}\x1b[0m", note_indicator_col + 1, title_bg, title_fg, indicator));
             }
 
-            // Right side: Hamster + "Chonk-Note" (skip hamster for now, just text)
-            let branding_text = " 🐹 Chonk-Note "; // Hamster emoji instead of image
-            let branding_len = branding_text.chars().count();
-            let right_col = total_width.saturating_sub(branding_len + 1);
+            // Right side: Hamster + "Chonk-Note"
+            let branding_text = "  Chonk-Note "; // Extra space at start to move text right
+            let branding_len = branding_text.len();
+            let hamster_cols = 2;
+            let right_col = total_width.saturating_sub(branding_len + hamster_cols + 1);
 
-            frame.push_str(&format!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", right_col + 1, title_bg, title_fg, branding_text));
+            frame.push_str(&format!("\x1b[1;{}H", right_col + 1)); // Position for hamster
 
             // Write frame header to terminal ONCE
             print!("{}", frame);
+            stdout.flush()?;
+
+            // Display hamster PNG (must be after frame write, can't be buffered)
+            let _ = KittyTerminal::display_inline_png(HAMSTER_PNG, hamster_cols as u16, 1);
+            print!("{}{}\x1b[1m{}\x1b[0m", title_bg, title_fg, branding_text);
             stdout.flush()?;
 
             // Sidebar widths
