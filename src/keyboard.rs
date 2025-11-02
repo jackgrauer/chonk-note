@@ -534,11 +534,12 @@ async fn handle_command_keys(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
 
-        // Select all
+        // Select all (skip title line - line 0)
         KeyCode::Char('a') | KeyCode::Char('A') => {
             let max_row = app.text_buffer.line_count().saturating_sub(1);
             let max_col = app.text_buffer.get_line_length(max_row);
-            app.text_buffer.start_selection(0, 0);
+            // Start selection from line 1 (after title) instead of line 0
+            app.text_buffer.start_selection(1, 0);
             app.text_buffer.update_selection(max_row, max_col);
             // Position cursor at end of selection
             app.cursor_row = max_row;
