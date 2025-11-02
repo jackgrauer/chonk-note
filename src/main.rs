@@ -240,7 +240,11 @@ impl App {
             // Cursor below visible area - scroll down just enough to show it
             let lines_over = screen_row - max_visible_row + 1;
             self.viewport_row += lines_over;
-        } else if self.viewport_row > 0 && screen_row == 0 && self.cursor_row < self.viewport_row {
+
+            // Clamp viewport to not scroll past content
+            let max_viewport_row = self.text_buffer.line_count().saturating_sub(1);
+            self.viewport_row = self.viewport_row.min(max_viewport_row);
+        } else if self.cursor_row < self.viewport_row {
             // Cursor above visible area - scroll up to show it
             self.viewport_row = self.cursor_row;
         }
