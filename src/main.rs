@@ -342,21 +342,17 @@ async fn run_app(app: &mut App) -> Result<()> {
         let should_render = app.needs_redraw && (app.force_immediate_render || frame_time.as_millis() >= timing::FRAME_TIME_MS);
 
         if should_render {
-            let bypass_sync = app.force_immediate_render;
             app.force_immediate_render = false;
-
-            KittyTerminal::move_to(0, 0)?;
             last_render_time = now;
 
-            // Skip synchronized updates entirely - they may be causing buffering issues
-            // // BEGIN SYNCHRONIZED UPDATE - skip for immediate renders to avoid buffering
-            // if !bypass_sync {
-            //     print!("\x1b[?2026h");
-            //     print!("\x1b[s");
-            // }
+            // Build entire frame in a string buffer (double buffering)
+            let mut frame = String::with_capacity(65536); // 64KB buffer
 
-            // Clear entire screen first to prevent artifacts
-            print!("\x1b[2J");
+            // BEGIN SYNCHRONIZED UPDATE - atomic screen update
+            frame.push_str("\x1b[?2026h"); // Begin sync
+            frame.push_str("\x1b[?25l");   // Hide cursor during rendering
+            frame.push_str("\x1b[H");      // Move to 0,0
+            frame.push_str("\x1b[2J");     // Clear screen
 
             // Render title bar
             let total_width = term_width as usize;
@@ -364,7 +360,7 @@ async fn run_app(app: &mut App) -> Result<()> {
             let title_fg = rgb_fg(colors::TITLE_BAR_FG.0, colors::TITLE_BAR_FG.1, colors::TITLE_BAR_FG.2);
 
             // Draw full teal bar first (always full width)
-            print!("\x1b[1;1H{}{}\x1b[0m", title_bg, " ".repeat(total_width));
+            frame.push_str(&format!("\x1b[1;1H{}{}\x1b[0m", title_bg, " ".repeat(total_width)));
 
             // Left side: "Notes ▾" and "Help ▾" menu buttons
             let notes_text = if app.notes_menu_expanded { "Notes ▴" } else { "Notes ▾" };
@@ -373,8 +369,8 @@ async fn run_app(app: &mut App) -> Result<()> {
             let notes_start_col = 0;
             let help_start_col = 10; // After "Notes ▾ "
 
-            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", notes_start_col + 1, title_bg, title_fg, notes_text);
-            print!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", help_start_col + 1, title_bg, title_fg, help_text);
+            frame.push_str(&format!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", notes_start_col + 1, title_bg, title_fg, notes_text));
+            frame.push_str(&format!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", help_start_col + 1, title_bg, title_fg, help_text));
 
             // Current note indicator (after Help menu)
             let note_indicator_col = 18;
@@ -387,19 +383,19 @@ async fn run_app(app: &mut App) -> Result<()> {
                     current_note.title.clone()
                 };
                 let indicator = format!(" │ {}{}", title, dirty_marker);
-                print!("\x1b[1;{}H{}{}{}\x1b[0m", note_indicator_col + 1, title_bg, title_fg, indicator);
+                frame.push_str(&format!("\x1b[1;{}H{}{}{}\x1b[0m", note_indicator_col + 1, title_bg, title_fg, indicator));
             }
 
-            // Right side: Hamster + "Chonk-Note"
-            let branding_text = "  Chonk-Note "; // Extra space at start to move text right
-            let branding_len = branding_text.len();
-            let hamster_cols = 2;
-            let hamster_rows = 1;
-            let right_col = total_width.saturating_sub(branding_len + hamster_cols + 1); // Move left by 1
+            // Right side: Hamster + "Chonk-Note" (skip hamster for now, just text)
+            let branding_text = " 🐹 Chonk-Note "; // Hamster emoji instead of image
+            let branding_len = branding_text.chars().count();
+            let right_col = total_width.saturating_sub(branding_len + 1);
 
-            print!("\x1b[1;{}H", right_col + 1); // Position for hamster
-            let _ = KittyTerminal::display_inline_png(HAMSTER_PNG, hamster_cols as u16, hamster_rows as u16);
-            print!("{}{}\x1b[1m{}\x1b[0m", title_bg, title_fg, branding_text);
+            frame.push_str(&format!("\x1b[1;{}H{}{}\x1b[1m{}\x1b[0m", right_col + 1, title_bg, title_fg, branding_text));
+
+            // Write frame header to terminal ONCE
+            print!("{}", frame);
+            stdout.flush()?;
 
             // Sidebar widths
             let notes_list_width = if app.sidebar_expanded { layout::SIDEBAR_WIDTH_EXPANDED } else { layout::SIDEBAR_WIDTH_COLLAPSED };
@@ -435,24 +431,24 @@ async fn run_app(app: &mut App) -> Result<()> {
             // Render status line at bottom
             render_status_line(&app, term_width, term_height)?;
 
+            // Position terminal cursor and end synchronized update
+            let mut frame_end = String::with_capacity(256);
+
             // Position terminal cursor at the actual cursor location
-            // Hide cursor when menus are open
             if app.notes_menu_expanded || app.help_menu_expanded {
-                print!("\x1b[?25l");  // Hide cursor
+                // Keep cursor hidden for menus
             } else {
                 if let Some((screen_x, screen_y)) = cursor_screen_pos {
-                    print!("\x1b[{};{}H", screen_y + 1, screen_x + 1); // Move to cursor position (1-based)
+                    frame_end.push_str(&format!("\x1b[{};{}H", screen_y + 1, screen_x + 1));
                 }
-                print!("\x1b[?25h");  // Show cursor
+                frame_end.push_str("\x1b[?25h"); // Show cursor
             }
 
-            // Skip synchronized updates entirely
-            // // END SYNCHRONIZED UPDATE - only if we started it
-            // if !bypass_sync {
-            //     print!("\x1b[?2026l");
-            // }
+            // END SYNCHRONIZED UPDATE - atomic flush
+            frame_end.push_str("\x1b[?2026l");
 
-            // Always flush immediately
+            // Write final frame footer
+            print!("{}", frame_end);
             stdout.flush()?;
 
             app.needs_redraw = false;
