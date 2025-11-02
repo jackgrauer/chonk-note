@@ -535,7 +535,7 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
             // Check if this is the title line (first line)
             let is_title_line = buffer_row == 0;
 
-            // Wrap the line into chunks that fit the width
+            // Wrap the line into chunks that fit the width (word-aware)
             let mut col = 0;
             while col < line_chars.len() || (col == 0 && line_chars.is_empty()) {
                 if screen_row >= height as usize {
@@ -555,8 +555,30 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
                     output.push_str(&format!("{}{}", title_bg, title_fg));
                 }
 
-                // Render characters for this wrapped segment
-                let end_col = (col + wrap_width).min(line_chars.len());
+                // Find word-aware wrap point
+                let end_col = if col + wrap_width >= line_chars.len() {
+                    // Fits entirely, use rest of line
+                    line_chars.len()
+                } else {
+                    // Need to wrap - find last space before wrap_width
+                    let max_end = col + wrap_width;
+                    let mut wrap_point = max_end;
+
+                    // Look backwards from max_end for a space
+                    for i in (col..max_end).rev() {
+                        if line_chars[i].is_whitespace() {
+                            wrap_point = i + 1; // Break after the space
+                            break;
+                        }
+                    }
+
+                    // If no space found (single long word), hard break at width
+                    if wrap_point == max_end && wrap_point > col {
+                        wrap_point = max_end;
+                    }
+
+                    wrap_point.min(line_chars.len())
+                };
                 for buffer_col in col..end_col {
                     let ch = line_chars[buffer_col];
 
