@@ -138,11 +138,55 @@ impl App {
         }
     }
 
+    /// Calculate how many screen rows a line will take with word wrapping
+    fn calculate_wrapped_line_count(&self, row: usize, wrap_width: usize) -> usize {
+        if let Some(line) = self.text_buffer.get_line(row) {
+            let line = line.trim_end_matches('\n');
+            if line.is_empty() {
+                return 1;
+            }
+
+            let line_chars: Vec<char> = line.chars().collect();
+            let mut col = 0;
+            let mut wrapped_lines = 0;
+
+            while col < line_chars.len() {
+                // Simulate word-aware wrapping
+                let end_col = if col + wrap_width >= line_chars.len() {
+                    line_chars.len()
+                } else {
+                    let max_end = col + wrap_width;
+                    let mut wrap_point = max_end;
+
+                    for i in (col..max_end).rev() {
+                        if line_chars[i].is_whitespace() {
+                            wrap_point = i + 1;
+                            break;
+                        }
+                    }
+
+                    if wrap_point == max_end && wrap_point > col {
+                        wrap_point = max_end;
+                    }
+
+                    wrap_point.min(line_chars.len())
+                };
+
+                wrapped_lines += 1;
+                col = end_col;
+            }
+
+            wrapped_lines
+        } else {
+            1
+        }
+    }
+
     pub fn update_viewport(&mut self, viewport_width: u16, viewport_height: u16) {
         // With text wrapping, we don't need horizontal scrolling
         self.viewport_col = 0;
 
-        // Calculate how many screen rows the cursor is at (accounting for wrapping)
+        // Calculate how many screen rows the cursor is at (accounting for word wrapping)
         let wrap_width = viewport_width as usize;
         let mut screen_row = 0;
 
@@ -151,20 +195,46 @@ impl App {
                 break;
             }
 
-            let line_len = self.text_buffer.get_line_length(row);
-
             if row < self.cursor_row {
                 // Count wrapped lines for rows before cursor
-                let wrapped_lines = if line_len == 0 {
-                    1
-                } else {
-                    (line_len + wrap_width - 1) / wrap_width
-                };
+                let wrapped_lines = self.calculate_wrapped_line_count(row, wrap_width);
                 screen_row += wrapped_lines;
             } else {
-                // For cursor row, count up to cursor position
-                let cursor_wrapped_line = self.cursor_col / wrap_width;
-                screen_row += cursor_wrapped_line;
+                // For cursor row, simulate wrapping up to cursor position
+                if let Some(line) = self.text_buffer.get_line(row) {
+                    let line = line.trim_end_matches('\n');
+                    let line_chars: Vec<char> = line.chars().collect();
+                    let mut col = 0;
+
+                    while col < line_chars.len() && col <= self.cursor_col {
+                        let end_col = if col + wrap_width >= line_chars.len() {
+                            line_chars.len()
+                        } else {
+                            let max_end = col + wrap_width;
+                            let mut wrap_point = max_end;
+
+                            for i in (col..max_end).rev() {
+                                if line_chars[i].is_whitespace() {
+                                    wrap_point = i + 1;
+                                    break;
+                                }
+                            }
+
+                            if wrap_point == max_end && wrap_point > col {
+                                wrap_point = max_end;
+                            }
+
+                            wrap_point.min(line_chars.len())
+                        };
+
+                        if self.cursor_col >= col && self.cursor_col <= end_col {
+                            break;
+                        }
+
+                        col = end_col;
+                        screen_row += 1;
+                    }
+                }
             }
         }
 
@@ -173,7 +243,6 @@ impl App {
 
         if screen_row >= viewport_height as usize - margin_rows {
             // Cursor too far down - scroll down
-            // Simple approach: if cursor goes off screen, move viewport down by one logical line
             if self.viewport_row < self.cursor_row {
                 self.viewport_row = self.cursor_row.saturating_sub(margin_rows);
             }
@@ -626,12 +695,15 @@ fn render_notes_pane_normal(app: &mut App, x: u16, y: u16, width: u16, height: u
                 // Print entire wrapped segment
                 print!("{}", output);
 
-                // Check if cursor is at end of this line
-                if buffer_row == app.cursor_row && app.cursor_col == line_chars.len() && col == 0 && line_chars.is_empty() {
-                    cursor_screen_pos = Some((x, y + screen_row as u16));
-                } else if buffer_row == app.cursor_row && app.cursor_col >= end_col && app.cursor_col < end_col + wrap_width {
-                    let screen_col = app.cursor_col - col;
-                    if screen_col < wrap_width {
+                // Check if cursor is at end of this wrapped segment or on empty line
+                if buffer_row == app.cursor_row {
+                    // Handle cursor on empty line
+                    if line_chars.is_empty() && col == 0 {
+                        cursor_screen_pos = Some((x, y + screen_row as u16));
+                    }
+                    // Handle cursor at or past end of this wrapped segment
+                    else if app.cursor_col >= col && app.cursor_col <= end_col {
+                        let screen_col = app.cursor_col - col;
                         cursor_screen_pos = Some((x + screen_col as u16, y + screen_row as u16));
                     }
                 }
